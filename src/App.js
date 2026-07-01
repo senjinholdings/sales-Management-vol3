@@ -27,6 +27,8 @@ import ClosedDealsList from './components/ClosedDealsList.js';
 import ProposalDealsList from './components/ProposalDealsList.js';
 import OperatorDashboard from './components/OperatorDashboard.js';
 import CoreCustomerPage from './components/CoreCustomerPage.js';
+import PartnersOverviewDashboard from './components/PartnersOverviewDashboard.js';
+import PartnerDetailDashboard from './components/PartnerDetailDashboard.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import './App.css';
@@ -409,6 +411,12 @@ function AdminApp() {
             </NavLink>
           </NavItem>
           <NavItem>
+            <NavLink to="/partners-overview" onClick={closeMobileMenu}>
+              <FiUsers />
+              パートナー分析
+            </NavLink>
+          </NavItem>
+          <NavItem>
             <NavLink to="/next-action-management" onClick={closeMobileMenu}>
               <FiClipboard />
               NA管理
@@ -488,6 +496,8 @@ function AdminApp() {
           <Route path="/next-action-management" element={<NextActionManagementPage />} />
           <Route path="/operator-dashboard" element={<OperatorDashboard />} />
           <Route path="/core-customers" element={<CoreCustomerPage />} />
+          <Route path="/partners-overview" element={<PartnersOverviewDashboard />} />
+          <Route path="/partners-overview/:partnerName" element={<PartnerDetailDashboard />} />
         </Routes>
       </MainContent>
       </AppContainer>

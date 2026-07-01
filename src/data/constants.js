@@ -152,3 +152,16 @@ export const FOLLOW_UP_PHASE_COLORS = {
 
 // 案件管理ランク
 export const PROJECT_RANKS = ['S', 'A', 'B', 'C'];
+
+// フェーズごとの受注確率（HomeDashboard / NewDealsDashboard / ExistingDealsDashboard と共通）
+export const PHASE_PROBABILITY = {
+  'フェーズ1': 0.05,
+  'フェーズ2': 0.15,
+  'フェーズ3': 0.25,
+  'フェーズ4': 0.50,
+  'フェーズ5': 0.70,
+  'フェーズ6': 0.90,
+  'フェーズ7': 0.95,
+  'フェーズ8': 1.00,
+  '失注': 0
+};
