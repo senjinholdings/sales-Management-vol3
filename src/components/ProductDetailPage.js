@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiArrowLeft, FiUser, FiCalendar, FiTag, FiEdit, FiFileText, FiSave, FiX, FiPlus, FiTrash2 } from 'react-icons/fi';
+import { FiArrowLeft, FiUser, FiCalendar, FiTag, FiEdit, FiFileText, FiSave, FiX, FiPlus, FiTrash2, FiTarget } from 'react-icons/fi';
 import { mockDeals, introducers } from '../data/mockData.js';
 import { STATUS_COLORS, STATUSES } from '../data/constants.js';
 import { db } from '../firebase.js';
 import { collection, query, where, orderBy, getDocs, doc, getDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import FirstRecallBriefModal from './FirstRecallBriefModal.js';
 
 const DetailContainer = styled.div`
   max-width: 1000px;
@@ -17,6 +18,10 @@ const Header = styled.div`
   align-items: center;
   gap: 1rem;
   margin-bottom: 2rem;
+`;
+
+const HeaderSpacer = styled.div`
+  flex: 1;
 `;
 
 const BackButton = styled.button`
@@ -374,7 +379,8 @@ function ProductDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [deal, setDeal] = useState(null);
-  
+  const [showBriefModal, setShowBriefModal] = useState(false);
+
   // パートナー向けかどうかを判定
   const isPartnerView = window.location.pathname.startsWith('/partner-entry');
   
@@ -851,7 +857,21 @@ function ProductDetailPage() {
           戻る
         </BackButton>
         <Title>{deal.productName}</Title>
+        <HeaderSpacer />
+        {!isPartnerView && (
+          <Button className="primary" onClick={() => setShowBriefModal(true)}>
+            <FiTarget />
+            第一想起 実施可否すり合わせ
+          </Button>
+        )}
       </Header>
+
+      <FirstRecallBriefModal
+        isOpen={showBriefModal}
+        onClose={() => setShowBriefModal(false)}
+        deal={deal}
+        onSaved={() => alert('Slackに実施可否すり合わせ内容を送信しました。')}
+      />
 
       <ContentGrid>
         <InfoCard>

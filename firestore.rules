@@ -72,7 +72,13 @@ service cloud.firestore {
       // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
       allow read, write: if true;
     }
-    
+
+    // 実施可否すり合わせコレクション（第一想起取れるくん専用）
+    match /firstRecallBriefs/{document} {
+      // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
+      allow read, write: if true;
+    }
+
     // その他のコレクションへのアクセスも許可（開発用）
     match /{document=**} {
       allow read, write: if true;
