@@ -352,7 +352,7 @@ const buildPurposeSummary = (form) => {
 const buildConditionSummary = (form) => {
   if (form.conditionType === '成果型' || form.conditionType === '予算型') {
     const totalBudget = Number(form.targetViews || 0) * Number(form.cpv || 0);
-    return `・目標再生数: ${formatNumber(form.targetViews) || '未記入'} / 単価: ${form.cpv ? `${formatNumber(form.cpv)}円` : '未記入'} / 総予算: ${totalBudget ? `${formatNumber(totalBudget)}円（自動計算）` : '未計算'}`;
+    return `・目標再生数: ${formatNumber(form.targetViews) || '未記入'} / 単価: ${form.cpv ? `${formatNumber(form.cpv)}円` : '未記入'} / 総予算: ${totalBudget ? `${formatNumber(totalBudget)}円` : '未計算'}`;
   }
   if (form.conditionType === '制作型') {
     return `・制作単価: ${form.productionUnitPrice ? `${formatNumber(form.productionUnitPrice)}円` : '未記入'} / 本数: ${form.productionCount || '未記入'}本`;
@@ -378,7 +378,7 @@ const buildSlackMessage = (deal, form) => {
     `・目的: ${form.purpose || '未選択'}\n` +
     `${buildPurposeSummary(form)}\n` +
     `・重要日程: ${form.keyDates || 'なし'}\n\n` +
-    `── 対象商品 ──\n` +
+    `── レギュレーション ──\n` +
     `・訴求ポイント: ${form.appealPoints || 'なし'}\n` +
     `・NG表現: ${form.ngExpressions || 'なし'}\n\n` +
     `── 実施条件 ──\n` +
@@ -388,7 +388,7 @@ const buildSlackMessage = (deal, form) => {
     `・対象媒体: ${mediaText}\n` +
     `・PR表記: ${form.prLabel || '未選択'}　/ コメント施策: ${form.commentPolicy || '未選択'}\n` +
     `・開始希望: ${form.startTiming || '未記入'}\n\n` +
-    `＠運用チーム 上記で実施可否のご確認お願いします🙏`
+    `<@U049UV6KZ1T> 上記で実施可否のご確認お願いします🙏`
   );
 };
 
