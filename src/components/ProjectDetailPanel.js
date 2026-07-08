@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import styled, { keyframes } from 'styled-components';
-import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck } from 'react-icons/fi';
+import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget } from 'react-icons/fi';
+import FirstRecallBriefModal from './FirstRecallBriefModal.js';
 import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { PROJECT_RANKS, STATUSES, STATUS_COLORS, CONTINUATION_STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
 import PhaseTooltip from './PhaseTooltip.js';
@@ -155,6 +156,28 @@ const HeaderSelect = styled.select`
   background: white;
   cursor: pointer;
   &:focus { outline: none; border-color: #3498db; }
+`;
+
+const HeaderActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.75rem;
+`;
+
+const BriefButton = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  border: none;
+  border-radius: 6px;
+  background: #2980b9;
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+  &:hover { background: #21618c; }
 `;
 
 // ============================================
@@ -2791,6 +2814,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
   const [operators, setOperators] = useState([]);
   const [salesReps, setSalesReps] = useState([]);
   const [latestPhase, setLatestPhase] = useState(project.status || '');
+  const [showBriefModal, setShowBriefModal] = useState(false);
 
   // モードに応じたサブコレクション名
   const salesSubCol = mode === 'newCase' ? 'newCaseSalesRecords' : 'salesRecords';
@@ -2884,12 +2908,21 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
   if (!project) return null;
 
   return (
+    <>
     <Overlay onClick={onClose}>
       <Panel onClick={e => e.stopPropagation()}>
         <CloseButton onClick={onClose}><FiX /></CloseButton>
 
         {/* ヘッダー: 案件基本情報 + 担当者 */}
         <PanelHeader>
+          {mode === 'newCase' && (
+            <HeaderActions>
+              <BriefButton onClick={() => setShowBriefModal(true)}>
+                <FiTarget />
+                第一想起 実施可否すり合わせ
+              </BriefButton>
+            </HeaderActions>
+          )}
           <HeaderGrid>
             <HeaderItem>
               <HeaderLabel>社名</HeaderLabel>
@@ -2982,6 +3015,14 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
         </TabContent>
       </Panel>
     </Overlay>
+
+    <FirstRecallBriefModal
+      isOpen={showBriefModal}
+      onClose={() => setShowBriefModal(false)}
+      deal={{ ...project, status: latestPhase || project.status }}
+      onSaved={() => alert('Slackに実施可否すり合わせ内容を送信しました。')}
+    />
+    </>
   );
 };
 

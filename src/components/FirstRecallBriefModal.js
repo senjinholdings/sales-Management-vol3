@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
-import { FiTarget, FiSave, FiX, FiUser, FiSend } from 'react-icons/fi';
-import { fetchAllStaff } from '../services/staffService.js';
+import { FiTarget, FiSave, FiX, FiSend } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -105,6 +104,12 @@ const FormGroup = styled.div`
   flex-direction: column;
 `;
 
+const SubFormGroup = styled(FormGroup)`
+  margin-left: 1rem;
+  padding-left: 0.75rem;
+  border-left: 3px solid #eaf2f8;
+`;
+
 const Label = styled.label`
   font-weight: 600;
   color: #2c3e50;
@@ -169,6 +174,22 @@ const TextArea = styled.textarea`
   }
 `;
 
+const RadioRow = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+`;
+
+const RadioLabel = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #2c3e50;
+  cursor: pointer;
+`;
+
 const CheckboxRow = styled.div`
   display: flex;
   flex-wrap: wrap;
@@ -183,6 +204,15 @@ const CheckboxLabel = styled.label`
   font-weight: 500;
   color: #2c3e50;
   cursor: pointer;
+`;
+
+const AutoCalcBox = styled.div`
+  background: #eaf2f8;
+  border-radius: 8px;
+  padding: 0.7rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #2980b9;
 `;
 
 const ButtonGroup = styled.div`
@@ -261,49 +291,72 @@ const ErrorMessage = styled.div`
   gap: 0.25rem;
 `;
 
-const HelperNote = styled.div`
-  font-size: 0.8rem;
-  color: #7f8c8d;
-  margin-top: 0.25rem;
-`;
-
 // 専用チャンネル用Webhookが未設定の間は既存Webhookにフォールバック
 const SLACK_INTAKE_WEBHOOK_URL =
   process.env.REACT_APP_SLACK_INTAKE_WEBHOOK_URL ||
   process.env.REACT_APP_SLACK_WEBHOOK_URL ||
   '';
 
-const MEDIA_OPTIONS = ['TikTok', 'Instagram Reels', 'YouTube Shorts'];
-
-const REPORT_FREQUENCY_OPTIONS = [
-  '中間1回＋最終1回',
-  '週次＋最終',
-  '最終のみ',
-];
+const PURPOSE_OPTIONS = ['売上UP', '指名検索増加', 'IMP'];
+const MALL_OPTIONS = ['Amazon', '楽天', 'Qoo10', '自社EC', '店頭', 'その他'];
+const MALLS_REQUIRING_NOTE = ['店頭', 'その他'];
+const MEDIA_OPTIONS = ['TikTok', 'Instagram Reels', 'YouTube Shorts', 'X'];
+const CONDITION_TYPE_OPTIONS = ['成果型', '予算型', '制作型'];
+const PR_LABEL_OPTIONS = ['有', '無', '未回収'];
+const COMMENT_POLICY_OPTIONS = ['可', '不可', '未回収'];
 
 const getInitialFormData = () => ({
   purpose: '',
-  channel: '',
+  targetMalls: [],
+  mallNote: '',
+  targetKeyword: '',
+  background: '',
   keyDates: '',
   productUrl: '',
   appealPoints: '',
   ngExpressions: '',
-  sampleProvided: '未定',
+  conditionType: '',
   targetViews: '',
   cpv: '',
-  totalBudget: '',
+  productionUnitPrice: '',
+  productionCount: '',
+  conditionNote: '',
   media: [],
   prLabel: '',
   commentPolicy: '',
   startTiming: '',
   reportTo: '',
-  operatorRep: '',
-  reportFrequency: REPORT_FREQUENCY_OPTIONS[0],
 });
 
 const formatNumber = (value) => {
   if (!value) return '';
   return new Intl.NumberFormat('ja-JP').format(value);
+};
+
+const buildPurposeSummary = (form) => {
+  if (form.purpose === '売上UP') {
+    const mallText = form.targetMalls.length > 0 ? form.targetMalls.join(' / ') : '未選択';
+    const noteText = form.mallNote ? `（備考: ${form.mallNote}）` : '';
+    return `・対象モール: ${mallText}${noteText}`;
+  }
+  if (form.purpose === '指名検索増加') {
+    return `・対象KW: ${form.targetKeyword || '未記入'}`;
+  }
+  if (form.purpose === 'IMP') {
+    return `・背景: ${form.background || '未記入'}`;
+  }
+  return '';
+};
+
+const buildConditionSummary = (form) => {
+  if (form.conditionType === '成果型' || form.conditionType === '予算型') {
+    const totalBudget = Number(form.targetViews || 0) * Number(form.cpv || 0);
+    return `・目標再生数: ${formatNumber(form.targetViews) || '未記入'} / 単価: ${form.cpv ? `${formatNumber(form.cpv)}円` : '未記入'} / 総予算: ${totalBudget ? `${formatNumber(totalBudget)}円（自動計算）` : '未計算'}`;
+  }
+  if (form.conditionType === '制作型') {
+    return `・制作単価: ${form.productionUnitPrice ? `${formatNumber(form.productionUnitPrice)}円` : '未記入'} / 本数: ${form.productionCount || '未記入'}本`;
+  }
+  return '';
 };
 
 const buildSlackMessage = (deal, form) => {
@@ -312,16 +365,18 @@ const buildSlackMessage = (deal, form) => {
     `🎯 *第一想起 実施可否すり合わせ*　＜${deal.companyName || deal.productName}／${deal.productName}＞\n\n` +
     `*営業担当:* ${deal.representative || '-'}　*現ステータス:* ${deal.status || '-'}\n\n` +
     `── 目的・背景 ──\n` +
-    `・目的: ${form.purpose || '未記入'}\n` +
-    `・対象モール/チャネル: ${form.channel || '未記入'}\n` +
+    `・目的: ${form.purpose || '未選択'}\n` +
+    `${buildPurposeSummary(form)}\n` +
     `・重要日程: ${form.keyDates || 'なし'}\n\n` +
     `── 実施条件 ──\n` +
-    `・目標再生数: ${formatNumber(form.targetViews) || '未記入'} / 再生単価: ${form.cpv ? `${formatNumber(form.cpv)}円` : '未記入'} / 総予算: ${form.totalBudget ? `${formatNumber(form.totalBudget)}円` : '未記入'}\n` +
+    `・実施タイプ: ${form.conditionType || '未選択'}\n` +
+    `${buildConditionSummary(form)}\n` +
+    `・備考: ${form.conditionNote || 'なし'}\n` +
     `・対象媒体: ${mediaText}\n` +
     `・PR表記: ${form.prLabel || '未選択'}　/ コメント施策: ${form.commentPolicy || '未選択'}\n` +
     `・開始希望: ${form.startTiming || '未記入'}\n\n` +
     `── 体制 ──\n` +
-    `・報告先: ${form.reportTo || '未記入'} / 運用担当: ${form.operatorRep || '未選択'} / レポート頻度: ${form.reportFrequency}\n\n` +
+    `・報告先: ${form.reportTo || '未記入'}\n\n` +
     `＠運用チーム 上記で実施可否のご確認お願いします🙏`
   );
 };
@@ -350,36 +405,77 @@ const sendBriefToSlack = async (deal, form) => {
 function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
   const [formData, setFormData] = useState(getInitialFormData());
   const [errors, setErrors] = useState({});
-  const [staffList, setStaffList] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
-    const loadStaff = async () => {
-      try {
-        const staff = await fetchAllStaff();
-        setStaffList(staff);
-      } catch (error) {
-        console.error('Failed to fetch staff:', error);
-      }
-    };
-    loadStaff();
-  }, []);
-
+  // isOpenのみに依存: dealは親の再レンダーごとに新しいオブジェクト参照になるため、
+  // depsに含めると背景の再レンダー（フェーズ同期等）で入力中のフォームが消えてしまう
   useEffect(() => {
     if (isOpen) {
       setFormData(getInitialFormData());
       setErrors({});
     }
-  }, [isOpen, deal]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
 
   if (!isOpen || !deal) return null;
+
+  const clearError = (field) => {
+    if (errors[field]) {
+      setErrors((prev) => ({ ...prev, [field]: null }));
+    }
+  };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: null }));
-    }
+    clearError(name);
+  };
+
+  const handlePurposeChange = (purpose) => {
+    setFormData((prev) => ({
+      ...prev,
+      purpose,
+      targetMalls: [],
+      mallNote: '',
+      targetKeyword: '',
+      background: '',
+    }));
+    clearError('purpose');
+    clearError('targetMalls');
+    clearError('targetKeyword');
+    clearError('background');
+  };
+
+  const handleConditionTypeChange = (conditionType) => {
+    setFormData((prev) => ({
+      ...prev,
+      conditionType,
+      targetViews: '',
+      cpv: '',
+      productionUnitPrice: '',
+      productionCount: '',
+    }));
+    clearError('conditionType');
+    clearError('targetViews');
+    clearError('cpv');
+    clearError('productionUnitPrice');
+    clearError('productionCount');
+  };
+
+  const handleMallToggle = (mall) => {
+    setFormData((prev) => {
+      const exists = prev.targetMalls.includes(mall);
+      const nextMalls = exists
+        ? prev.targetMalls.filter((m) => m !== mall)
+        : [...prev.targetMalls, mall];
+      const stillNeedsNote = nextMalls.some((m) => MALLS_REQUIRING_NOTE.includes(m));
+      return {
+        ...prev,
+        targetMalls: nextMalls,
+        mallNote: stillNeedsNote ? prev.mallNote : '',
+      };
+    });
+    clearError('targetMalls');
   };
 
   const handleMediaToggle = (media) => {
@@ -392,24 +488,49 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
           : [...prev.media, media],
       };
     });
-    if (errors.media) {
-      setErrors((prev) => ({ ...prev, media: null }));
-    }
+    clearError('media');
   };
+
+  const showMallNote = formData.targetMalls.some((m) => MALLS_REQUIRING_NOTE.includes(m));
+  const computedTotalBudget = Number(formData.targetViews || 0) * Number(formData.cpv || 0);
 
   const validateForm = () => {
     const newErrors = {};
 
-    if (!formData.targetViews) {
-      newErrors.targetViews = '目標再生数は必須です';
-    } else if (isNaN(Number(formData.targetViews)) || Number(formData.targetViews) <= 0) {
-      newErrors.targetViews = '正の数値を入力してください';
+    if (!formData.purpose) {
+      newErrors.purpose = '施策の目的を選択してください';
+    } else if (formData.purpose === '売上UP' && formData.targetMalls.length === 0) {
+      newErrors.targetMalls = '対象モールを1つ以上選択してください';
+    } else if (formData.purpose === '指名検索増加' && !formData.targetKeyword.trim()) {
+      newErrors.targetKeyword = '対象KWは必須です';
+    } else if (formData.purpose === 'IMP' && !formData.background.trim()) {
+      newErrors.background = '背景は必須です';
     }
 
-    if (!formData.cpv) {
-      newErrors.cpv = '再生単価は必須です';
-    } else if (isNaN(Number(formData.cpv)) || Number(formData.cpv) <= 0) {
-      newErrors.cpv = '正の数値を入力してください';
+    if (!formData.conditionType) {
+      newErrors.conditionType = '実施タイプを選択してください';
+    } else if (formData.conditionType === '成果型' || formData.conditionType === '予算型') {
+      if (!formData.targetViews) {
+        newErrors.targetViews = '目標再生数は必須です';
+      } else if (isNaN(Number(formData.targetViews)) || Number(formData.targetViews) <= 0) {
+        newErrors.targetViews = '正の数値を入力してください';
+      }
+      if (!formData.cpv) {
+        newErrors.cpv = '単価は必須です';
+      } else if (isNaN(Number(formData.cpv)) || Number(formData.cpv) <= 0) {
+        newErrors.cpv = '正の数値を入力してください';
+      }
+    } else if (formData.conditionType === '制作型') {
+      if (!formData.productionUnitPrice) {
+        newErrors.productionUnitPrice = '制作単価は必須です';
+      } else if (isNaN(Number(formData.productionUnitPrice)) || Number(formData.productionUnitPrice) <= 0) {
+        newErrors.productionUnitPrice = '正の数値を入力してください';
+      }
+      if (!formData.productionCount) {
+        newErrors.productionCount = '本数は必須です';
+      } else if (isNaN(Number(formData.productionCount)) || Number(formData.productionCount) <= 0) {
+        newErrors.productionCount = '正の数値を入力してください';
+      }
     }
 
     if (formData.media.length === 0) {
@@ -455,22 +576,26 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
         representative: deal.representative || '',
         dealStatus: deal.status || '',
         purpose: formData.purpose,
-        channel: formData.channel,
+        targetMalls: formData.purpose === '売上UP' ? formData.targetMalls : [],
+        mallNote: formData.purpose === '売上UP' ? formData.mallNote : '',
+        targetKeyword: formData.purpose === '指名検索増加' ? formData.targetKeyword : '',
+        background: formData.purpose === 'IMP' ? formData.background : '',
         keyDates: formData.keyDates,
         productUrl: formData.productUrl,
         appealPoints: formData.appealPoints,
         ngExpressions: formData.ngExpressions,
-        sampleProvided: formData.sampleProvided,
-        targetViews: Number(formData.targetViews),
-        cpv: Number(formData.cpv),
-        totalBudget: formData.totalBudget ? Number(formData.totalBudget) : null,
+        conditionType: formData.conditionType,
+        targetViews: formData.conditionType !== '制作型' && formData.targetViews ? Number(formData.targetViews) : null,
+        cpv: formData.conditionType !== '制作型' && formData.cpv ? Number(formData.cpv) : null,
+        totalBudget: formData.conditionType !== '制作型' ? computedTotalBudget : null,
+        productionUnitPrice: formData.conditionType === '制作型' && formData.productionUnitPrice ? Number(formData.productionUnitPrice) : null,
+        productionCount: formData.conditionType === '制作型' && formData.productionCount ? Number(formData.productionCount) : null,
+        conditionNote: formData.conditionNote,
         media: formData.media,
         prLabel: formData.prLabel,
         commentPolicy: formData.commentPolicy,
         startTiming: formData.startTiming,
         reportTo: formData.reportTo,
-        operatorRep: formData.operatorRep,
-        reportFrequency: formData.reportFrequency,
         status: 'submitted',
         createdAt: serverTimestamp(),
       });
@@ -494,7 +619,7 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
   };
 
   return (
-    <ModalOverlay onClick={handleCancel}>
+    <ModalOverlay onClick={(e) => { if (e.target === e.currentTarget) handleCancel(); }}>
       <ModalContent onClick={(e) => e.stopPropagation()}>
         <ModalHeader>
           <ModalTitle>
@@ -519,28 +644,88 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
           <SectionTitle>目的・背景</SectionTitle>
 
           <FormGroup>
-            <Label>施策の目的</Label>
-            <Input
-              type="text"
-              name="purpose"
-              value={formData.purpose}
-              onChange={handleInputChange}
-              placeholder="例：楽天の売上UP／Amazonセール連動／指名検索増／新商品認知"
-              disabled={isSubmitting}
-            />
+            <Label>施策の目的 *</Label>
+            <RadioRow>
+              {PURPOSE_OPTIONS.map((purpose) => (
+                <RadioLabel key={purpose}>
+                  <input
+                    type="radio"
+                    name="purpose"
+                    checked={formData.purpose === purpose}
+                    onChange={() => handlePurposeChange(purpose)}
+                    disabled={isSubmitting}
+                  />
+                  {purpose}
+                </RadioLabel>
+              ))}
+            </RadioRow>
+            {errors.purpose && <ErrorMessage>{errors.purpose}</ErrorMessage>}
           </FormGroup>
 
-          <FormGroup>
-            <Label>対象モール・チャネル</Label>
-            <Input
-              type="text"
-              name="channel"
-              value={formData.channel}
-              onChange={handleInputChange}
-              placeholder="例：楽天、Amazon、自社EC"
-              disabled={isSubmitting}
-            />
-          </FormGroup>
+          {formData.purpose === '売上UP' && (
+            <SubFormGroup>
+              <Label>対象モール *</Label>
+              <CheckboxRow>
+                {MALL_OPTIONS.map((mall) => (
+                  <CheckboxLabel key={mall}>
+                    <input
+                      type="checkbox"
+                      checked={formData.targetMalls.includes(mall)}
+                      onChange={() => handleMallToggle(mall)}
+                      disabled={isSubmitting}
+                    />
+                    {mall}
+                  </CheckboxLabel>
+                ))}
+              </CheckboxRow>
+              {errors.targetMalls && <ErrorMessage>{errors.targetMalls}</ErrorMessage>}
+
+              {showMallNote && (
+                <FormGroup style={{ marginTop: '0.75rem' }}>
+                  <Label>備考（店頭・その他の詳細）</Label>
+                  <Input
+                    type="text"
+                    name="mallNote"
+                    value={formData.mallNote}
+                    onChange={handleInputChange}
+                    placeholder="例：店舗名、詳細な販路など"
+                    disabled={isSubmitting}
+                  />
+                </FormGroup>
+              )}
+            </SubFormGroup>
+          )}
+
+          {formData.purpose === '指名検索増加' && (
+            <SubFormGroup>
+              <Label>対象KW *</Label>
+              <Input
+                type="text"
+                name="targetKeyword"
+                value={formData.targetKeyword}
+                onChange={handleInputChange}
+                placeholder="例：ブランド名、商品名"
+                className={errors.targetKeyword ? 'error' : ''}
+                disabled={isSubmitting}
+              />
+              {errors.targetKeyword && <ErrorMessage>{errors.targetKeyword}</ErrorMessage>}
+            </SubFormGroup>
+          )}
+
+          {formData.purpose === 'IMP' && (
+            <SubFormGroup>
+              <Label>背景 *</Label>
+              <TextArea
+                name="background"
+                value={formData.background}
+                onChange={handleInputChange}
+                placeholder="IMP獲得を目的とする背景を記入"
+                className={errors.background ? 'error' : ''}
+                disabled={isSubmitting}
+              />
+              {errors.background && <ErrorMessage>{errors.background}</ErrorMessage>}
+            </SubFormGroup>
+          )}
 
           <FormGroup>
             <Label>動かせない重要日程</Label>
@@ -590,63 +775,111 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
             />
           </FormGroup>
 
-          <FormGroup>
-            <Label>サンプル提供の有無</Label>
-            <Select
-              name="sampleProvided"
-              value={formData.sampleProvided}
-              onChange={handleInputChange}
-              disabled={isSubmitting}
-            >
-              <option value="未定">未定</option>
-              <option value="有">有</option>
-              <option value="無">無</option>
-            </Select>
-          </FormGroup>
-
           <SectionTitle>実施条件（必須）</SectionTitle>
 
           <FormGroup>
-            <Label>目標再生数 *</Label>
-            <Input
-              type="number"
-              name="targetViews"
-              value={formData.targetViews}
-              onChange={handleInputChange}
-              placeholder="例：1000000"
-              className={errors.targetViews ? 'error' : ''}
-              disabled={isSubmitting}
-              min="1"
-            />
-            {errors.targetViews && <ErrorMessage>{errors.targetViews}</ErrorMessage>}
+            <Label>実施タイプ *</Label>
+            <RadioRow>
+              {CONDITION_TYPE_OPTIONS.map((type) => (
+                <RadioLabel key={type}>
+                  <input
+                    type="radio"
+                    name="conditionType"
+                    checked={formData.conditionType === type}
+                    onChange={() => handleConditionTypeChange(type)}
+                    disabled={isSubmitting}
+                  />
+                  {type}
+                </RadioLabel>
+              ))}
+            </RadioRow>
+            {errors.conditionType && <ErrorMessage>{errors.conditionType}</ErrorMessage>}
           </FormGroup>
 
-          <FormGroup>
-            <Label>再生単価（円）*</Label>
-            <Input
-              type="number"
-              name="cpv"
-              value={formData.cpv}
-              onChange={handleInputChange}
-              placeholder="例：3"
-              className={errors.cpv ? 'error' : ''}
-              disabled={isSubmitting}
-              min="0.01"
-              step="0.01"
-            />
-            {errors.cpv && <ErrorMessage>{errors.cpv}</ErrorMessage>}
-          </FormGroup>
+          {(formData.conditionType === '成果型' || formData.conditionType === '予算型') && (
+            <SubFormGroup>
+              <FormGroup>
+                <Label>目標再生数 *</Label>
+                <Input
+                  type="number"
+                  name="targetViews"
+                  value={formData.targetViews}
+                  onChange={handleInputChange}
+                  placeholder="例：1000000"
+                  className={errors.targetViews ? 'error' : ''}
+                  disabled={isSubmitting}
+                  min="1"
+                />
+                {errors.targetViews && <ErrorMessage>{errors.targetViews}</ErrorMessage>}
+              </FormGroup>
+
+              <FormGroup style={{ marginTop: '0.75rem' }}>
+                <Label>単価（円）*</Label>
+                <Input
+                  type="number"
+                  name="cpv"
+                  value={formData.cpv}
+                  onChange={handleInputChange}
+                  placeholder="例：3"
+                  className={errors.cpv ? 'error' : ''}
+                  disabled={isSubmitting}
+                  min="0.01"
+                  step="0.01"
+                />
+                {errors.cpv && <ErrorMessage>{errors.cpv}</ErrorMessage>}
+              </FormGroup>
+
+              <FormGroup style={{ marginTop: '0.75rem' }}>
+                <Label>総予算（自動計算）</Label>
+                <AutoCalcBox>
+                  {computedTotalBudget ? `${formatNumber(computedTotalBudget)}円` : '-'}
+                </AutoCalcBox>
+              </FormGroup>
+            </SubFormGroup>
+          )}
+
+          {formData.conditionType === '制作型' && (
+            <SubFormGroup>
+              <FormGroup>
+                <Label>制作単価（円）*</Label>
+                <Input
+                  type="number"
+                  name="productionUnitPrice"
+                  value={formData.productionUnitPrice}
+                  onChange={handleInputChange}
+                  placeholder="例：50000"
+                  className={errors.productionUnitPrice ? 'error' : ''}
+                  disabled={isSubmitting}
+                  min="1"
+                />
+                {errors.productionUnitPrice && <ErrorMessage>{errors.productionUnitPrice}</ErrorMessage>}
+              </FormGroup>
+
+              <FormGroup style={{ marginTop: '0.75rem' }}>
+                <Label>本数 *</Label>
+                <Input
+                  type="number"
+                  name="productionCount"
+                  value={formData.productionCount}
+                  onChange={handleInputChange}
+                  placeholder="例：5"
+                  className={errors.productionCount ? 'error' : ''}
+                  disabled={isSubmitting}
+                  min="1"
+                />
+                {errors.productionCount && <ErrorMessage>{errors.productionCount}</ErrorMessage>}
+              </FormGroup>
+            </SubFormGroup>
+          )}
 
           <FormGroup>
-            <Label>総予算（円）</Label>
-            <Input
-              type="number"
-              name="totalBudget"
-              value={formData.totalBudget}
+            <Label>備考</Label>
+            <TextArea
+              name="conditionNote"
+              value={formData.conditionNote}
               onChange={handleInputChange}
-              placeholder="例：3000000"
+              placeholder="実施条件に関する補足があれば記入"
               disabled={isSubmitting}
-              min="0"
             />
           </FormGroup>
 
@@ -678,8 +911,9 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
               disabled={isSubmitting}
             >
               <option value="">選択してください</option>
-              <option value="有">有</option>
-              <option value="無">無</option>
+              {PR_LABEL_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
             </Select>
             {errors.prLabel && <ErrorMessage>{errors.prLabel}</ErrorMessage>}
           </FormGroup>
@@ -694,8 +928,9 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
               disabled={isSubmitting}
             >
               <option value="">選択してください</option>
-              <option value="可">可</option>
-              <option value="不可">不可</option>
+              {COMMENT_POLICY_OPTIONS.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
             </Select>
             {errors.commentPolicy && <ErrorMessage>{errors.commentPolicy}</ErrorMessage>}
           </FormGroup>
@@ -729,39 +964,6 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
               placeholder="例：先方ご担当者名・役職"
               disabled={isSubmitting}
             />
-          </FormGroup>
-
-          <FormGroup>
-            <Label>
-              <FiUser />
-              運用担当
-            </Label>
-            <Select
-              name="operatorRep"
-              value={formData.operatorRep}
-              onChange={handleInputChange}
-              disabled={isSubmitting}
-            >
-              <option value="">選択してください</option>
-              {staffList.filter((s) => s.role === 'operator').map((staff) => (
-                <option key={staff.id} value={staff.name}>{staff.name}</option>
-              ))}
-            </Select>
-          </FormGroup>
-
-          <FormGroup>
-            <Label>レポート頻度</Label>
-            <Select
-              name="reportFrequency"
-              value={formData.reportFrequency}
-              onChange={handleInputChange}
-              disabled={isSubmitting}
-            >
-              {REPORT_FREQUENCY_OPTIONS.map((option) => (
-                <option key={option} value={option}>{option}</option>
-              ))}
-            </Select>
-            <HelperNote>作成者は運用が一次作成→営業が確認して提出（デフォルト運用ルール）</HelperNote>
           </FormGroup>
 
           <ButtonGroup>
