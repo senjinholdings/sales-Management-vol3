@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { FiTarget, FiSave, FiX, FiSend } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { PHASE_DESCRIPTIONS } from '../data/constants.js';
 
 const ModalOverlay = styled.div`
   position: fixed;
@@ -361,13 +362,25 @@ const buildConditionSummary = (form) => {
 
 const buildSlackMessage = (deal, form) => {
   const mediaText = form.media.length > 0 ? form.media.join(' / ') : '未選択';
+  const isPartner = !!(deal.introducer && deal.introducer.trim());
+  const contractType = isPartner ? `パートナー経由（${deal.introducer}）` : '直';
+  const phaseDescription = deal.status ? PHASE_DESCRIPTIONS[deal.status] : null;
+  const phaseLabel = deal.status ? `${deal.status}${phaseDescription ? `（${phaseDescription}）` : ''}` : '-';
+
   return (
-    `🎯 *第一想起 実施可否すり合わせ*　＜${deal.companyName || deal.productName}／${deal.productName}＞\n\n` +
-    `*営業担当:* ${deal.representative || '-'}　*現ステータス:* ${deal.status || '-'}\n\n` +
+    `🎯 *第一想起 実施可否すり合わせ*\n\n` +
+    `*商材名:* ${deal.productName || '-'}\n` +
+    `*商品URL:* ${form.productUrl || '未記入'}\n` +
+    `*会社名:* ${deal.companyName || '-'}\n` +
+    `*契約形態:* ${contractType}\n` +
+    `*営業担当:* ${deal.representative || '-'}　*現ステータス:* ${phaseLabel}\n\n` +
     `── 目的・背景 ──\n` +
     `・目的: ${form.purpose || '未選択'}\n` +
     `${buildPurposeSummary(form)}\n` +
     `・重要日程: ${form.keyDates || 'なし'}\n\n` +
+    `── 対象商品 ──\n` +
+    `・訴求ポイント: ${form.appealPoints || 'なし'}\n` +
+    `・NG表現: ${form.ngExpressions || 'なし'}\n\n` +
     `── 実施条件 ──\n` +
     `・実施タイプ: ${form.conditionType || '未選択'}\n` +
     `${buildConditionSummary(form)}\n` +
@@ -375,8 +388,6 @@ const buildSlackMessage = (deal, form) => {
     `・対象媒体: ${mediaText}\n` +
     `・PR表記: ${form.prLabel || '未選択'}　/ コメント施策: ${form.commentPolicy || '未選択'}\n` +
     `・開始希望: ${form.startTiming || '未記入'}\n\n` +
-    `── 体制 ──\n` +
-    `・報告先: ${form.reportTo || '未記入'}\n\n` +
     `＠運用チーム 上記で実施可否のご確認お願いします🙏`
   );
 };
