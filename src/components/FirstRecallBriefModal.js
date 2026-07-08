@@ -291,7 +291,7 @@ const ErrorMessage = styled.div`
   gap: 0.25rem;
 `;
 
-// 専用チャンネル用Webhookが未設定の間は既存Webhookにフォールバック
+// C09URG0R430チャンネル宛のIncoming Webhook URL（未設定時は既存Webhookにフォールバック）
 const SLACK_INTAKE_WEBHOOK_URL =
   process.env.REACT_APP_SLACK_INTAKE_WEBHOOK_URL ||
   process.env.REACT_APP_SLACK_WEBHOOK_URL ||
@@ -383,23 +383,16 @@ const buildSlackMessage = (deal, form) => {
 
 const sendBriefToSlack = async (deal, form) => {
   if (!SLACK_INTAKE_WEBHOOK_URL) {
-    console.warn('Slack Webhook URLが未設定のため送信をスキップしました');
-    return false;
+    throw new Error('Slack Webhook URLが未設定です');
   }
-  try {
-    await fetch(SLACK_INTAKE_WEBHOOK_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      body: JSON.stringify({
-        text: buildSlackMessage(deal, form),
-        link_names: 1,
-      }),
-    });
-    return true;
-  } catch (error) {
-    console.error('Slack送信エラー:', error);
-    return false;
-  }
+  await fetch(SLACK_INTAKE_WEBHOOK_URL, {
+    method: 'POST',
+    mode: 'no-cors',
+    body: JSON.stringify({
+      text: buildSlackMessage(deal, form),
+      link_names: 1,
+    }),
+  });
 };
 
 function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
@@ -601,7 +594,13 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
       });
 
       // Slackへ実施可否すり合わせ内容を送信
-      await sendBriefToSlack(deal, formData);
+      try {
+        await sendBriefToSlack(deal, formData);
+      } catch (slackError) {
+        console.error('Slack送信エラー:', slackError);
+        alert('内容はFirestoreに保存されましたが、Slackへの送信に失敗しました。');
+        return;
+      }
 
       if (onSaved) {
         onSaved();
