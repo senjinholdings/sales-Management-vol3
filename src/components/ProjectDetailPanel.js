@@ -1161,6 +1161,8 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
     // 入力済みNAを抽出
     const filledNas = naItems.filter(na => na.actionContent.trim());
     if (!hasMemo && filledNas.length === 0) return;
+    // フェーズ8（受注）とDead以外はNA必須
+    if (!['フェーズ8', 'Dead'].includes(currentPhase) && filledNas.length === 0) return;
     try {
       const phaseChanged = currentPhase !== record.phase;
       const phaseChange = phaseChanged ? `${record.phase}→${currentPhase}` : '';
@@ -1355,7 +1357,9 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   const filledNas = naItems.filter(na => na.actionContent.trim());
   const naAllValid = filledNas.every(na => na.actionDueDate && na.actionAssignee);
   const hasAnyNa = filledNas.length > 0;
-  const hasInput = (memoContent.trim() || hasAnyNa) && (hasAnyNa ? naAllValid : true);
+  // フェーズ8（受注）とDead以外はNA必須
+  const naRequired = !['フェーズ8', 'Dead'].includes(currentPhase);
+  const hasInput = (memoContent.trim() || hasAnyNa) && (hasAnyNa ? naAllValid : true) && (!naRequired || hasAnyNa);
 
   /** エントリをgroupIdでグルーピングする */
   const groupEntries = (entries) => {
@@ -1591,6 +1595,11 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       {hasAnyNa && !naAllValid && (
         <div style={{ fontSize: '0.8rem', color: '#e74c3c', marginBottom: '0.5rem' }}>
           ※ ネクストアクション入力時は日付と担当者が必須です
+        </div>
+      )}
+      {naRequired && !hasAnyNa && memoContent.trim() && (
+        <div style={{ fontSize: '0.8rem', color: '#e74c3c', marginBottom: '0.5rem' }}>
+          ※ フェーズ8とDead以外はネクストアクションの入力が必須です
         </div>
       )}
 
