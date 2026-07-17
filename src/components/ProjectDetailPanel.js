@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget } from 'react-icons/fi';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
@@ -1096,6 +1096,9 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   const [currentPhase, setCurrentPhase] = useState(record.phase || 'フェーズ1');
   const [isLoading, setIsLoading] = useState(false);
   const [proposalMenuList, setProposalMenuList] = useState([]);
+  // フェーズ3滞留時のNA自動セット制御
+  const [entriesLoaded, setEntriesLoaded] = useState(false);
+  const autoNaSetRef = useRef(false);
 
   /** 提案メニューマスターを取得 */
   useEffect(() => {
@@ -1122,6 +1125,7 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       setIsLoading(true);
       const data = await fetchSalesEntries(projectId, record.id, subCol);
       setEntries(data);
+      setEntriesLoaded(true);
     } catch (error) {
       console.error('Failed to load sales entries:', error);
     } finally {
@@ -1139,6 +1143,49 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       setCurrentPhase(entries[0].phase);
     }
   }, [entries]);
+
+  // フェーズ3のまま7日以上経過している場合、決裁者打診のNAを自動セット
+  useEffect(() => {
+    if (autoNaSetRef.current || !entriesLoaded) return;
+    const AUTO_NA_CONTENT = '決裁者と直接対話を打診';
+
+    const persistedPhase = entries[0]?.phase || record.phase;
+    if (persistedPhase !== 'フェーズ3') return;
+
+    // 同内容の未完了NAが既に登録済みならスキップ（二重登録防止）
+    if (entries.some(e => e.actionContent === AUTO_NA_CONTENT && e.actionStatus !== 'done')) return;
+
+    // フェーズ3になった日: 最新の「→フェーズ3」変更エントリ → 記録の登録日 → 記録の作成日時
+    const phase3Entry = entries.find(e => e.phaseChange && e.phaseChange.endsWith('→フェーズ3'));
+    let phase3Start = null;
+    if (phase3Entry?.createdAt) {
+      phase3Start = phase3Entry.createdAt.toDate ? phase3Entry.createdAt.toDate() : new Date(phase3Entry.createdAt);
+    } else if (record.date) {
+      phase3Start = new Date(record.date);
+    } else if (record.createdAt) {
+      phase3Start = record.createdAt.toDate ? record.createdAt.toDate() : new Date(record.createdAt);
+    }
+    if (!phase3Start || isNaN(phase3Start.getTime())) return;
+
+    const elapsedDays = Math.floor((new Date() - phase3Start) / (1000 * 60 * 60 * 24));
+    if (elapsedDays < 7) return;
+
+    // 期日: 当日から3日後（ローカル日付で整形）
+    const due = new Date();
+    due.setDate(due.getDate() + 3);
+    const dueDate = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
+
+    // 担当者: マスターのフルネーム表記（例: 荒幡 輝）に合わせる
+    const allReps = [...new Set([...(salesReps || []), ...(operators || [])])];
+    const assignee = allReps.find(name => name.includes('荒幡')) || '荒幡';
+
+    const autoNa = { actionContent: AUTO_NA_CONTENT, actionDueDate: dueDate, actionAssignee: assignee };
+    autoNaSetRef.current = true;
+    setNaItems(prev => {
+      const hasUserInput = prev.some(na => na.actionContent.trim() || na.actionDueDate || na.actionAssignee);
+      return hasUserInput ? [...prev, autoNa] : [autoNa];
+    });
+  }, [entriesLoaded, entries, record, salesReps, operators]);
 
   /** NA行の値を更新するヘルパー */
   const updateNaItem = (index, field, value) => {
