@@ -1099,6 +1099,8 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   // フェーズ3滞留時のNA自動セット制御
   const [entriesLoaded, setEntriesLoaded] = useState(false);
   const autoNaSetRef = useRef(false);
+  // Dead時のNA自動セット制御
+  const autoDeadNaSetRef = useRef(false);
 
   /** 提案メニューマスターを取得 */
   useEffect(() => {
@@ -1186,6 +1188,60 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       return hasUserInput ? [...prev, autoNa] : [autoNa];
     });
   }, [entriesLoaded, entries, record, salesReps, operators]);
+
+  // フェーズがDeadの場合、3ヶ月後再アプローチのNAを自動登録
+  useEffect(() => {
+    if (autoDeadNaSetRef.current || !entriesLoaded) return;
+    const AUTO_DEAD_NA_CONTENT = '3ヶ月後に再アプローチの連絡を入れる';
+
+    const persistedPhase = entries[0]?.phase || record.phase;
+    if (persistedPhase !== 'Dead') return;
+
+    // 同内容の未完了NAが既に登録済みならスキップ（二重登録防止）
+    if (entries.some(e => e.actionContent === AUTO_DEAD_NA_CONTENT && e.actionStatus !== 'done')) return;
+
+    // Deadになった日: 最新の「→Dead」変更エントリ → 記録の登録日 → 記録の作成日時
+    const deadEntry = entries.find(e => e.phaseChange && e.phaseChange.endsWith('→Dead'));
+    let deadStart = null;
+    if (deadEntry?.createdAt) {
+      deadStart = deadEntry.createdAt.toDate ? deadEntry.createdAt.toDate() : new Date(deadEntry.createdAt);
+    } else if (record.date) {
+      deadStart = new Date(record.date);
+    } else if (record.createdAt) {
+      deadStart = record.createdAt.toDate ? record.createdAt.toDate() : new Date(record.createdAt);
+    }
+    if (!deadStart || isNaN(deadStart.getTime())) return;
+
+    // 期日: Deadになった日から3ヶ月後（ローカル日付で整形）
+    const due = new Date(deadStart);
+    due.setMonth(due.getMonth() + 3);
+    const dueDate = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
+
+    // 担当者: マスターのフルネーム表記（例: 荒幡 輝）に合わせる
+    const allReps = [...new Set([...(salesReps || []), ...(operators || [])])];
+    const assignee = allReps.find(name => name.includes('荒幡')) || '荒幡';
+
+    // 同一マウント内での再実行防止（await前に立てる）
+    autoDeadNaSetRef.current = true;
+
+    (async () => {
+      try {
+        await addSalesEntry(projectId, record.id, {
+          memoContent: '',
+          actionContent: AUTO_DEAD_NA_CONTENT,
+          actionDueDate: dueDate,
+          actionAssignee: assignee,
+          phase: persistedPhase,
+          phaseChange: ''
+        }, subCol);
+        await loadEntries();
+      } catch (error) {
+        console.error('Failed to auto-register dead re-approach NA:', error);
+        // 失敗時は次回レンダリングで再試行できるようにフラグを戻す
+        autoDeadNaSetRef.current = false;
+      }
+    })();
+  }, [entriesLoaded, entries, record, salesReps, operators, projectId, subCol, loadEntries]);
 
   /** NA行の値を更新するヘルパー */
   const updateNaItem = (index, field, value) => {
