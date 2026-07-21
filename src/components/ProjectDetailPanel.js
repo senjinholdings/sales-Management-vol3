@@ -3019,6 +3019,13 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
 
   if (!project) return null;
 
+  const briefButton = (
+    <BriefButton onClick={() => setShowBriefModal(true)}>
+      <FiTarget />
+      第一想起 実施可否すり合わせ
+    </BriefButton>
+  );
+
   return (
     <>
     <Overlay onClick={onClose}>
@@ -3029,10 +3036,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
         <PanelHeader>
           {mode === 'newCase' && (
             <HeaderActions>
-              <BriefButton onClick={() => setShowBriefModal(true)}>
-                <FiTarget />
-                第一想起 実施可否すり合わせ
-              </BriefButton>
+              {briefButton}
             </HeaderActions>
           )}
           <HeaderGrid>
@@ -3084,6 +3088,11 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
               </HeaderItem>
             ) : null}
           </HeaderGrid>
+          {mode !== 'newCase' && (
+            <HeaderActions style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+              {briefButton}
+            </HeaderActions>
+          )}
         </PanelHeader>
 
         {/* タブバー（newCaseモードでは非表示） */}
