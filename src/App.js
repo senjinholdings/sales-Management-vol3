@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown } from 'react-icons/fi';
+import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiClock } from 'react-icons/fi';
 import { analyzeMeetingNotes, isGPTServiceAvailable, debugAPIStatus, checkAPIKeyStatus } from './services/gptService.js';
 import LoginPage from './components/LoginPage.js';
 import ProtectedRoute from './components/ProtectedRoute.js';
@@ -27,6 +27,7 @@ import ClosedDealsList from './components/ClosedDealsList.js';
 import ProposalDealsList from './components/ProposalDealsList.js';
 import OperatorDashboard from './components/OperatorDashboard.js';
 import CoreCustomerPage from './components/CoreCustomerPage.js';
+import DailyTimerPage from './components/DailyTimerPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import './App.css';
@@ -414,6 +415,12 @@ function AdminApp() {
               NA管理
             </NavLink>
           </NavItem>
+          <NavItem>
+            <NavLink to="/daily-timer" onClick={closeMobileMenu}>
+              <FiClock />
+              デイリータイマー
+            </NavLink>
+          </NavItem>
           <NavDropdown className={openDropdown === 'master' ? 'mobile-open' : ''}>
             <NavDropdownButton onClick={() => toggleDropdown('master')}>
               <FiUsers />
@@ -488,6 +495,7 @@ function AdminApp() {
           <Route path="/next-action-management" element={<NextActionManagementPage />} />
           <Route path="/operator-dashboard" element={<OperatorDashboard />} />
           <Route path="/core-customers" element={<CoreCustomerPage />} />
+          <Route path="/daily-timer" element={<DailyTimerPage />} />
         </Routes>
       </MainContent>
       </AppContainer>
