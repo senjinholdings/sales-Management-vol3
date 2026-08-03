@@ -418,7 +418,7 @@ function AdminApp() {
           <NavItem>
             <NavLink to="/daily-timer" onClick={closeMobileMenu}>
               <FiClock />
-              デイリータイマー
+              日報
             </NavLink>
           </NavItem>
           <NavDropdown className={openDropdown === 'master' ? 'mobile-open' : ''}>

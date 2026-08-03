@@ -82,7 +82,7 @@ const routeConfig = {
   '/staff-master': { name: '担当者管理', icon: null },
   '/operator-dashboard': { name: '運用管理', icon: null },
   '/next-action-management': { name: 'NA管理', icon: null },
-  '/daily-timer': { name: 'デイリータイマー', icon: null },
+  '/daily-timer': { name: '日報', icon: null },
   
   // パートナー用ルート
   '/partner': { name: 'ホーム', icon: FiHome },

@@ -902,7 +902,7 @@ const DailyTimerPage = () => {
 
   return (
     <PageContainer>
-      <Title><FiClock /> デイリータイマー</Title>
+      <Title><FiClock /> 日報</Title>
 
       <DateNav>
         <DateArrowButton onClick={() => changeDate(shiftDateKey(selectedDate, -1))}>
