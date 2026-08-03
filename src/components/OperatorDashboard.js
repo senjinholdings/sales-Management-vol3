@@ -846,6 +846,7 @@ function OperatorDashboard() {
             setExistingDeals(prev => prev.map(d => d.id === updated.id ? { ...d, ...updated } : d));
           }}
           mode={selectedProject.isExistingProject ? undefined : 'newCase'}
+          hideSalesTab
         />
       )}
     </PageContainer>

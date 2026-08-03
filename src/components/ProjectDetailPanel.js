@@ -2921,7 +2921,7 @@ const KeyPersonTab = ({ project }) => {
 // メインコンポーネント
 // ============================================
 
-const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8Submitted }) => {
+const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8Submitted, hideSalesTab }) => {
   const [activeTab, setActiveTab] = useState(mode === 'newCase' ? 'sales' : 'operator');
   const [operators, setOperators] = useState([]);
   const [salesReps, setSalesReps] = useState([]);
@@ -3104,12 +3104,14 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
             >
               運用者向け
             </Tab>
-            <Tab
-              $active={activeTab === 'sales'}
-              onClick={() => setActiveTab('sales')}
-            >
-              営業向け
-            </Tab>
+            {!hideSalesTab && (
+              <Tab
+                $active={activeTab === 'sales'}
+                onClick={() => setActiveTab('sales')}
+              >
+                営業向け
+              </Tab>
+            )}
             <Tab
               $active={activeTab === 'keyPerson'}
               onClick={() => setActiveTab('keyPerson')}
@@ -3127,7 +3129,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
               onProjectUpdate={onProjectUpdate}
             />
           )}
-          {activeTab === 'sales' && (
+          {activeTab === 'sales' && !(hideSalesTab && mode !== 'newCase') && (
             <SalesTab project={project} operators={operators} salesReps={salesReps} subCol={salesSubCol} onPhaseChange={handlePhaseChange} onPhase8Submitted={onPhase8Submitted} mode={mode} />
           )}
           {activeTab === 'keyPerson' && mode !== 'newCase' && (
