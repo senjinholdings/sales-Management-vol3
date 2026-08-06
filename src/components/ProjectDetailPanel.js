@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget } from 'react-icons/fi';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
+import StageProgressBar from './StageProgressBar.js';
+import ContractBillingSection from './ContractBillingSection.js';
 import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { PROJECT_RANKS, STATUSES, STATUS_COLORS, CONTINUATION_STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
 import PhaseTooltip from './PhaseTooltip.js';
@@ -835,7 +837,7 @@ const OperationMemoSection = ({ projectId }) => {
 // タブ1: 運用者向け
 // ============================================
 
-const OperatorTab = ({ project, onProjectUpdate }) => {
+const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
   const [formData, setFormData] = useState({
     rank: project.rank || '',
     clientGoal: project.clientGoal || ''
@@ -1069,6 +1071,11 @@ const OperatorTab = ({ project, onProjectUpdate }) => {
           </AreaChart>
         </ResponsiveContainer>
       </ChartContainer>
+
+      {/* 契約・請求管理（運用管理から開いた場合のみ。月次売上管理=クライアント商品売上とは別概念） */}
+      {showBilling && (
+        <ContractBillingSection project={project} onProjectUpdate={onProjectUpdate} />
+      )}
 
       {/* 運用メモ */}
       <OperationMemoSection projectId={project.id} />
@@ -2921,7 +2928,7 @@ const KeyPersonTab = ({ project }) => {
 // メインコンポーネント
 // ============================================
 
-const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8Submitted }) => {
+const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8Submitted, showStageProgress = false }) => {
   const [activeTab, setActiveTab] = useState(mode === 'newCase' ? 'sales' : 'operator');
   const [operators, setOperators] = useState([]);
   const [salesReps, setSalesReps] = useState([]);
@@ -3095,6 +3102,11 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           )}
         </PanelHeader>
 
+        {/* 受注後の進行ステージ（運用管理から開いた場合のみ表示） */}
+        {showStageProgress && mode !== 'newCase' && (
+          <StageProgressBar project={project} onProjectUpdate={onProjectUpdate} />
+        )}
+
         {/* タブバー（newCaseモードでは非表示） */}
         {mode !== 'newCase' && (
           <TabBar>
@@ -3125,6 +3137,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
             <OperatorTab
               project={project}
               onProjectUpdate={onProjectUpdate}
+              showBilling={showStageProgress}
             />
           )}
           {activeTab === 'sales' && (

@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
-import { FiUser, FiCalendar, FiCheck, FiEdit2, FiTarget, FiDownload } from 'react-icons/fi';
+import { FiUser, FiCalendar, FiCheck, FiEdit2, FiTarget, FiDownload, FiAlertTriangle } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { fetchStaffByRole } from '../services/staffService.js';
 import { updateSalesRecord } from '../services/projectService.js';
 import { STATUS_COLORS, CONTINUATION_STATUS_COLORS } from '../data/constants.js';
+import { getStageState, getStageDef, getOverdueBusinessDays, formatStageDate } from '../utils/stageProgress.js';
 import PhaseTooltip from './PhaseTooltip.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
 
@@ -494,6 +495,26 @@ function OperatorDashboard() {
     return existingDeals.filter(d => !d.operatorRep);
   }, [existingDeals]);
 
+  // 遅延中の案件（進行ステージの期限を超過しているもの）
+  const delayedDeals = useMemo(() => {
+    const now = new Date();
+    return existingDeals
+      .map(deal => {
+        const state = getStageState(deal.stageProgress);
+        if (!state.deadline) return null;
+        const overdueDays = getOverdueBusinessDays(state.deadline, now);
+        if (overdueDays <= 0) return null;
+        return {
+          deal,
+          stageName: getStageDef(state.currentStage)?.name || '',
+          deadline: state.deadline,
+          overdueDays,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.overdueDays - a.overdueDays);
+  }, [existingDeals]);
+
   // インライン編集の開始
   const startEditing = (deal, field) => {
     setEditingId(deal.id);
@@ -662,6 +683,42 @@ function OperatorDashboard() {
 
       <MainLayout>
         <LeftColumn>
+          {/* 遅延中の案件（進行ステージ期限超過。0件なら非表示） */}
+          {delayedDeals.length > 0 && (
+            <Card>
+              <CardHeader style={{ background: '#fdf0ef' }}>
+                <CardTitle style={{ color: '#e74c3c' }}>
+                  <FiAlertTriangle />
+                  遅延中の案件（{delayedDeals.length}件）
+                </CardTitle>
+              </CardHeader>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>会社名</Th>
+                    <Th>商材名</Th>
+                    <Th>現在のステージ</Th>
+                    <Th>期限</Th>
+                    <Th>超過日数</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {delayedDeals.map(({ deal, stageName, deadline, overdueDays }) => (
+                    <ClickableRow key={deal.id} onClick={() => handleRowClick(deal)}>
+                      <Td>{deal.companyName || ''}</Td>
+                      <Td>{deal.productName || ''}</Td>
+                      <Td>{stageName}</Td>
+                      <Td>{formatStageDate(deadline)}</Td>
+                      <Td>
+                        <PhaseBadge color="#e74c3c">{overdueDays}日超過</PhaseBadge>
+                      </Td>
+                    </ClickableRow>
+                  ))}
+                </tbody>
+              </Table>
+            </Card>
+          )}
+
           {/* 運用者の目標実績 */}
           <TargetCard>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
@@ -846,6 +903,7 @@ function OperatorDashboard() {
             setExistingDeals(prev => prev.map(d => d.id === updated.id ? { ...d, ...updated } : d));
           }}
           mode={selectedProject.isExistingProject ? undefined : 'newCase'}
+          showStageProgress={!!selectedProject.isExistingProject}
         />
       )}
     </PageContainer>
