@@ -3,6 +3,7 @@ import styled from 'styled-components';
 import { FiCalendar, FiCheckCircle, FiCircle, FiEdit3, FiSave, FiX, FiRefreshCw, FiAlertCircle } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, query, where, getDocs, doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { addBusinessDays } from '../utils/businessDays.js';
 
 const PageContainer = styled.div`
   width: 100%;
@@ -355,22 +356,6 @@ const TaskProgressPage = () => {
     { name: '開始連絡', daysFromOrder: -1 }, // 開始前日
     { name: '配信開始', daysFromOrder: 0, isStartDate: true } // 開始日
   ];
-
-  // 営業日を計算する関数
-  const addBusinessDays = (date, days) => {
-    const result = new Date(date);
-    let count = 0;
-    
-    while (count < Math.abs(days)) {
-      result.setDate(result.getDate() + (days > 0 ? 1 : -1));
-      const dayOfWeek = result.getDay();
-      if (dayOfWeek !== 0 && dayOfWeek !== 6) {
-        count++;
-      }
-    }
-    
-    return result;
-  };
 
   // 成約案件一覧から直接「第一想起取れるくん」の受注案件を取得
   const fetchDeals = async () => {

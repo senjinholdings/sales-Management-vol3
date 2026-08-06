@@ -125,6 +125,45 @@ export const updateProject = async (projectId, data) => {
 };
 
 /**
+ * 進行ステージを完了にする（受注後の進行ステージ管理）
+ * 完了日時はserverTimestampのみで記録し、ユーザー指定の日時は受け付けない
+ * @param {string} projectId - 案件ID
+ * @param {number} stageNo - 完了にするステージ番号（1〜7）
+ */
+export const completeStage = async (projectId, stageNo) => {
+  try {
+    const projectRef = doc(db, 'progressDashboard', projectId);
+    await updateDoc(projectRef, {
+      [`stageProgress.completedAt.${stageNo}`]: serverTimestamp(),
+      'stageProgress.currentStage': Math.min(stageNo + 1, 7),
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Failed to complete stage:', error);
+    throw error;
+  }
+};
+
+/**
+ * 進行ステージの完了を取り消す（直前に完了したステージのみ呼び出し側で制御）
+ * @param {string} projectId - 案件ID
+ * @param {number} stageNo - 取り消すステージ番号
+ */
+export const undoStage = async (projectId, stageNo) => {
+  try {
+    const projectRef = doc(db, 'progressDashboard', projectId);
+    await updateDoc(projectRef, {
+      [`stageProgress.completedAt.${stageNo}`]: null,
+      'stageProgress.currentStage': stageNo,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Failed to undo stage:', error);
+    throw error;
+  }
+};
+
+/**
  * ネクストアクションを追加する
  * @param {string} projectId - 案件ID
  * @param {string} tab - タブ種別 ("operator" or "sales")
