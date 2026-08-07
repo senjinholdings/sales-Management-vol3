@@ -13,6 +13,8 @@ import {
   where,
   serverTimestamp
 } from 'firebase/firestore';
+import { PROJECT_STAGES } from '../data/constants.js';
+import { addBusinessDays } from '../utils/businessDays.js';
 
 /**
  * 案件管理のFirestore操作サービス
@@ -122,6 +124,199 @@ export const updateProject = async (projectId, data) => {
   } catch (error) {
     console.error('Failed to update project:', error);
     throw error;
+  }
+};
+
+/**
+ * 進行ステージを完了にする（受注後の進行ステージ管理）
+ * 完了日時はserverTimestampのみで記録し、ユーザー指定の日時は受け付けない
+ * @param {string} projectId - 案件ID
+ * @param {number} stageNo - 完了にするステージ番号（1〜7）
+ */
+export const completeStage = async (projectId, stageNo) => {
+  try {
+    const projectRef = doc(db, 'progressDashboard', projectId);
+    await updateDoc(projectRef, {
+      [`stageProgress.completedAt.${stageNo}`]: serverTimestamp(),
+      'stageProgress.currentStage': Math.min(stageNo + 1, 7),
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Failed to complete stage:', error);
+    throw error;
+  }
+};
+
+/**
+ * 進行ステージの完了を取り消す（直前に完了したステージのみ呼び出し側で制御）
+ * @param {string} projectId - 案件ID
+ * @param {number} stageNo - 取り消すステージ番号
+ */
+export const undoStage = async (projectId, stageNo) => {
+  try {
+    const projectRef = doc(db, 'progressDashboard', projectId);
+    await updateDoc(projectRef, {
+      [`stageProgress.completedAt.${stageNo}`]: null,
+      'stageProgress.currentStage': stageNo,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Failed to undo stage:', error);
+    throw error;
+  }
+};
+
+// ============================================
+// 進行ステージ連動NA（ステージNA）
+// ステージNAは stageNaStage フィールド（ステージ番号）で通常NAと区別する。
+// データの正は stageProgress.completedAt であり、NAの完了状態はそこから同期される従属情報
+// ============================================
+
+// エントリIDは決定的ID。同じ生成処理が二重に走っても同一ドキュメントに収束し、重複が構造的に発生しない
+const stageNaEntryId = (stageNo) => `stageNa_${stageNo}`;
+
+/** DateをactionDueDate形式（YYYY-MM-DD）の文字列にする */
+const toDueDateString = (date) => {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+/** Firestore Timestamp/秒数オブジェクトをDateに変換（変換不能ならnull） */
+const timestampToDate = (ts) => {
+  if (!ts) return null;
+  if (ts.toDate) return ts.toDate();
+  if (ts.seconds) return new Date(ts.seconds * 1000);
+  return null;
+};
+
+/**
+ * 案件配下の全営業記録からステージNA（stageNaStage付きエントリ）を収集する
+ * @param {string} projectId - 案件ID
+ * @returns {Promise<Array>} エントリ一覧（recordId付き）
+ */
+export const fetchStageNaEntries = async (projectId) => {
+  const recordsRef = collection(db, 'progressDashboard', projectId, 'salesRecords');
+  const recordsSnap = await getDocs(recordsRef);
+  const results = [];
+  await Promise.all(recordsSnap.docs.map(async (recordDoc) => {
+    const entriesRef = collection(db, 'progressDashboard', projectId, 'salesRecords', recordDoc.id, 'entries');
+    const entriesSnap = await getDocs(entriesRef);
+    entriesSnap.docs.forEach((d) => {
+      const entry = d.data();
+      if (entry.stageNaStage != null) {
+        results.push({ recordId: recordDoc.id, id: d.id, ...entry });
+      }
+    });
+  }));
+  return results;
+};
+
+/**
+ * 指定ステージのNAを生成する。同ステージのNAが既にあれば（完了済みでも）何もしない
+ * 期日 = 基準日（前ステージ完了日時）+ 標準営業日数。標準日数のないステージ1・7は生成対象外
+ * @param {string} projectId - 案件ID
+ * @param {object|null} project - 案件データ（担当者参照用）
+ * @param {number} stageNo - NAを生成するステージ番号
+ * @param {Date} baseDate - 期日計算の基準日（前ステージの完了日時）
+ * @param {Array|null} [existingStageNas] - fetchStageNaEntriesの結果（省略時は内部で取得）
+ */
+export const ensureStageNa = async (projectId, project, stageNo, baseDate, existingStageNas = null) => {
+  const stageDef = PROJECT_STAGES.find(s => s.no === stageNo);
+  if (!stageDef || stageDef.standardDays == null || !baseDate) return;
+
+  // 重複防止: 全営業記録を走査し、同ステージのNAが（完了済み含め）1件でもあればスキップ
+  const stageNas = existingStageNas || await fetchStageNaEntries(projectId);
+  if (stageNas.some(e => e.stageNaStage === stageNo)) return;
+
+  // 追加先は最新の営業記録（なければ最小限の記録を作成）
+  const records = await fetchSalesRecords(projectId, 'salesRecords');
+  let recordId;
+  if (records.length > 0) {
+    const sorted = [...records].sort((a, b) => {
+      const aTime = a.createdAt?.toMillis?.() || (a.createdAt?.seconds || 0) * 1000;
+      const bTime = b.createdAt?.toMillis?.() || (b.createdAt?.seconds || 0) * 1000;
+      return bTime - aTime;
+    });
+    recordId = sorted[0].id;
+  } else {
+    const newRecordRef = await addDoc(
+      collection(db, 'progressDashboard', projectId, 'salesRecords'),
+      { phase: '', date: '', createdAt: serverTimestamp() }
+    );
+    recordId = newRecordRef.id;
+  }
+
+  const dueDate = addBusinessDays(baseDate, stageDef.standardDays);
+  const entryRef = doc(db, 'progressDashboard', projectId, 'salesRecords', recordId, 'entries', stageNaEntryId(stageNo));
+  await setDoc(entryRef, {
+    memoContent: '',
+    actionContent: stageDef.name,
+    actionDueDate: toDueDateString(dueDate),
+    actionAssignee: project?.representative || '',
+    actionStatus: 'active',
+    stageNaStage: stageNo,
+    createdAt: serverTimestamp()
+  });
+};
+
+/**
+ * ステージ完了 + NA連動。運用管理・NA管理のどちらからの完了操作もこれを使う
+ * 1. ステージをDoneにする（データの正を先に書く）
+ * 2. 同ステージのステージNAを完了にする
+ * 3. 次ステージのステージNAを生成（期日 = 今回の完了日時 + 標準営業日数）
+ * @param {string} projectId - 案件ID
+ * @param {number} stageNo - 完了にするステージ番号
+ */
+export const completeStageWithSync = async (projectId, stageNo) => {
+  await completeStage(projectId, stageNo);
+
+  try {
+    const [project, stageNas] = await Promise.all([
+      fetchProjectById(projectId),
+      fetchStageNaEntries(projectId)
+    ]);
+
+    // 同ステージのNAを完了に（手動削除済みなら対象なし）
+    await Promise.all(
+      stageNas
+        .filter(e => e.stageNaStage === stageNo && e.actionStatus !== 'done')
+        .map(e => updateSalesEntry(projectId, e.recordId, e.id, { actionStatus: 'done' }))
+    );
+
+    // 次ステージのNAを生成。期日はserverTimestampの確定値から計算
+    const completedDate = timestampToDate(project?.stageProgress?.completedAt?.[String(stageNo)]) || new Date();
+    await ensureStageNa(projectId, project, stageNo + 1, completedDate, stageNas);
+  } catch (error) {
+    // NA連動の失敗でステージ記録は巻き戻さない（stageProgressが正）
+    console.error('Failed to sync stage NA on complete:', error);
+  }
+};
+
+/**
+ * ステージ取消 + NA連動
+ * 1. ステージの完了を取り消す
+ * 2. 同ステージのステージNAを未完了（todo）に戻す
+ * 3. 取消で無効になった次ステージの未完了ステージNAを削除（再Done時に新しい期日で再生成される）
+ * @param {string} projectId - 案件ID
+ * @param {number} stageNo - 取り消すステージ番号
+ */
+export const undoStageWithSync = async (projectId, stageNo) => {
+  await undoStage(projectId, stageNo);
+
+  try {
+    const stageNas = await fetchStageNaEntries(projectId);
+    await Promise.all([
+      ...stageNas
+        .filter(e => e.stageNaStage === stageNo && e.actionStatus === 'done')
+        .map(e => updateSalesEntry(projectId, e.recordId, e.id, { actionStatus: 'active', reviewAssignee: '' })),
+      ...stageNas
+        .filter(e => e.stageNaStage === stageNo + 1 && e.actionStatus !== 'done')
+        .map(e => deleteSalesEntry(projectId, e.recordId, e.id))
+    ]);
+  } catch (error) {
+    console.error('Failed to sync stage NA on undo:', error);
   }
 };
 
@@ -864,6 +1059,7 @@ export const fetchAllNextActions = async () => {
               subCol: subColName,
               companyName: projectData.companyName || '',
               productName: projectData.productName || '',
+              confirmedDate: projectData.confirmedDate || '', // 進行ステージ対象判定用（受注日）
               ...entry
             });
           }

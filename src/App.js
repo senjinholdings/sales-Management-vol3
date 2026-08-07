@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget } from 'react-icons/fi';
+import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget, FiClock } from 'react-icons/fi';
 import { analyzeMeetingNotes, isGPTServiceAvailable, debugAPIStatus, checkAPIKeyStatus } from './services/gptService.js';
 import LoginPage from './components/LoginPage.js';
 import ProtectedRoute from './components/ProtectedRoute.js';
@@ -30,6 +30,7 @@ import CoreCustomerPage from './components/CoreCustomerPage.js';
 import AccountSalesDashboard from './components/AccountSalesDashboard.js';
 import AccountDealsListPage from './components/AccountDealsListPage.js';
 import KeyAccountMasterPage from './components/KeyAccountMasterPage.js';
+import DailyTimerPage from './components/DailyTimerPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import { db } from './firebase.js';
@@ -481,6 +482,12 @@ function AdminApp() {
               {introducerAttentionCount > 0 && <NavBadge>{introducerAttentionCount}</NavBadge>}
             </NavLink>
           </NavItem>
+          <NavItem>
+            <NavLink to="/daily-timer" onClick={closeMobileMenu}>
+              <FiClock />
+              日報
+            </NavLink>
+          </NavItem>
           <NavDropdown className={openDropdown === 'master' ? 'mobile-open' : ''}>
             <NavDropdownButton onClick={() => toggleDropdown('master')}>
               <FiUsers />
@@ -558,6 +565,7 @@ function AdminApp() {
           <Route path="/account-sales-dashboard" element={<AccountSalesDashboard />} />
           <Route path="/account-deals-list" element={<AccountDealsListPage />} />
           <Route path="/key-accounts" element={<KeyAccountMasterPage />} />
+          <Route path="/daily-timer" element={<DailyTimerPage />} />
         </Routes>
       </MainContent>
       </AppContainer>

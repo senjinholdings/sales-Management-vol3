@@ -16,7 +16,9 @@ import {
   addSalesEntry,
   addSalesRecord,
   fetchSalesRecords,
-  ensureStandaloneNaProject
+  ensureStandaloneNaProject,
+  completeStageWithSync,
+  undoStageWithSync
 } from '../services/projectService.js';
 import {
   fetchAllIntroducerNextActions,
@@ -29,6 +31,7 @@ import {
   updateIntroducerNaComment,
   deleteIntroducerNaComment
 } from '../services/introducerNaService.js';
+import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 import { fetchAllStaff } from '../services/staffService.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
 import ScheduleConfirmModal from './ScheduleConfirmModal.js';
@@ -246,6 +249,18 @@ const ReviewBadge = styled.span`
   font-weight: 600;
   color: white;
   background: #f39c12;
+`;
+
+const StageLinkBadge = styled.span`
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #1e7e34;
+  background: #d4edda;
+  border: 1px solid #b7e1c3;
+  white-space: nowrap;
 `;
 
 const CardAssignee = styled.span`
@@ -964,6 +979,55 @@ const NextActionManagementPage = () => {
   };
 
   const updateNaStatus = async (na, newStatus, extraFields = {}) => {
+    // ステージ連動NA: done/done解除はステージ操作として扱う（データの正はstageProgress）
+    // 進行ステージの対象外案件（基準日より前の受注など）のステージNAは通常NAとして扱う
+    if (na.stageNaStage != null) {
+      const currentStatus = na.actionStatus || STATUS_ACTIVE;
+      try {
+        if (newStatus === STATUS_DONE && currentStatus !== STATUS_DONE) {
+          const project = await fetchProjectById(na.projectId);
+          if (isStageTargetProject(project)) {
+            const state = getStageState(project?.stageProgress);
+            if (!state.allDone && state.currentStage === na.stageNaStage) {
+              // 現在ステージのNA完了 → ステージを進める（NA完了・次ステージNA生成も同期される）
+              await completeStageWithSync(na.projectId, na.stageNaStage);
+              await loadNas();
+              if (salesPanel) setSalesPanelKey(prev => prev + 1);
+              return;
+            }
+            if (!state.allDone && na.stageNaStage > state.currentStage) {
+              alert('先のステージのNAは完了にできません。先に前のステージを完了してください');
+              return;
+            }
+            // ステージ側は完了済みでNAだけ残っているズレ → 通常のステータス更新で追従させる
+          }
+        } else if (currentStatus === STATUS_DONE && newStatus !== STATUS_DONE) {
+          const project = await fetchProjectById(na.projectId);
+          if (isStageTargetProject(project)) {
+            const state = getStageState(project?.stageProgress);
+            if (state.undoableStage !== na.stageNaStage) {
+              alert('このNAはステージ連動のため、ここでは完了を取り消せません（取り消せるのは直前に完了したステージのみです）');
+              return;
+            }
+            if (!window.confirm(`「${na.actionContent}」のステージ完了を取り消しますか？`)) return;
+            await undoStageWithSync(na.projectId, na.stageNaStage);
+            // 取消でNAはtodoに戻る。todo以外の列へのドロップなら指定の列まで移動させる
+            if (newStatus !== STATUS_ACTIVE || Object.keys(extraFields).length > 0) {
+              await updateSalesEntry(na.projectId, na.recordId, na.id,
+                { actionStatus: newStatus, ...extraFields }, na.subCol || 'salesRecords');
+            }
+            await loadNas();
+            if (salesPanel) setSalesPanelKey(prev => prev + 1);
+            return;
+          }
+        }
+        // done⇔done以外が絡まない列移動、および対象外案件のステージNAは通常処理へ
+      } catch (error) {
+        console.error('Failed to sync stage from NA status:', error);
+        alert('ステージ連動の更新に失敗しました');
+        return;
+      }
+    }
     try {
       if (na.isIntroducerNa) {
         await updateIntroducerNextActionStatus(na.introducerId, na.id, newStatus);
@@ -1474,6 +1538,9 @@ const NextActionManagementPage = () => {
                                 {dueStatus === 'urgent' && ' 急'}
                               </DueBadge>
                             )}
+                            {na.stageNaStage != null && isStageTargetProject(na) && (
+                              <StageLinkBadge>ステージ連動</StageLinkBadge>
+                            )}
                             {na.isIntroducerNa ? (
                               <span>紹介者: {na.introducerName}</span>
                             ) : na.projectId !== STANDALONE_NA_PROJECT_ID && (
@@ -1585,6 +1652,14 @@ const NextActionManagementPage = () => {
               </div>
             </PanelHeader>
             <PanelBody>
+              {selectedNa.stageNaStage != null && isStageTargetProject(selectedNa) && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <StageLinkBadge style={{ fontSize: '0.7rem' }}>ステージ連動</StageLinkBadge>
+                  <span style={{ fontSize: '0.75rem', color: '#888', marginLeft: '0.5rem' }}>
+                    受注後の進行ステージと同期しています（doneにするとステージが進みます）
+                  </span>
+                </div>
+              )}
               {/* NA内容（クリックで編集） */}
               <DetailField>
                 <DetailLabel>NA内容</DetailLabel>

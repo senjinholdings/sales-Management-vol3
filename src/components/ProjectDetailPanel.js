@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget, FiFileText, FiCalendar, FiCheckSquare, FiShare2 } from 'react-icons/fi';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
 import ContractRequestModal from './ContractRequestModal.js';
 import ScheduleConfirmModal from './ScheduleConfirmModal.js';
 import DetailConfirmModal from './DetailConfirmModal.js';
+import StageProgressBar from './StageProgressBar.js';
+import ContractBillingSection from './ContractBillingSection.js';
 import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { PROJECT_RANKS, STATUSES, STATUS_COLORS, CONTINUATION_STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
 import PhaseTooltip from './PhaseTooltip.js';
@@ -21,8 +23,9 @@ import {
   addOperationMemo, fetchOperationMemos, updateOperationMemo, deleteOperationMemo,
   addSalesEntry, fetchSalesEntries, deleteSalesEntry, updateSalesEntry, updateSalesEntryStatus,
   addNaComment, fetchNaComments, updateNaComment, deleteNaComment,
-  fetchProjectById
+  fetchProjectById, completeStageWithSync, undoStageWithSync
 } from '../services/projectService.js';
+import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
 // ============================================
 // 定数
@@ -865,7 +868,7 @@ const OperationMemoSection = ({ projectId }) => {
 // タブ1: 運用者向け
 // ============================================
 
-const OperatorTab = ({ project, onProjectUpdate }) => {
+const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
   const [formData, setFormData] = useState({
     rank: project.rank || '',
     clientGoal: project.clientGoal || ''
@@ -1100,6 +1103,11 @@ const OperatorTab = ({ project, onProjectUpdate }) => {
         </ResponsiveContainer>
       </ChartContainer>
 
+      {/* 契約・請求管理（運用管理から開いた場合のみ。月次売上管理=クライアント商品売上とは別概念） */}
+      {showBilling && (
+        <ContractBillingSection project={project} onProjectUpdate={onProjectUpdate} />
+      )}
+
       {/* 運用メモ */}
       <OperationMemoSection projectId={project.id} />
     </div>
@@ -1126,6 +1134,9 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   const [currentPhase, setCurrentPhase] = useState(record.phase || 'フェーズ1');
   const [isLoading, setIsLoading] = useState(false);
   const [proposalMenuList, setProposalMenuList] = useState([]);
+  const [entriesLoaded, setEntriesLoaded] = useState(false);
+  // Dead時のNA自動セット制御
+  const autoDeadNaSetRef = useRef(false);
 
   /** 提案メニューマスターを取得 */
   useEffect(() => {
@@ -1152,6 +1163,7 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       setIsLoading(true);
       const data = await fetchSalesEntries(projectId, record.id, subCol);
       setEntries(data);
+      setEntriesLoaded(true);
     } catch (error) {
       console.error('Failed to load sales entries:', error);
     } finally {
@@ -1169,6 +1181,62 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       setCurrentPhase(entries[0].phase);
     }
   }, [entries]);
+
+  // フェーズ3滞留時の決裁者NA自動セットは廃止（増田版ProgressDashboardのフェーズ4滞留チェックに一本化）
+
+  // フェーズがDeadの場合、3ヶ月後再アプローチのNAを自動登録
+  useEffect(() => {
+    if (autoDeadNaSetRef.current || !entriesLoaded) return;
+    const AUTO_DEAD_NA_CONTENT = '3ヶ月後に再アプローチの連絡を入れる';
+
+    const persistedPhase = entries[0]?.phase || record.phase;
+    if (persistedPhase !== 'Dead') return;
+
+    // 同内容の未完了NAが既に登録済みならスキップ（二重登録防止）
+    if (entries.some(e => e.actionContent === AUTO_DEAD_NA_CONTENT && e.actionStatus !== 'done')) return;
+
+    // Deadになった日: 最新の「→Dead」変更エントリ → 記録の登録日 → 記録の作成日時
+    const deadEntry = entries.find(e => e.phaseChange && e.phaseChange.endsWith('→Dead'));
+    let deadStart = null;
+    if (deadEntry?.createdAt) {
+      deadStart = deadEntry.createdAt.toDate ? deadEntry.createdAt.toDate() : new Date(deadEntry.createdAt);
+    } else if (record.date) {
+      deadStart = new Date(record.date);
+    } else if (record.createdAt) {
+      deadStart = record.createdAt.toDate ? record.createdAt.toDate() : new Date(record.createdAt);
+    }
+    if (!deadStart || isNaN(deadStart.getTime())) return;
+
+    // 期日: Deadになった日から3ヶ月後（ローカル日付で整形）
+    const due = new Date(deadStart);
+    due.setMonth(due.getMonth() + 3);
+    const dueDate = `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
+
+    // 担当者: マスターのフルネーム表記（例: 荒幡 輝）に合わせる
+    const allReps = [...new Set([...(salesReps || []), ...(operators || [])])];
+    const assignee = allReps.find(name => name.includes('荒幡')) || '荒幡';
+
+    // 同一マウント内での再実行防止（await前に立てる）
+    autoDeadNaSetRef.current = true;
+
+    (async () => {
+      try {
+        await addSalesEntry(projectId, record.id, {
+          memoContent: '',
+          actionContent: AUTO_DEAD_NA_CONTENT,
+          actionDueDate: dueDate,
+          actionAssignee: assignee,
+          phase: persistedPhase,
+          phaseChange: ''
+        }, subCol);
+        await loadEntries();
+      } catch (error) {
+        console.error('Failed to auto-register dead re-approach NA:', error);
+        // 失敗時は次回レンダリングで再試行できるようにフラグを戻す
+        autoDeadNaSetRef.current = false;
+      }
+    })();
+  }, [entriesLoaded, entries, record, salesReps, operators, projectId, subCol, loadEntries]);
 
   /** NA行の値を更新するヘルパー */
   const updateNaItem = (index, field, value) => {
@@ -1255,6 +1323,46 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   /** NAステータス切替（active⇔done、他ステータスからはdoneへ） */
   const handleToggleNaStatus = async (entryId, currentStatus) => {
     const newStatus = currentStatus === 'done' ? 'active' : 'done';
+
+    // ステージ連動NA: 完了/取消はステージ操作として同期する（データの正はstageProgress）
+    // 進行ステージの対象外案件（基準日より前の受注など）のステージNAは通常NAとして扱う
+    const entry = entries.find(e => e.id === entryId);
+    if (entry?.stageNaStage != null) {
+      try {
+        const project = await fetchProjectById(projectId);
+        if (isStageTargetProject(project)) {
+          const state = getStageState(project?.stageProgress);
+          if (newStatus === 'done') {
+            if (!state.allDone && entry.stageNaStage > state.currentStage) {
+              alert('先のステージのNAは完了にできません。先に前のステージを完了してください');
+              return;
+            }
+            if (!state.allDone && state.currentStage === entry.stageNaStage) {
+              // 現在ステージのNA完了 → ステージを進める（次ステージNAの生成も同期される）
+              await completeStageWithSync(projectId, entry.stageNaStage);
+              await loadEntries();
+              return;
+            }
+            // ステージ側は完了済みでNAだけ残っているズレは通常更新で追従させる
+          } else {
+            if (state.undoableStage !== entry.stageNaStage) {
+              alert('このNAはステージ連動のため、ここでは完了を取り消せません（取り消せるのは直前に完了したステージのみです）');
+              return;
+            }
+            if (!window.confirm(`「${entry.actionContent}」のステージ完了を取り消しますか？`)) return;
+            await undoStageWithSync(projectId, entry.stageNaStage);
+            await loadEntries();
+            return;
+          }
+        }
+        // 対象外案件のステージNAはそのまま通常のトグル処理へ
+      } catch (error) {
+        console.error('Failed to sync stage from NA status:', error);
+        alert('ステージ連動の更新に失敗しました');
+        return;
+      }
+    }
+
     try {
       await updateSalesEntryStatus(projectId, record.id, entryId, newStatus, subCol);
       setEntries(prev => prev.map(e =>
@@ -2839,7 +2947,7 @@ const KeyPersonTab = ({ project }) => {
 // メインコンポーネント
 // ============================================
 
-const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8Submitted }) => {
+const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8Submitted, hideSalesTab, showStageProgress = false }) => {
   const [activeTab, setActiveTab] = useState(mode === 'newCase' ? 'sales' : 'operator');
   const [operators, setOperators] = useState([]);
   const [salesReps, setSalesReps] = useState([]);
@@ -2973,6 +3081,13 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
     }
   };
 
+  const briefButton = (
+    <BriefButton onClick={() => setShowBriefModal(true)}>
+      <FiTarget />
+      第一想起 実施可否すり合わせ
+    </BriefButton>
+  );
+
   return (
     <>
     <Overlay onClick={onClose}>
@@ -2983,10 +3098,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
         <PanelHeader>
           {mode === 'newCase' && (
             <HeaderActions>
-              <BriefButton onClick={() => setShowBriefModal(true)}>
-                <FiTarget />
-                第一想起 実施可否すり合わせ
-              </BriefButton>
+              {briefButton}
               <ScheduleButton onClick={() => setShowScheduleModal(true)}>
                 <FiCalendar />
                 ①進行スケジュール確認
@@ -3062,7 +3174,17 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
               </HeaderItem>
             ) : null}
           </HeaderGrid>
+          {mode !== 'newCase' && (
+            <HeaderActions style={{ marginTop: '0.75rem', marginBottom: 0 }}>
+              {briefButton}
+            </HeaderActions>
+          )}
         </PanelHeader>
+
+        {/* 受注後の進行ステージ（運用管理から開いた場合のみ。基準日以降に受注した対象案件に限る） */}
+        {showStageProgress && mode !== 'newCase' && isStageTargetProject(project) && (
+          <StageProgressBar project={project} onProjectUpdate={onProjectUpdate} />
+        )}
 
         {/* タブバー（newCaseモードでは非表示） */}
         {mode !== 'newCase' && (
@@ -3073,12 +3195,14 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
             >
               運用者向け
             </Tab>
-            <Tab
-              $active={activeTab === 'sales'}
-              onClick={() => setActiveTab('sales')}
-            >
-              営業向け
-            </Tab>
+            {!hideSalesTab && (
+              <Tab
+                $active={activeTab === 'sales'}
+                onClick={() => setActiveTab('sales')}
+              >
+                営業向け
+              </Tab>
+            )}
             <Tab
               $active={activeTab === 'keyPerson'}
               onClick={() => setActiveTab('keyPerson')}
@@ -3094,9 +3218,10 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
             <OperatorTab
               project={project}
               onProjectUpdate={onProjectUpdate}
+              showBilling={showStageProgress}
             />
           )}
-          {activeTab === 'sales' && (
+          {activeTab === 'sales' && !(hideSalesTab && mode !== 'newCase') && (
             <SalesTab project={project} operators={operators} salesReps={salesReps} subCol={salesSubCol} onPhaseChange={handlePhaseChange} onPhase8Submitted={onPhase8Submitted} mode={mode} />
           )}
           {activeTab === 'keyPerson' && mode !== 'newCase' && (

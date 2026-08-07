@@ -930,6 +930,8 @@ function ProgressDashboard() {
     if (!addForm.companyName.trim() || !addForm.productName.trim()) return;
     try {
       setIsSaving(true);
+      const isPhase8 = (addForm.status || 'フェーズ1') === 'フェーズ8';
+      const today = new Date().toISOString().split('T')[0];
       const newDeal = {
         companyName: addForm.companyName.trim(),
         introducer: addForm.introducer.trim(),
@@ -939,10 +941,14 @@ function ProgressDashboard() {
         status: addForm.status || 'フェーズ1',
         expectedBudget: addForm.expectedBudget ? Number(addForm.expectedBudget) : null,
         rank: addForm.rank || '',
-        isExistingProject: false,
+        // フェーズ8で登録された場合はそのまま既存案件として扱う（複製ドキュメントは作らない）
+        isExistingProject: isPhase8,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
+      if (isPhase8) {
+        newDeal.confirmedDate = today;
+      }
       if (addForm.leadSource === 'パートナー') {
         newDeal.introducerId = addForm.introducerId ? parseInt(addForm.introducerId) : 0;
         newDeal.partnerRepresentative = addForm.partnerRepresentative || null;
@@ -950,7 +956,6 @@ function ProgressDashboard() {
       const docRef = await addDoc(collection(db, 'progressDashboard'), newDeal);
 
       // 営業記録を自動作成
-      const today = new Date().toISOString().split('T')[0];
       await addSalesRecord(docRef.id, {
         phase: addForm.status || 'フェーズ1',
         budget: addForm.expectedBudget ? Number(addForm.expectedBudget) : '',
@@ -963,28 +968,9 @@ function ProgressDashboard() {
         createdAt: new Date()
       }, 'newCaseSalesRecords');
 
-      // フェーズ8の場合は既存側にも別レコードを作成（CSV取込と同じ処理）
-      if ((addForm.status || 'フェーズ1') === 'フェーズ8') {
-        const existingDeal = {
-          companyName: addForm.companyName.trim(),
-          introducer: addForm.introducer.trim(),
-          productName: addForm.productName.trim(),
-          leadSource: addForm.leadSource,
-          representative: addForm.representative,
-          status: 'フェーズ8',
-          expectedBudget: addForm.expectedBudget ? Number(addForm.expectedBudget) : null,
-          rank: addForm.rank || '',
-          isExistingProject: true,
-          confirmedDate: today,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp()
-        };
-        if (addForm.leadSource === 'パートナー') {
-          existingDeal.introducerId = addForm.introducerId ? parseInt(addForm.introducerId) : 0;
-          existingDeal.partnerRepresentative = addForm.partnerRepresentative || null;
-        }
-        const existingRef = await addDoc(collection(db, 'progressDashboard'), existingDeal);
-        await addSalesRecord(existingRef.id, {
+      // フェーズ8の場合は同じドキュメントに成約の営業記録を追加（成約案件一覧用）
+      if (isPhase8) {
+        await addSalesRecord(docRef.id, {
           phase: 'フェーズ8',
           budget: addForm.expectedBudget ? Number(addForm.expectedBudget) : 0,
           date: today,
@@ -1069,8 +1055,8 @@ function ProgressDashboard() {
         // マスターに存在しない担当者は空欄にする
         const rep = salesRepresentatives.includes(row.representative) ? row.representative : '';
 
-        // 新規側のレコード（常にisExistingProject: falseで新規一覧に表示）
-        const docRef = await addDoc(collection(db, 'progressDashboard'), {
+        // フェーズ8は既存案件として1ドキュメントのみ登録する（複製ドキュメントは作らない）
+        const dealData = {
           companyName: row.companyName,
           introducer: row.introducer === '-' ? '' : row.introducer,
           productName: row.productName,
@@ -1079,31 +1065,22 @@ function ProgressDashboard() {
           status,
           expectedBudget: row.expectedBudget,
           rank: row.rank,
-          isExistingProject: false,
+          isExistingProject: isPhase8,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
-        });
-
-        // フェーズ8の場合は既存側にも別レコードを作成
+        };
         if (isPhase8) {
-          const existingRef = await addDoc(collection(db, 'progressDashboard'), {
-            companyName: row.companyName,
-            introducer: row.introducer === '-' ? '' : row.introducer,
-            productName: row.productName,
-            leadSource: row.leadSource,
-            representative: rep,
-            status: 'フェーズ8',
-            expectedBudget: row.expectedBudget,
-            rank: row.rank,
-            isExistingProject: true,
-            confirmedDate: new Date().toISOString().split('T')[0],
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          });
-          await addSalesRecord(existingRef.id, {
+          dealData.confirmedDate = new Date().toISOString().split('T')[0];
+        }
+        const docRef = await addDoc(collection(db, 'progressDashboard'), dealData);
+
+        // フェーズ8の場合は成約の営業記録を追加（成約案件一覧用）
+        if (isPhase8) {
+          await addSalesRecord(docRef.id, {
             phase: 'フェーズ8',
             budget: row.expectedBudget || 0,
             date: new Date().toISOString().split('T')[0],
+            salesRep: rep,
             recordType: '新規',
             createdAt: new Date()
           });
@@ -1168,38 +1145,20 @@ function ProgressDashboard() {
     try {
       setIsSavingOrder(true);
 
-      // 新規側のレコードはフェーズ8に更新するが、isExistingProjectはfalseのまま残す
+      // 同一ドキュメントを既存案件へ移行（複製ドキュメントは作らない）
       const dealRef = doc(db, 'progressDashboard', selectedDeal.id);
       await updateDoc(dealRef, {
         status: 'フェーズ8',
-        confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],
-        receivedOrderDate: orderData.receivedOrderDate,
-        receivedOrderAmount: orderData.receivedOrderAmount,
-        contractRequested: true,
-        updatedAt: serverTimestamp()
-      });
-
-      // 既存側に別レコードを作成
-      const existingRef = await addDoc(collection(db, 'progressDashboard'), {
-        companyName: selectedDeal.companyName,
-        introducer: selectedDeal.introducer || '',
-        productName: selectedDeal.productName,
-        leadSource: selectedDeal.leadSource || '',
-        representative: selectedDeal.representative || '',
-        status: 'フェーズ8',
-        expectedBudget: orderData.receivedOrderAmount,
-        rank: selectedDeal.rank || '',
         isExistingProject: true,
         confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],
         receivedOrderDate: orderData.receivedOrderDate,
         receivedOrderAmount: orderData.receivedOrderAmount,
         contractRequested: true,
-        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
-      // 既存側のレコードに営業記録を追加
-      await addSalesRecord(existingRef.id, {
+      // 成約の営業記録を追加（成約案件一覧はこのレコードを表示）
+      await addSalesRecord(selectedDeal.id, {
         phase: 'フェーズ8',
         budget: orderData.receivedOrderAmount,
         confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],

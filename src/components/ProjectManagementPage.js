@@ -4,7 +4,7 @@ import styled from 'styled-components';
 import { FiSearch, FiChevronDown, FiChevronUp, FiPlus, FiTrash2, FiUpload, FiEdit3 } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore';
-import { fetchProjects, fetchProjectSalesData, updateProject } from '../services/projectService.js';
+import { fetchProjects, fetchProjectSalesData, updateProject, fetchKeyPersons } from '../services/projectService.js';
 import { CONTINUATION_STATUS_COLORS } from '../data/constants.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
 
@@ -429,8 +429,11 @@ const ProjectManagementPage = () => {
       // 各プロジェクトの営業データを並列取得
       const dataEntries = await Promise.all(
         data.map(async (p) => {
-          const salesData = await fetchProjectSalesData(p.id);
-          return [p.id, salesData];
+          const [salesData, keyPersons] = await Promise.all([
+            fetchProjectSalesData(p.id),
+            fetchKeyPersons(p.id),
+          ]);
+          return [p.id, { ...salesData, keyPersonCount: keyPersons.length }];
         })
       );
       const map = Object.fromEntries(dataEntries);
@@ -504,6 +507,7 @@ const ProjectManagementPage = () => {
         activeNaEntries,
         recordCount: records.length,
         latestRecord,
+        hasKeyPerson: (salesData.keyPersonCount || 0) > 0,
       };
     });
   }, [projects, salesDataMap]);
@@ -737,6 +741,8 @@ const ProjectManagementPage = () => {
                 <TableHeaderCell $sortable onClick={() => handleSort('latestNaDueDate')}>
                   期日{renderSortIcon('latestNaDueDate')}
                 </TableHeaderCell>
+                <TableHeaderCell>決裁者</TableHeaderCell>
+                <TableHeaderCell>継続提案</TableHeaderCell>
                 <TableHeaderCell>締結</TableHeaderCell>
                 <TableHeaderCell style={{ width: '40px' }}></TableHeaderCell>
               </tr>
@@ -795,6 +801,16 @@ const ProjectManagementPage = () => {
                   <TableCell>
                     {p.latestNaDueDate || '-'}
                     {renderDueDateBadge(p.latestNaDueDate)}
+                  </TableCell>
+                  <TableCell style={{ textAlign: 'center' }}>
+                    {p.hasKeyPerson ? (
+                      <span style={{ color: '#27ae60', fontWeight: 'bold' }}>✓</span>
+                    ) : '-'}
+                  </TableCell>
+                  <TableCell style={{ textAlign: 'center' }}>
+                    {p.continuationStatus === '新規提案中' ? (
+                      <span style={{ color: '#27ae60', fontWeight: 'bold' }}>✓</span>
+                    ) : '-'}
                   </TableCell>
                   <TableCell style={{ textAlign: 'center' }}>
                     {p.contractRequested ? (

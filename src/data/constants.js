@@ -152,3 +152,23 @@ export const FOLLOW_UP_PHASE_COLORS = {
 
 // 案件管理ランク
 export const PROJECT_RANKS = ['S', 'A', 'B', 'C'];
+
+// 契約・請求管理: 予算の扱い（上限厳守=月次予算額で頭打ち / 超過可=計算結果をそのまま採用）
+export const BUDGET_POLICIES = ['上限厳守', '超過可'];
+
+// 受注後の進行ステージ（運用管理）
+// standardDays: 前ステージ完了からの標準営業日数（土日除外）。null は期限なし（起点・完了）
+// 進行ステージの対象基準日（固定値）
+// この日以降に受注（confirmedDate）した案件のみ進行ステージ管理の対象。
+// それより前の受注や受注日不明の案件はステッパー非表示・遅延一覧対象外・NA連動なし
+export const STAGE_TARGET_START_DATE = '2026-07-15';
+
+export const PROJECT_STAGES = [
+  { no: 1, name: '契約締結', standardDays: null },
+  { no: 2, name: 'サンプル商品を送ってもらう', standardDays: 2 },
+  { no: 3, name: 'キックオフmtgの調整打診', standardDays: 1 },
+  { no: 4, name: '企画会議の調整打診', standardDays: 1 },
+  { no: 5, name: '撮影', standardDays: 3 },
+  { no: 6, name: '初稿の共有', standardDays: 1 },
+  { no: 7, name: 'プロジェクト開始', standardDays: null },
+];
