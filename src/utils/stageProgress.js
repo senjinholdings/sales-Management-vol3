@@ -1,4 +1,4 @@
-import { PROJECT_STAGES } from '../data/constants.js';
+import { PROJECT_STAGES, STAGE_TARGET_START_DATE } from '../data/constants.js';
 import { addBusinessDays, countBusinessDaysAfter } from './businessDays.js';
 
 /**
@@ -22,6 +22,16 @@ const toDate = (ts) => {
 
 /** ステージ番号から定義を取得 */
 export const getStageDef = (stageNo) => PROJECT_STAGES.find(s => s.no === stageNo) || null;
+
+/**
+ * 進行ステージの対象案件か判定する
+ * 基準日（STAGE_TARGET_START_DATE）以降に受注（confirmedDate）した案件のみ対象。
+ * 受注日が無い・取得できない案件は対象外（安全側）
+ * @param {object|null|undefined} project - confirmedDateを持つ案件データ（NA一覧の行など部分オブジェクトでも可）
+ * @returns {boolean}
+ */
+export const isStageTargetProject = (project) =>
+  !!project?.confirmedDate && project.confirmedDate >= STAGE_TARGET_START_DATE;
 
 /**
  * stageProgress を正規化して状態を返す

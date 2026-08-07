@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { FiCheck, FiRotateCcw } from 'react-icons/fi';
 import { PROJECT_STAGES } from '../data/constants.js';
 import { getStageState, getStageDef, getOverdueBusinessDays, formatStageDate } from '../utils/stageProgress.js';
-import { completeStage, undoStage, fetchProjectById } from '../services/projectService.js';
+import { completeStageWithSync, undoStageWithSync, fetchProjectById } from '../services/projectService.js';
 
 // 矢羽根の切り込み深さ(px)
 const ARROW_DEPTH = 12;
@@ -155,6 +155,11 @@ const StageProgressBar = ({ project, onProjectUpdate }) => {
   const [stageProgress, setStageProgress] = useState(project.stageProgress || null);
   const [saving, setSaving] = useState(false);
 
+  // NA管理・営業記録側のステージ連動操作で親のprojectが更新された場合に追従する
+  useEffect(() => {
+    setStageProgress(project.stageProgress || null);
+  }, [project.stageProgress]);
+
   const state = getStageState(stageProgress);
   const { isStarted, currentStage, completedAt, allDone, deadline, undoableStage } = state;
   const overdueDays = getOverdueBusinessDays(deadline);
@@ -173,7 +178,7 @@ const StageProgressBar = ({ project, onProjectUpdate }) => {
     if (saving) return;
     try {
       setSaving(true);
-      await completeStage(project.id, currentStage);
+      await completeStageWithSync(project.id, currentStage);
       await refresh();
     } catch (error) {
       console.error('ステージ完了の記録に失敗:', error);
@@ -189,7 +194,7 @@ const StageProgressBar = ({ project, onProjectUpdate }) => {
     if (!window.confirm(`「${def?.name}」の完了を取り消しますか？`)) return;
     try {
       setSaving(true);
-      await undoStage(project.id, undoableStage);
+      await undoStageWithSync(project.id, undoableStage);
       await refresh();
     } catch (error) {
       console.error('ステージ取り消しに失敗:', error);

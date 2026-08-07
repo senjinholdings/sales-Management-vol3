@@ -19,8 +19,10 @@ import {
   addContactLog, fetchContactLogs, updateContactLog, deleteContactLog,
   addOperationMemo, fetchOperationMemos, updateOperationMemo, deleteOperationMemo,
   addSalesEntry, fetchSalesEntries, deleteSalesEntry, updateSalesEntry, updateSalesEntryStatus,
-  addNaComment, fetchNaComments, updateNaComment, deleteNaComment
+  addNaComment, fetchNaComments, updateNaComment, deleteNaComment,
+  fetchProjectById, completeStageWithSync, undoStageWithSync
 } from '../services/projectService.js';
+import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
 // ============================================
 // 定数
@@ -1337,6 +1339,46 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   /** NAステータス切替（active⇔done、他ステータスからはdoneへ） */
   const handleToggleNaStatus = async (entryId, currentStatus) => {
     const newStatus = currentStatus === 'done' ? 'active' : 'done';
+
+    // ステージ連動NA: 完了/取消はステージ操作として同期する（データの正はstageProgress）
+    // 進行ステージの対象外案件（基準日より前の受注など）のステージNAは通常NAとして扱う
+    const entry = entries.find(e => e.id === entryId);
+    if (entry?.stageNaStage != null) {
+      try {
+        const project = await fetchProjectById(projectId);
+        if (isStageTargetProject(project)) {
+          const state = getStageState(project?.stageProgress);
+          if (newStatus === 'done') {
+            if (!state.allDone && entry.stageNaStage > state.currentStage) {
+              alert('先のステージのNAは完了にできません。先に前のステージを完了してください');
+              return;
+            }
+            if (!state.allDone && state.currentStage === entry.stageNaStage) {
+              // 現在ステージのNA完了 → ステージを進める（次ステージNAの生成も同期される）
+              await completeStageWithSync(projectId, entry.stageNaStage);
+              await loadEntries();
+              return;
+            }
+            // ステージ側は完了済みでNAだけ残っているズレは通常更新で追従させる
+          } else {
+            if (state.undoableStage !== entry.stageNaStage) {
+              alert('このNAはステージ連動のため、ここでは完了を取り消せません（取り消せるのは直前に完了したステージのみです）');
+              return;
+            }
+            if (!window.confirm(`「${entry.actionContent}」のステージ完了を取り消しますか？`)) return;
+            await undoStageWithSync(projectId, entry.stageNaStage);
+            await loadEntries();
+            return;
+          }
+        }
+        // 対象外案件のステージNAはそのまま通常のトグル処理へ
+      } catch (error) {
+        console.error('Failed to sync stage from NA status:', error);
+        alert('ステージ連動の更新に失敗しました');
+        return;
+      }
+    }
+
     try {
       await updateSalesEntryStatus(projectId, record.id, entryId, newStatus, subCol);
       setEntries(prev => prev.map(e =>
@@ -3102,8 +3144,8 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           )}
         </PanelHeader>
 
-        {/* 受注後の進行ステージ（運用管理から開いた場合のみ表示） */}
-        {showStageProgress && mode !== 'newCase' && (
+        {/* 受注後の進行ステージ（運用管理から開いた場合のみ。基準日以降に受注した対象案件に限る） */}
+        {showStageProgress && mode !== 'newCase' && isStageTargetProject(project) && (
           <StageProgressBar project={project} onProjectUpdate={onProjectUpdate} />
         )}
 

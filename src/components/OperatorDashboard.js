@@ -6,7 +6,7 @@ import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { fetchStaffByRole } from '../services/staffService.js';
 import { updateSalesRecord } from '../services/projectService.js';
 import { STATUS_COLORS, CONTINUATION_STATUS_COLORS } from '../data/constants.js';
-import { getStageState, getStageDef, getOverdueBusinessDays, formatStageDate } from '../utils/stageProgress.js';
+import { getStageState, getStageDef, getOverdueBusinessDays, formatStageDate, isStageTargetProject } from '../utils/stageProgress.js';
 import PhaseTooltip from './PhaseTooltip.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
 
@@ -500,6 +500,8 @@ function OperatorDashboard() {
     const now = new Date();
     return existingDeals
       .map(deal => {
+        // 基準日より前に受注した案件は進行ステージの対象外（遅延一覧に載せない）
+        if (!isStageTargetProject(deal)) return null;
         const state = getStageState(deal.stageProgress);
         if (!state.deadline) return null;
         const overdueDays = getOverdueBusinessDays(state.deadline, now);
