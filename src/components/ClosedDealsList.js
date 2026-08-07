@@ -214,20 +214,19 @@ function ClosedDealsList() {
       const newDealsMap = {};
       querySnapshot.forEach((docSnap) => {
         const d = docSnap.data();
-        if (d.isExistingProject === true) {
-          const deal = { id: docSnap.id, ...d };
-          dealsList.push(deal);
-          newDealsMap[docSnap.id] = deal;
-        }
+        const deal = { id: docSnap.id, ...d };
+        dealsList.push(deal);
+        newDealsMap[docSnap.id] = deal;
       });
       setDealsMap(newDealsMap);
 
-      // 各既存案件のsalesRecordsからフェーズ8のレコードを取得
+      // 各案件のsalesRecords(既存)/newCaseSalesRecords(新規)からフェーズ8のレコードを取得
       const allRecords = [];
       await Promise.all(dealsList.map(async (deal) => {
+        const subCol = deal.isExistingProject ? 'salesRecords' : 'newCaseSalesRecords';
         try {
           const salesSnap = await getDocs(
-            collection(db, 'progressDashboard', deal.id, 'salesRecords')
+            collection(db, 'progressDashboard', deal.id, subCol)
           );
           salesSnap.forEach(rec => {
             const rd = rec.data();
@@ -236,6 +235,7 @@ function ClosedDealsList() {
               id: `${deal.id}_${rec.id}`,
               dealId: deal.id,
               salesRecordId: rec.id,
+              subCol,
               date: rd.date || '',
               confirmedDate: rd.confirmedDate || rd.date || '',
               recordType: rd.recordType || '新規',
@@ -267,7 +267,7 @@ function ClosedDealsList() {
   // 成約日の保存（salesRecord個別に保存）
   const handleSaveConfirmedDate = async (rec) => {
     try {
-      await updateDoc(doc(db, 'progressDashboard', rec.dealId, 'salesRecords', rec.salesRecordId), {
+      await updateDoc(doc(db, 'progressDashboard', rec.dealId, rec.subCol || 'salesRecords', rec.salesRecordId), {
         confirmedDate: editingConfirmedDate,
       });
       setRecords(prev => prev.map(r =>
@@ -509,6 +509,7 @@ function ClosedDealsList() {
       {selectedProject && (
         <ProjectDetailPanel
           project={selectedProject}
+          mode={selectedProject.isExistingProject ? undefined : 'newCase'}
           onClose={() => {
             setSelectedProject(null);
             setSearchParams({});

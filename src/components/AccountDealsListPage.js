@@ -15,6 +15,13 @@ import { resolveSalesSubCol, getLatestRecordId } from '../utils/firstRecallNextA
 import { useUndoContext } from '../contexts/UndoContext.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
 
+/**
+ * アカウント営業（増田管轄の大型自主提案）専用の案件一覧ページ。
+ * ProgressDashboard.js（新規案件一覧）と全く同じ構成・機能をベースに、
+ * salesTrack==='account'の案件だけに絞って表示する。案件数が少ないため
+ * AccountSalesDashboard.jsの集計と同様、新規/既存を分けず1つの一覧にまとめる。
+ */
+
 // ============================================
 // 定数
 // ============================================
@@ -550,7 +557,7 @@ const EmptyText = styled.div`
 // メインコンポーネント
 // ============================================
 
-function ProgressDashboard() {
+function AccountDealsListPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState(STATUSES);
   const [representativeFilter, setRepresentativeFilter] = useState([]);
@@ -571,11 +578,17 @@ function ProgressDashboard() {
   const [selectedDeal, setSelectedDeal] = useState(null);
   const [naModalText, setNaModalText] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showAddExistingModal, setShowAddExistingModal] = useState(false);
   const [showCsvGuide, setShowCsvGuide] = useState(false);
   const [addForm, setAddForm] = useState({
     companyName: '', introducer: '', productName: '',
     leadSource: '', representative: '', status: 'フェーズ1',
     expectedBudget: '', rank: ''
+  });
+  // 既存案件（すでに成約済みの取引）をパイプライン(フェーズ1〜)を経由せず直接登録するための
+  // 簡易フォーム。既存案件一覧(ProjectManagementPage.js)の「既存案件を新規追加」と同じ考え方。
+  const [addExistingForm, setAddExistingForm] = useState({
+    companyName: '', introducer: '', productName: '', representative: '', expectedBudget: ''
   });
   const [isSaving, setIsSaving] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState({
@@ -689,8 +702,8 @@ function ProgressDashboard() {
       const progressItems = [];
       querySnapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        // アカウント営業の案件（大型自主提案）はAccountSalesDashboard.js専用で管理するため除外する
-        if (data.salesTrack === 'account') return;
+        // このページはアカウント営業（大型自主提案）専用の案件一覧。それ以外の案件は除外する
+        if (data.salesTrack !== 'account') return;
         progressItems.push({
           id: docSnap.id,
           ...data,
@@ -868,10 +881,10 @@ function ProgressDashboard() {
 
       const isValidProposalMenu = isPartnerView || (deal.proposalMenu !== '他社案件');
 
-      // 既存案件（isExistingProject: true）は新規一覧から除外
-      const isNewCase = !deal.isExistingProject;
+      // アカウント営業は案件数が少ないため、新規/既存を分けず1つの一覧にまとめて表示する
+      // （AccountSalesDashboard.jsの集計と同じ考え方）
 
-      return matchesSearch && matchesStatus && matchesRepresentative && matchesIntroducer && matchesPartnerCompany && isValidProposalMenu && isNewCase;
+      return matchesSearch && matchesStatus && matchesRepresentative && matchesIntroducer && matchesPartnerCompany && isValidProposalMenu;
     });
 
     // ソート
@@ -940,6 +953,7 @@ function ProgressDashboard() {
         expectedBudget: addForm.expectedBudget ? Number(addForm.expectedBudget) : null,
         rank: addForm.rank || '',
         isExistingProject: false,
+        salesTrack: 'account',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
@@ -975,6 +989,7 @@ function ProgressDashboard() {
           expectedBudget: addForm.expectedBudget ? Number(addForm.expectedBudget) : null,
           rank: addForm.rank || '',
           isExistingProject: true,
+          salesTrack: 'account',
           confirmedDate: today,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
@@ -1003,6 +1018,45 @@ function ProgressDashboard() {
       });
     } catch (error) {
       console.error('Failed to add deal:', error);
+      alert('案件の追加に失敗しました');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // 既存案件（すでに成約済みの取引）を直接追加。フェーズ1〜7のパイプラインを経由しない。
+  const handleAddExistingDeal = async () => {
+    if (!addExistingForm.companyName.trim() || !addExistingForm.productName.trim()) return;
+    try {
+      setIsSaving(true);
+      const today = new Date().toISOString().split('T')[0];
+      const docRef = await addDoc(collection(db, 'progressDashboard'), {
+        companyName: addExistingForm.companyName.trim(),
+        introducer: addExistingForm.introducer.trim(),
+        productName: addExistingForm.productName.trim(),
+        representative: addExistingForm.representative,
+        status: 'フェーズ8',
+        expectedBudget: addExistingForm.expectedBudget ? Number(addExistingForm.expectedBudget) : null,
+        isExistingProject: true,
+        salesTrack: 'account',
+        confirmedDate: today,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      await addSalesRecord(docRef.id, {
+        phase: 'フェーズ8',
+        budget: addExistingForm.expectedBudget ? Number(addExistingForm.expectedBudget) : 0,
+        date: today,
+        salesRep: addExistingForm.representative || '',
+        operatorRep: '',
+        recordType: '新規',
+        createdAt: new Date()
+      });
+
+      setShowAddExistingModal(false);
+      setAddExistingForm({ companyName: '', introducer: '', productName: '', representative: '', expectedBudget: '' });
+    } catch (error) {
+      console.error('Failed to add existing deal:', error);
       alert('案件の追加に失敗しました');
     } finally {
       setIsSaving(false);
@@ -1080,6 +1134,7 @@ function ProgressDashboard() {
           expectedBudget: row.expectedBudget,
           rank: row.rank,
           isExistingProject: false,
+          salesTrack: 'account',
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
@@ -1096,6 +1151,7 @@ function ProgressDashboard() {
             expectedBudget: row.expectedBudget,
             rank: row.rank,
             isExistingProject: true,
+            salesTrack: 'account',
             confirmedDate: new Date().toISOString().split('T')[0],
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp()
@@ -1190,6 +1246,7 @@ function ProgressDashboard() {
         expectedBudget: orderData.receivedOrderAmount,
         rank: selectedDeal.rank || '',
         isExistingProject: true,
+        salesTrack: 'account',
         confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],
         receivedOrderDate: orderData.receivedOrderDate,
         receivedOrderAmount: orderData.receivedOrderAmount,
@@ -1247,10 +1304,13 @@ function ProgressDashboard() {
   return (
     <PageContainer>
       <PageHeader>
-        <Title>新規案件一覧</Title>
+        <Title>アカウント営業 案件一覧</Title>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <AddButton style={{ background: '#2ecc71' }} onClick={() => setShowCsvGuide(true)}>
             <FiUpload size={14} />CSV取込
+          </AddButton>
+          <AddButton style={{ background: '#8e44ad' }} onClick={() => setShowAddExistingModal(true)}>
+            <FiPlus size={14} />既存追加
           </AddButton>
           <AddButton onClick={() => setShowAddModal(true)}>
             <FiPlus size={14} />新規追加
@@ -1825,6 +1885,74 @@ function ProgressDashboard() {
         </ModalOverlay>
       )}
 
+      {/* 既存案件を追加モーダル（すでに成約済みの取引をフェーズ1〜7を経由せず直接登録） */}
+      {showAddExistingModal && (
+        <ModalOverlay onClick={() => setShowAddExistingModal(false)}>
+          <ModalBox onClick={(e) => e.stopPropagation()}>
+            <ModalTitle>既存案件を追加</ModalTitle>
+            <FormGroup>
+              <FormLabel>会社名 *</FormLabel>
+              <FormInput
+                type="text"
+                placeholder="会社名を入力"
+                value={addExistingForm.companyName}
+                onChange={e => setAddExistingForm(prev => ({ ...prev, companyName: e.target.value }))}
+              />
+            </FormGroup>
+            <FormGroup>
+              <FormLabel>商材名 *</FormLabel>
+              <FormInput
+                type="text"
+                placeholder="商材名を入力"
+                value={addExistingForm.productName}
+                onChange={e => setAddExistingForm(prev => ({ ...prev, productName: e.target.value }))}
+              />
+            </FormGroup>
+            <FormGroup>
+              <FormLabel>代理店名</FormLabel>
+              <FormInput
+                type="text"
+                placeholder="代理店名を入力（直接取引の場合は空欄）"
+                value={addExistingForm.introducer}
+                onChange={e => setAddExistingForm(prev => ({ ...prev, introducer: e.target.value }))}
+              />
+            </FormGroup>
+            <FormGroup>
+              <FormLabel>担当者</FormLabel>
+              <FormSelect
+                value={addExistingForm.representative}
+                onChange={e => setAddExistingForm(prev => ({ ...prev, representative: e.target.value }))}
+              >
+                <option value="">選択してください</option>
+                {salesRepresentatives.map(rep => (
+                  <option key={rep} value={rep}>{rep}</option>
+                ))}
+              </FormSelect>
+            </FormGroup>
+            <FormGroup>
+              <FormLabel>成約予算（円）</FormLabel>
+              <FormInput
+                type="number"
+                placeholder="例：1000000"
+                value={addExistingForm.expectedBudget}
+                onChange={e => setAddExistingForm(prev => ({ ...prev, expectedBudget: e.target.value }))}
+                min="0"
+              />
+            </FormGroup>
+            <ModalActions>
+              <ModalBtn onClick={() => setShowAddExistingModal(false)}>キャンセル</ModalBtn>
+              <ModalBtn
+                $primary
+                onClick={handleAddExistingDeal}
+                disabled={!addExistingForm.companyName.trim() || !addExistingForm.productName.trim() || isSaving}
+              >
+                {isSaving ? '保存中...' : '追加'}
+              </ModalBtn>
+            </ModalActions>
+          </ModalBox>
+        </ModalOverlay>
+      )}
+
       {/* 受注情報入力モーダル（フェーズ8時 → 既存案件へ移行） */}
       <ReceivedOrderModal
         isOpen={receivedOrderModal.show}
@@ -1835,12 +1963,15 @@ function ProgressDashboard() {
       />
 
       {/* 右側詳細パネル */}
+      {/* この一覧は新規/既存を1つにまとめているため、営業記録の参照先サブコレクションが
+          正しく切り替わるよう、案件ごとのisExistingProjectに応じてmodeを渡し分ける
+          （newCase → newCaseSalesRecords、それ以外 → salesRecords）。 */}
       {selectedDeal && (
         <ProjectDetailPanel
           project={selectedDeal}
           onClose={handlePanelClose}
           onProjectUpdate={handleProjectUpdate}
-          mode="newCase"
+          mode={selectedDeal.isExistingProject ? undefined : 'newCase'}
           onPhase8Submitted={handlePhase8Submitted}
         />
       )}
@@ -1848,4 +1979,4 @@ function ProgressDashboard() {
   );
 }
 
-export default ProgressDashboard;
+export default AccountDealsListPage;

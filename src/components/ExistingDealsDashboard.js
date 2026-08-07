@@ -695,10 +695,13 @@ function ExistingDealsDashboard() {
 
       const dealsList = [];
       querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        // アカウント営業の案件（大型自主提案）はAccountSalesDashboard.js専用で管理するため除外する
+        if (data.salesTrack === 'account') return;
         dealsList.push({
           id: docSnap.id,
-          ...docSnap.data(),
-          createdAt: docSnap.data().createdAt?.toDate?.() || new Date(docSnap.data().createdAt)
+          ...data,
+          createdAt: data.createdAt?.toDate?.() || new Date(data.createdAt)
         });
       });
 

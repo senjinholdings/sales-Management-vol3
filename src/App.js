@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown } from 'react-icons/fi';
+import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget } from 'react-icons/fi';
 import { analyzeMeetingNotes, isGPTServiceAvailable, debugAPIStatus, checkAPIKeyStatus } from './services/gptService.js';
 import LoginPage from './components/LoginPage.js';
 import ProtectedRoute from './components/ProtectedRoute.js';
@@ -27,8 +27,13 @@ import ClosedDealsList from './components/ClosedDealsList.js';
 import ProposalDealsList from './components/ProposalDealsList.js';
 import OperatorDashboard from './components/OperatorDashboard.js';
 import CoreCustomerPage from './components/CoreCustomerPage.js';
+import AccountSalesDashboard from './components/AccountSalesDashboard.js';
+import AccountDealsListPage from './components/AccountDealsListPage.js';
+import KeyAccountMasterPage from './components/KeyAccountMasterPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
+import { db } from './firebase.js';
+import { collection, onSnapshot } from 'firebase/firestore';
 import './App.css';
 
 const AppContainer = styled.div`
@@ -164,6 +169,21 @@ const NavLink = styled(Link)`
   }
 `;
 
+const NavBadge = styled.span`
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.1rem;
+  height: 1.1rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: #e74c3c;
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+`;
+
 const NavDropdown = styled.div`
   position: relative;
 
@@ -254,6 +274,7 @@ const MainContent = styled.main`
 function AdminApp() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [openDropdown, setOpenDropdown] = useState(null);
+  const [introducerAttentionCount, setIntroducerAttentionCount] = useState(0);
 
   const toggleDropdown = (name) => {
     setOpenDropdown(prev => prev === name ? null : name);
@@ -263,6 +284,18 @@ function AdminApp() {
     setMobileMenuOpen(false);
     setOpenDropdown(null);
   };
+
+  // 紹介者の定例実施状況をヘッダーに常時表示するため購読（稼働中なのに定例MTG未実施の件数）
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, 'introducers'), (snapshot) => {
+      const count = snapshot.docs.filter((docSnap) => {
+        const data = docSnap.data();
+        return data.status === 'アクティブ' && !data.hasRegularMeeting;
+      }).length;
+      setIntroducerAttentionCount(count);
+    });
+    return () => unsubscribe();
+  }, []);
 
   // GPT APIテスト関数をwindowオブジェクトに追加（開発用）
   useEffect(() => {
@@ -402,6 +435,33 @@ function AdminApp() {
               </NavDropdownItem>
             </NavDropdownMenu>
           </NavDropdown>
+          <NavDropdown className={openDropdown === 'account' ? 'mobile-open' : ''}>
+            <NavDropdownButton onClick={() => toggleDropdown('account')}>
+              <FiTarget />
+              アカウント営業
+              <FiChevronDown size={12} style={{ marginLeft: 'auto' }} />
+            </NavDropdownButton>
+            <NavDropdownMenu>
+              <NavDropdownItem>
+                <NavDropdownLink to="/account-sales-dashboard" onClick={closeMobileMenu}>
+                  <FiBarChart />
+                  ダッシュボード
+                </NavDropdownLink>
+              </NavDropdownItem>
+              <NavDropdownItem>
+                <NavDropdownLink to="/account-deals-list" onClick={closeMobileMenu}>
+                  <FiList />
+                  案件一覧
+                </NavDropdownLink>
+              </NavDropdownItem>
+              <NavDropdownItem>
+                <NavDropdownLink to="/key-accounts" onClick={closeMobileMenu}>
+                  <FiList />
+                  対象企業リスト
+                </NavDropdownLink>
+              </NavDropdownItem>
+            </NavDropdownMenu>
+          </NavDropdown>
           <NavItem>
             <NavLink to="/operator-dashboard" onClick={closeMobileMenu}>
               <FiUser />
@@ -412,6 +472,13 @@ function AdminApp() {
             <NavLink to="/next-action-management" onClick={closeMobileMenu}>
               <FiClipboard />
               NA管理
+            </NavLink>
+          </NavItem>
+          <NavItem>
+            <NavLink to="/introducer-master" onClick={closeMobileMenu}>
+              <FiCalendar />
+              紹介者定例
+              {introducerAttentionCount > 0 && <NavBadge>{introducerAttentionCount}</NavBadge>}
             </NavLink>
           </NavItem>
           <NavDropdown className={openDropdown === 'master' ? 'mobile-open' : ''}>
@@ -488,6 +555,9 @@ function AdminApp() {
           <Route path="/next-action-management" element={<NextActionManagementPage />} />
           <Route path="/operator-dashboard" element={<OperatorDashboard />} />
           <Route path="/core-customers" element={<CoreCustomerPage />} />
+          <Route path="/account-sales-dashboard" element={<AccountSalesDashboard />} />
+          <Route path="/account-deals-list" element={<AccountDealsListPage />} />
+          <Route path="/key-accounts" element={<KeyAccountMasterPage />} />
         </Routes>
       </MainContent>
       </AppContainer>

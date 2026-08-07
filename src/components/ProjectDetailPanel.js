@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import styled, { keyframes } from 'styled-components';
-import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget } from 'react-icons/fi';
+import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget, FiFileText, FiCalendar, FiCheckSquare, FiShare2 } from 'react-icons/fi';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
+import ContractRequestModal from './ContractRequestModal.js';
+import ScheduleConfirmModal from './ScheduleConfirmModal.js';
+import DetailConfirmModal from './DetailConfirmModal.js';
 import { AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { PROJECT_RANKS, STATUSES, STATUS_COLORS, CONTINUATION_STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
 import PhaseTooltip from './PhaseTooltip.js';
 import { linkifyText } from '../utils/linkify.js';
 import { db } from '../firebase.js';
-import { collection, getDocs, Timestamp } from 'firebase/firestore';
+import { collection, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore';
 import { fetchAllStaff } from '../services/staffService.js';
 import {
   updateProject,
@@ -17,7 +20,8 @@ import {
   addContactLog, fetchContactLogs, updateContactLog, deleteContactLog,
   addOperationMemo, fetchOperationMemos, updateOperationMemo, deleteOperationMemo,
   addSalesEntry, fetchSalesEntries, deleteSalesEntry, updateSalesEntry, updateSalesEntryStatus,
-  addNaComment, fetchNaComments, updateNaComment, deleteNaComment
+  addNaComment, fetchNaComments, updateNaComment, deleteNaComment,
+  fetchProjectById
 } from '../services/projectService.js';
 
 // ============================================
@@ -161,6 +165,7 @@ const HeaderSelect = styled.select`
 const HeaderActions = styled.div`
   display: flex;
   justify-content: flex-end;
+  gap: 0.5rem;
   margin-bottom: 0.75rem;
 `;
 
@@ -178,6 +183,31 @@ const BriefButton = styled.button`
   cursor: pointer;
   transition: background 0.2s;
   &:hover { background: #21618c; }
+`;
+
+const ContractButton = styled(BriefButton)`
+  background: #8e44ad;
+  &:hover { background: #6c3483; }
+  &:disabled {
+    background: #bdc3c7;
+    cursor: not-allowed;
+  }
+  &:disabled:hover { background: #bdc3c7; }
+`;
+
+const ScheduleButton = styled(BriefButton)`
+  background: #27ae60;
+  &:hover { background: #219a52; }
+`;
+
+const AccountTrackButton = styled(BriefButton)`
+  background: #7f8c8d;
+  &:hover { background: #626e6f; }
+`;
+
+const DetailButton = styled(BriefButton)`
+  background: #f39c12;
+  &:hover { background: #d68910; }
 `;
 
 // ============================================
@@ -1161,8 +1191,6 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
     // 入力済みNAを抽出
     const filledNas = naItems.filter(na => na.actionContent.trim());
     if (!hasMemo && filledNas.length === 0) return;
-    // フェーズ8（受注）とDead以外はNA必須
-    if (!['フェーズ8', 'Dead'].includes(currentPhase) && filledNas.length === 0) return;
     try {
       const phaseChanged = currentPhase !== record.phase;
       const phaseChange = phaseChanged ? `${record.phase}→${currentPhase}` : '';
@@ -1357,9 +1385,7 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
   const filledNas = naItems.filter(na => na.actionContent.trim());
   const naAllValid = filledNas.every(na => na.actionDueDate && na.actionAssignee);
   const hasAnyNa = filledNas.length > 0;
-  // フェーズ8（受注）とDead以外はNA必須
-  const naRequired = !['フェーズ8', 'Dead'].includes(currentPhase);
-  const hasInput = (memoContent.trim() || hasAnyNa) && (hasAnyNa ? naAllValid : true) && (!naRequired || hasAnyNa);
+  const hasInput = (memoContent.trim() || hasAnyNa) && (hasAnyNa ? naAllValid : true);
 
   /** エントリをgroupIdでグルーピングする */
   const groupEntries = (entries) => {
@@ -1595,11 +1621,6 @@ const SalesRecordEntries = ({ projectId, record, onPhaseUpdate, onRecordFieldCha
       {hasAnyNa && !naAllValid && (
         <div style={{ fontSize: '0.8rem', color: '#e74c3c', marginBottom: '0.5rem' }}>
           ※ ネクストアクション入力時は日付と担当者が必須です
-        </div>
-      )}
-      {naRequired && !hasAnyNa && memoContent.trim() && (
-        <div style={{ fontSize: '0.8rem', color: '#e74c3c', marginBottom: '0.5rem' }}>
-          ※ フェーズ8とDead以外はネクストアクションの入力が必須です
         </div>
       )}
 
@@ -2824,6 +2845,9 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
   const [salesReps, setSalesReps] = useState([]);
   const [latestPhase, setLatestPhase] = useState(project.status || '');
   const [showBriefModal, setShowBriefModal] = useState(false);
+  const [showContractModal, setShowContractModal] = useState(false);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [showDetailModal, setShowDetailModal] = useState(false);
 
   // モードに応じたサブコレクション名
   const salesSubCol = mode === 'newCase' ? 'newCaseSalesRecords' : 'salesRecords';
@@ -2872,8 +2896,13 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
   const handlePhaseChange = useCallback(async (newPhase) => {
     setLatestPhase(newPhase);
     // ドキュメント本体のstatusも更新（ダッシュボード集計に反映するため）
+    // phaseEnteredAtはフェーズ4滞留チェック（案件一覧側）の基準時刻として使用する
     try {
-      await updateProject(project.id, { status: newPhase });
+      await updateProject(project.id, {
+        status: newPhase,
+        phaseEnteredAt: serverTimestamp(),
+        phase4StagnationNaCreatedAt: null,
+      });
     } catch (error) {
       console.error('Failed to update document status:', error);
     }
@@ -2892,6 +2921,16 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
     };
     loadStaff();
   }, []);
+
+  // 第一想起①②モーダル保存後、progressDashboardの最新状態を再取得してヘッダー表示に反映
+  const refreshProjectFromServer = async () => {
+    try {
+      const fresh = await fetchProjectById(project.id);
+      if (fresh && onProjectUpdate) onProjectUpdate(fresh);
+    } catch (error) {
+      console.error('Failed to refresh project:', error);
+    }
+  };
 
   // ヘッダーの担当者変更
   const handleHeaderSelectChange = async (field, value) => {
@@ -2916,6 +2955,24 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
 
   if (!project) return null;
 
+  // ③契約締結依頼は①②(進行スケジュール確認・詳細確認)の両方が完了してから送信可能にする
+  const firstRecallContractStatus = project.firstRecallContractStatus || 'waiting';
+  const isContractReady = ['ready', 'requested', 'signed'].includes(firstRecallContractStatus);
+
+  // アカウント営業（増田管轄の大型自主提案）への分類変更。
+  // 以降はAccountSalesDashboard.jsで管理され、新規/既存案件ダッシュボード・案件一覧からは除外される
+  const handleMoveToAccountTrack = async () => {
+    if (!window.confirm(`「${project.companyName || project.productName}」をアカウント営業に移動しますか？\n以降、新規/既存案件ダッシュボードには表示されず、アカウント営業ダッシュボードで管理されます。`)) return;
+    try {
+      await updateProject(project.id, { salesTrack: 'account' });
+      alert('アカウント営業に移動しました。');
+      if (onProjectUpdate) onProjectUpdate({ ...project, salesTrack: 'account' });
+    } catch (error) {
+      console.error('Failed to move to account track:', error);
+      alert('移動に失敗しました');
+    }
+  };
+
   return (
     <>
     <Overlay onClick={onClose}>
@@ -2930,6 +2987,30 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
                 <FiTarget />
                 第一想起 実施可否すり合わせ
               </BriefButton>
+              <ScheduleButton onClick={() => setShowScheduleModal(true)}>
+                <FiCalendar />
+                ①進行スケジュール確認
+              </ScheduleButton>
+              <DetailButton onClick={() => setShowDetailModal(true)}>
+                <FiCheckSquare />
+                ②詳細確認
+              </DetailButton>
+              <ContractButton
+                onClick={() => { if (isContractReady) setShowContractModal(true); }}
+                disabled={!isContractReady}
+                title={isContractReady ? undefined : '①②の確認が完了すると契約締結依頼を送信できます'}
+              >
+                <FiFileText />
+                契約締結依頼
+              </ContractButton>
+            </HeaderActions>
+          )}
+          {project.salesTrack !== 'account' && (
+            <HeaderActions>
+              <AccountTrackButton onClick={handleMoveToAccountTrack}>
+                <FiShare2 />
+                アカウント営業に移動
+              </AccountTrackButton>
             </HeaderActions>
           )}
           <HeaderGrid>
@@ -3030,6 +3111,33 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
       onClose={() => setShowBriefModal(false)}
       deal={{ ...project, status: latestPhase || project.status }}
       onSaved={() => alert('Slackに実施可否すり合わせ内容を送信しました。')}
+    />
+
+    <ContractRequestModal
+      isOpen={showContractModal}
+      onClose={() => setShowContractModal(false)}
+      deal={{ ...project, status: latestPhase || project.status }}
+      onSaved={() => alert('契約締結依頼を送信しました。')}
+    />
+
+    <ScheduleConfirmModal
+      isOpen={showScheduleModal}
+      onClose={() => setShowScheduleModal(false)}
+      deal={{ ...project, status: latestPhase || project.status }}
+      onSaved={async () => {
+        await refreshProjectFromServer();
+        alert('①進行スケジュール確認を保存しました。');
+      }}
+    />
+
+    <DetailConfirmModal
+      isOpen={showDetailModal}
+      onClose={() => setShowDetailModal(false)}
+      deal={{ ...project, status: latestPhase || project.status }}
+      onSaved={async () => {
+        await refreshProjectFromServer();
+        alert('②詳細確認を保存しました。');
+      }}
     />
     </>
   );

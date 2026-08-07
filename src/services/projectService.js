@@ -48,7 +48,8 @@ export const fetchProjects = async () => {
       id: docSnap.id,
       ...docSnap.data()
     }));
-    return all.filter(doc => doc.isExistingProject === true);
+    // アカウント営業の案件（大型自主提案）はAccountSalesDashboard.js専用で管理するため除外する
+    return all.filter(doc => doc.isExistingProject === true && doc.salesTrack !== 'account');
   } catch (error) {
     console.error('Failed to fetch projects:', error);
     throw error;

@@ -1,13 +1,19 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiTarget, FiTrendingUp, FiBarChart, FiUsers, FiAlertTriangle, FiPieChart, FiEdit2, FiDollarSign, FiUser } from 'react-icons/fi';
+import { FiTarget, FiTrendingUp, FiBarChart, FiUsers, FiAlertTriangle, FiEdit2, FiDollarSign, FiUser, FiPlus, FiList } from 'react-icons/fi';
 import { db } from '../firebase.js';
-import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
-import { STATUSES, STATUS_COLORS, PROPOSAL_MENUS } from '../data/constants.js';
+import { collection, getDocs, doc, getDoc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
+import { STATUS_COLORS } from '../data/constants.js';
 import { fetchStaffByRole } from '../services/staffService.js';
+import { addSalesRecord } from '../services/projectService.js';
 
-// フェーズごとの受注確率
+/**
+ * アカウント営業（増田管轄の大型自主提案）専用ダッシュボード。
+ * NewDealsDashboard.jsと同じセクション構成を、salesTrack==='account'の案件だけに絞って表示する。
+ * 案件数が少なく大型な提案が中心のため、フェーズ別の受注確率(PHASE_PROBABILITY)はソリューション営業の
+ * 値を暫定流用している。実態と乖離する場合はここの値だけを調整すればよい。
+ */
 const PHASE_PROBABILITY = {
   'フェーズ1': 0.05,
   'フェーズ2': 0.15,
@@ -28,6 +34,11 @@ const DashboardContainer = styled.div`
 
 const Header = styled.div`
   margin-bottom: 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
 `;
 
 const Title = styled.h2`
@@ -35,6 +46,44 @@ const Title = styled.h2`
   margin: 0;
   font-size: 1.5rem;
   font-weight: 600;
+`;
+
+const HeaderActions = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+`;
+
+const LinkButton = styled(Link)`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: white;
+  color: #2c3e50;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-decoration: none;
+
+  &:hover { background: #f8f9fa; }
+`;
+
+const PrimaryButton = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #3498db;
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover { background: #2980b9; }
 `;
 
 const GridContainer = styled.div`
@@ -58,7 +107,6 @@ const Card = styled.div`
   padding: 24px;
   box-shadow: var(--shadow-md);
   border: 1px solid var(--color-border);
-  transition: box-shadow 0.2s ease;
 `;
 
 const CardTitle = styled.h3`
@@ -71,7 +119,6 @@ const CardTitle = styled.h3`
   gap: 8px;
 `;
 
-// メーターグラフ用スタイル
 const MeterContainer = styled.div`
   display: flex;
   flex-direction: column;
@@ -98,7 +145,6 @@ const MeterLabel = styled.div`
   margin-top: 0.25rem;
 `;
 
-// 円グラフ用スタイル
 const PieChartContainer = styled.div`
   display: flex;
   align-items: center;
@@ -132,7 +178,6 @@ const LegendColor = styled.div`
   background: ${props => props.color};
 `;
 
-// テーブル用スタイル
 const Table = styled.table`
   width: 100%;
   border-collapse: collapse;
@@ -179,7 +224,6 @@ const LoadingMessage = styled.div`
   color: #666;
 `;
 
-// プルダウン用スタイル
 const SelectWrapper = styled.div`
   display: flex;
   align-items: center;
@@ -207,7 +251,6 @@ const Select = styled.select`
   }
 `;
 
-// 担当者サマリー用スタイル
 const PersonSummaryContainer = styled.div`
   display: grid;
   grid-template-columns: 1fr 1fr 2fr;
@@ -230,32 +273,6 @@ const SummaryTitle = styled.div`
   color: #495057;
   margin-bottom: 0.75rem;
   font-size: 0.9rem;
-`;
-
-const SummaryValue = styled.div`
-  font-size: 2rem;
-  font-weight: bold;
-  color: #2c3e50;
-`;
-
-const PhaseRow = styled.div`
-  display: flex;
-  justify-content: space-between;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #e9ecef;
-
-  &:last-child {
-    border-bottom: none;
-  }
-`;
-
-const PhaseName = styled.span`
-  color: #495057;
-`;
-
-const PhaseValue = styled.span`
-  font-weight: 600;
-  color: #2c3e50;
 `;
 
 const DealListTable = styled.table`
@@ -288,7 +305,6 @@ const PhaseBadge = styled.span`
   color: white;
 `;
 
-// 目標編集用スタイル
 const EditButton = styled.button`
   background: none;
   border: none;
@@ -299,9 +315,7 @@ const EditButton = styled.button`
   display: inline-flex;
   align-items: center;
 
-  &:hover {
-    color: #2980b9;
-  }
+  &:hover { color: #2980b9; }
 `;
 
 const Modal = styled.div`
@@ -321,8 +335,10 @@ const ModalContent = styled.div`
   background: white;
   border-radius: 12px;
   padding: 2rem;
-  width: 400px;
+  width: 420px;
   max-width: 90%;
+  max-height: 85vh;
+  overflow-y: auto;
 `;
 
 const ModalTitle = styled.h3`
@@ -337,11 +353,30 @@ const ModalInput = styled.input`
   border-radius: 4px;
   font-size: 1rem;
   margin-bottom: 1rem;
+  box-sizing: border-box;
 
   &:focus {
     outline: none;
     border-color: #3498db;
   }
+`;
+
+const ModalSelect = styled.select`
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+  background: white;
+  box-sizing: border-box;
+`;
+
+const ModalLabel = styled.div`
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #495057;
+  margin-bottom: 0.35rem;
 `;
 
 const ModalButtons = styled.div`
@@ -357,22 +392,12 @@ const ModalButton = styled.button`
   font-size: 1rem;
   cursor: pointer;
 
-  &.cancel {
-    background: #95a5a6;
-    color: white;
-  }
-
-  &.save {
-    background: #27ae60;
-    color: white;
-  }
-
-  &:hover {
-    opacity: 0.9;
-  }
+  &.cancel { background: #95a5a6; color: white; }
+  &.save { background: #27ae60; color: white; }
+  &:hover { opacity: 0.9; }
 `;
 
-// ユーティリティ関数
+// ユーティリティ
 const formatCurrency = (value) => {
   if (!value) return '¥0';
   return '¥' + value.toLocaleString();
@@ -429,26 +454,20 @@ const generateQuarterOptions = () => {
   const options = [];
   for (let y = currentYear - 2; y <= currentYear + 1; y++) {
     for (let q = 1; q <= 4; q++) {
-      options.push({ value: `${y}-Q${q}`, label: `${y}年 Q${q}（${(q-1)*3+1}〜${q*3}月）` });
+      options.push({ value: `${y}-Q${q}`, label: `${y}年 Q${q}（${(q - 1) * 3 + 1}〜${q * 3}月）` });
     }
   }
   return { options, current: `${currentYear}-Q${currentQ}` };
 };
 
-// メーターグラフコンポーネント
 const MeterGauge = ({ value, target, label }) => {
   const displayPercentage = target > 0 ? Math.round((value / target) * 100) : 0;
   const clampedPercent = Math.min(Math.max(displayPercentage, 0), 100);
-
-  // 半円のパス（背景・実績共通）
   const radius = 80;
   const centerX = 100;
   const centerY = 100;
   const arcPath = `M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 1 1 ${centerX + radius} ${centerY}`;
-
-  // 半円の全長 = π × radius
   const totalLength = Math.PI * radius;
-  // 進捗分の長さ
   const filledLength = (clampedPercent / 100) * totalLength;
 
   let color = '#27ae60';
@@ -458,22 +477,9 @@ const MeterGauge = ({ value, target, label }) => {
   return (
     <MeterContainer>
       <MeterSvg viewBox="0 0 200 120">
-        <path
-          d={arcPath}
-          fill="none"
-          stroke="#e0e0e0"
-          strokeWidth="16"
-          strokeLinecap="round"
-        />
+        <path d={arcPath} fill="none" stroke="#e0e0e0" strokeWidth="16" strokeLinecap="round" />
         {clampedPercent > 0 && (
-          <path
-            d={arcPath}
-            fill="none"
-            stroke={color}
-            strokeWidth="16"
-            strokeLinecap="round"
-            strokeDasharray={`${filledLength} ${totalLength}`}
-          />
+          <path d={arcPath} fill="none" stroke={color} strokeWidth="16" strokeLinecap="round" strokeDasharray={`${filledLength} ${totalLength}`} />
         )}
       </MeterSvg>
       <MeterValue color={color}>{displayPercentage}%</MeterValue>
@@ -485,9 +491,7 @@ const MeterGauge = ({ value, target, label }) => {
   );
 };
 
-// 円グラフコンポーネント
-const PieChart = ({ data, title }) => {
-  // データがない場合またはすべて0の場合
+const PieChart = ({ data }) => {
   const filteredData = data.filter(item => item.value > 0);
   const total = filteredData.reduce((sum, item) => sum + item.value, 0);
 
@@ -499,7 +503,6 @@ const PieChart = ({ data, title }) => {
     );
   }
 
-  // 1つしかセグメントがない場合は完全な円を描画
   if (filteredData.length === 1) {
     return (
       <PieChartContainer>
@@ -516,7 +519,7 @@ const PieChart = ({ data, title }) => {
     );
   }
 
-  let currentAngle = -Math.PI / 2; // 12時の位置から開始
+  let currentAngle = -Math.PI / 2;
   const paths = filteredData.map((item, index) => {
     const percentage = item.value / total;
     const startAngle = currentAngle;
@@ -528,30 +531,20 @@ const PieChart = ({ data, title }) => {
     const y1 = 90 + 70 * Math.sin(startAngle);
     const x2 = 90 + 70 * Math.cos(endAngle);
     const y2 = 90 + 70 * Math.sin(endAngle);
-
     const largeArcFlag = percentage > 0.5 ? 1 : 0;
 
-    // ほぼ100%の場合の特別処理（99.9%以上）
     if (percentage >= 0.999) {
-      return (
-        <circle key={index} cx="90" cy="90" r="70" fill={item.color} />
-      );
+      return <circle key={index} cx="90" cy="90" r="70" fill={item.color} />;
     }
 
     return (
-      <path
-        key={index}
-        d={`M 90 90 L ${x1} ${y1} A 70 70 0 ${largeArcFlag} 1 ${x2} ${y2} Z`}
-        fill={item.color}
-      />
+      <path key={index} d={`M 90 90 L ${x1} ${y1} A 70 70 0 ${largeArcFlag} 1 ${x2} ${y2} Z`} fill={item.color} />
     );
   });
 
   return (
     <PieChartContainer>
-      <PieSvg viewBox="0 0 180 180">
-        {paths}
-      </PieSvg>
+      <PieSvg viewBox="0 0 180 180">{paths}</PieSvg>
       <PieLegend>
         {filteredData.map((item, index) => (
           <LegendItem key={index}>
@@ -564,7 +557,6 @@ const PieChart = ({ data, title }) => {
   );
 };
 
-// 逆ピラミッド型ファネルチャート用スタイル
 const FunnelContainer = styled.div`
   display: flex;
   flex-direction: column;
@@ -598,98 +590,70 @@ const FunnelBar = styled.div`
   );
 `;
 
-const FunnelLabel = styled.div`
-  position: absolute;
-  left: 0;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: #495057;
-`;
-
-const FunnelValue = styled.div`
-  width: 50px;
-  font-size: 0.9rem;
-  font-weight: bold;
-  color: #2c3e50;
-  text-align: left;
-`;
-
-function NewDealsDashboard() {
-  const location = useLocation();
+function AccountSalesDashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [deals, setDeals] = useState([]);
-  const [quarterTarget, setQuarterTarget] = useState(10000000); // デフォルト目標値
-  const [selectedRepresentative, setSelectedRepresentative] = useState(''); // 担当者サマリー用
+  const [rawSalesRecords, setRawSalesRecords] = useState([]);
+  const [quarterTarget, setQuarterTarget] = useState(10000000);
+  const [selectedRepresentative, setSelectedRepresentative] = useState('');
   const { options: quarterOptions, current: currentQuarterKey } = useMemo(() => generateQuarterOptions(), []);
   const [selectedQuarter, setSelectedQuarter] = useState(currentQuarterKey);
-  const [rawNewDeals, setRawNewDeals] = useState([]);
-  const [rawSalesRecords, setRawSalesRecords] = useState([]);
+  const [salesRepList, setSalesRepList] = useState([]);
 
-  // 計算結果のstate
   const [quarterActual, setQuarterActual] = useState(0);
   const [quarterForecast, setQuarterForecast] = useState([]);
-  const [quarterlyPersonalSales, setQuarterlyPersonalSales] = useState([]); // 個人四半期売上
-  const [monthActual, setMonthActual] = useState(0); // チーム全体月間売上
-  const [quarterMonthlyActual, setQuarterMonthlyActual] = useState([]); // 四半期内の月別売上
+  const [quarterlyPersonalSales, setQuarterlyPersonalSales] = useState([]);
+  const [quarterMonthlyActual, setQuarterMonthlyActual] = useState([]);
   const [monthlyPersonalSales, setMonthlyPersonalSales] = useState([]);
   const [monthForecast, setMonthForecast] = useState([]);
   const [stagnantDeals, setStagnantDeals] = useState([]);
-  const [existingDeals, setExistingDeals] = useState([]); // 既存案件リスト（表示用）
-  const [allSalesRecords, setAllSalesRecords] = useState([]); // 既存案件のsalesRecords（売上集計用）
-  const [salesRepList, setSalesRepList] = useState([]); // スタッフマスターからの営業者リスト
-  const [leadSourceDateFrom, setLeadSourceDateFrom] = useState(''); // 流入経路の期間指定（開始）
-  const [leadSourceDateTo, setLeadSourceDateTo] = useState(''); // 流入経路の期間指定（終了）
 
-  // 目標編集モーダル用state
   const [showTargetModal, setShowTargetModal] = useState(false);
   const [editingTarget, setEditingTarget] = useState('');
 
-  // 四半期のキーを取得（目標値保存用）
-  const getQuarterKey = () => selectedQuarter;
+  // 新規登録モーダル
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [keyAccounts, setKeyAccounts] = useState([]);
+  const [addForm, setAddForm] = useState({
+    companyName: '', productName: '', representative: '増田', expectedBudget: ''
+  });
+  const [isSaving, setIsSaving] = useState(false);
 
-  // 目標値をFirestoreから取得
+  const getQuarterKey = () => `${selectedQuarter}-account`;
+
   const fetchTarget = useCallback(async () => {
     try {
-      const quarterKey = getQuarterKey();
-      const targetRef = doc(db, 'salesTargets', quarterKey);
+      const targetRef = doc(db, 'salesTargets', getQuarterKey());
       const targetDoc = await getDoc(targetRef);
-
       if (targetDoc.exists()) {
         setQuarterTarget(targetDoc.data().target || 10000000);
       }
     } catch (error) {
       console.error('目標値取得エラー:', error);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedQuarter]);
 
-  // 目標値をFirestoreに保存
   const saveTarget = async () => {
     try {
-      const quarterKey = getQuarterKey();
-      const targetRef = doc(db, 'salesTargets', quarterKey);
       const targetValue = parseInt(editingTarget) || 0;
-
-      await setDoc(targetRef, {
+      await setDoc(doc(db, 'salesTargets', getQuarterKey()), {
         target: targetValue,
         updatedAt: new Date()
       });
-
       setQuarterTarget(targetValue);
       setShowTargetModal(false);
-      alert('目標値を保存しました');
     } catch (error) {
       console.error('目標値保存エラー:', error);
       alert('保存に失敗しました');
     }
   };
 
-  // 目標編集モーダルを開く
   const openTargetModal = () => {
     setEditingTarget(quarterTarget.toString());
     setShowTargetModal(true);
   };
 
-  // データ取得
   const fetchData = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -699,8 +663,7 @@ function NewDealsDashboard() {
       const dealsList = [];
       querySnapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        // アカウント営業の案件（大型自主提案）はAccountSalesDashboard.js専用で管理するため除外する
-        if (data.salesTrack === 'account') return;
+        if (data.salesTrack !== 'account') return;
         dealsList.push({
           id: docSnap.id,
           ...data,
@@ -708,12 +671,8 @@ function NewDealsDashboard() {
         });
       });
 
-      // 新規案件（パイプライン表示用）と既存案件（売上集計用）に分離
-      const newDeals = dealsList.filter(d => d.isExistingProject !== true);
-      const existingDealsList = dealsList.filter(d => d.isExistingProject === true);
-
-      // 既存案件のsalesRecords + 新規案件のnewCaseSalesRecordsから全レコードを取得
-      // （新規案件が成約(フェーズ8)した際の実績も売上集計に含めるため、両方とも対象にする）
+      // 案件登録モーダルからの新規作成はisExistingProject:falseだが、既存案件を後からアカウント営業に
+      // 分類し直すケースもあるため、他のダッシュボードと同じくisExistingProjectで読み分ける
       const allSalesRecords = [];
       await Promise.all(dealsList.map(async (deal) => {
         const subCol = deal.isExistingProject === true ? 'salesRecords' : 'newCaseSalesRecords';
@@ -721,7 +680,6 @@ function NewDealsDashboard() {
           const salesRecordsSnap = await getDocs(
             collection(db, 'progressDashboard', deal.id, subCol)
           );
-          // 最新レコードのsalesRepを担当者として採用
           const recs = [];
           salesRecordsSnap.forEach(rec => recs.push({ id: rec.id, ...rec.data() }));
           recs.sort((a, b) => {
@@ -741,8 +699,6 @@ function NewDealsDashboard() {
               productName: deal.productName || '',
               confirmedDate: rd.confirmedDate || rd.date || '',
               representative: latestRep,
-              proposalMenu: deal.proposalMenu,
-              leadSource: deal.leadSource,
               recordType: rd.recordType,
               budget: typeof rd.budget === 'string' ? Number(rd.budget) || 0 : rd.budget || 0,
               date: rd.date,
@@ -754,10 +710,7 @@ function NewDealsDashboard() {
         }
       }));
 
-      setDeals(newDeals);
-      setExistingDeals(existingDealsList);
-      setAllSalesRecords(allSalesRecords);
-      setRawNewDeals(newDeals);
+      setDeals(dealsList);
       setRawSalesRecords(allSalesRecords);
     } catch (error) {
       console.error('データ取得エラー:', error);
@@ -766,16 +719,13 @@ function NewDealsDashboard() {
     }
   }, []);
 
-  // 統計計算（新規案件リスト + 既存案件のsalesRecordsを使用）
-  const calculateStats = useCallback((newDealsList, salesRecords, quarterKey) => {
+  const calculateStats = useCallback((dealsList, salesRecords, quarterKey) => {
     const quarter = getQuarterRange(quarterKey);
     const currentMonth = getCurrentMonthRange(quarterKey);
     const now = new Date();
 
-    // ヘルパー: salesRecordsから「新規」ラベルかつ成約日が期間内のレコードを抽出（confirmedDate優先、なければdate）
-    const getNewLabelRecordsInRange = (start, end) => {
+    const getRecordsInRange = (start, end) => {
       return salesRecords.filter(rec => {
-        if (rec.recordType !== '新規') return false;
         if (rec.phase !== 'フェーズ8') return false;
         const d = rec.confirmedDate || rec.date;
         if (!d) return false;
@@ -784,121 +734,80 @@ function NewDealsDashboard() {
       });
     };
 
-    // 1. 四半期実績（salesRecordsのうち、ラベル「新規」かつdateが今四半期のbudget合計）
-    const quarterRecords = getNewLabelRecordsInRange(quarter.start, quarter.end);
+    const quarterRecords = getRecordsInRange(quarter.start, quarter.end);
     const quarterTotal = quarterRecords.reduce((sum, rec) => sum + rec.budget, 0);
     setQuarterActual(quarterTotal);
 
-    // 2. 四半期売上見込み（担当者別）
-    // = 新規案件フェーズ1-7 × 受注確率 ＋ salesRecordsの「新規」ラベル四半期実績
+    const colors = ['#3498db', '#e74c3c', '#27ae60', '#f39c12', '#9b59b6', '#1abc9c'];
+
     const repForecast = {};
-    // パートA: 新規案件一覧のフェーズ1-7
-    newDealsList.forEach(deal => {
+    dealsList.forEach(deal => {
       if (deal.status === '失注' || deal.status === 'Dead' || deal.status === 'フェーズ8') return;
       const rep = deal.representative || '未設定';
       const budget = deal.expectedBudget || 0;
       const probability = PHASE_PROBABILITY[deal.status] || 0;
-      const forecast = budget * probability;
       if (!repForecast[rep]) repForecast[rep] = 0;
-      repForecast[rep] += forecast;
+      repForecast[rep] += budget * probability;
     });
-    // パートB: salesRecordsの「新規」ラベル四半期実績を加算
     quarterRecords.forEach(rec => {
       const rep = rec.representative;
       if (!repForecast[rep]) repForecast[rep] = 0;
       repForecast[rep] += rec.budget;
     });
+    setQuarterForecast(Object.entries(repForecast).map(([name, value], index) => ({
+      label: name, value: Math.round(value), color: colors[index % colors.length]
+    })).sort((a, b) => b.value - a.value));
 
-    const colors = ['#3498db', '#e74c3c', '#27ae60', '#f39c12', '#9b59b6', '#1abc9c'];
-    const forecastData = Object.entries(repForecast).map(([name, value], index) => ({
-      label: name,
-      value: Math.round(value),
-      color: colors[index % colors.length]
-    })).sort((a, b) => b.value - a.value);
-    setQuarterForecast(forecastData);
-
-    // 3. 個人月間売上（salesRecordsの「新規」ラベルかつdateが今月）
-    const monthRecords = getNewLabelRecordsInRange(currentMonth.start, currentMonth.end);
+    const monthRecords = getRecordsInRange(currentMonth.start, currentMonth.end);
     const repMonthlySales = {};
     monthRecords.forEach(rec => {
       const rep = rec.representative;
       if (!repMonthlySales[rep]) repMonthlySales[rep] = 0;
       repMonthlySales[rep] += rec.budget;
     });
+    setMonthlyPersonalSales(Object.entries(repMonthlySales).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount));
 
-    const monthlySalesData = Object.entries(repMonthlySales).map(([name, amount]) => ({
-      name,
-      amount
-    })).sort((a, b) => b.amount - a.amount);
-    setMonthlyPersonalSales(monthlySalesData);
-
-    // 3.25. チーム全体月間売上（実績）
-    const monthTotal = monthRecords.reduce((sum, rec) => sum + rec.budget, 0);
-    setMonthActual(monthTotal);
-
-    // 3.26. 四半期内の月別売上（棒グラフ用）
     const quarterMonths = [];
     const currentMonthIndex = now.getMonth();
     for (let i = 0; i < 3; i++) {
       const monthStart = new Date(quarter.start.getFullYear(), quarter.start.getMonth() + i, 1);
       const monthEnd = new Date(quarter.start.getFullYear(), quarter.start.getMonth() + i + 1, 0, 23, 59, 59);
       const monthIndex = monthStart.getMonth();
-      const monthLabel = `${monthIndex + 1}月`;
-      const isCurrentMonth = monthIndex === currentMonthIndex;
-
-      const monthRecs = getNewLabelRecordsInRange(monthStart, monthEnd);
-      const monthSales = monthRecs.reduce((sum, rec) => sum + rec.budget, 0);
-
+      const monthRecs = getRecordsInRange(monthStart, monthEnd);
       quarterMonths.push({
-        label: monthLabel,
-        value: monthSales,
-        isCurrentMonth
+        label: `${monthIndex + 1}月`,
+        value: monthRecs.reduce((sum, rec) => sum + rec.budget, 0),
+        isCurrentMonth: monthIndex === currentMonthIndex
       });
     }
     setQuarterMonthlyActual(quarterMonths);
 
-    // 3.5. 個人四半期売上（担当者別）
     const repQuarterlySales = {};
     quarterRecords.forEach(rec => {
       const rep = rec.representative;
       if (!repQuarterlySales[rep]) repQuarterlySales[rep] = 0;
       repQuarterlySales[rep] += rec.budget;
     });
+    setQuarterlyPersonalSales(Object.entries(repQuarterlySales).map(([name, amount]) => ({ name, amount })).sort((a, b) => b.amount - a.amount));
 
-    const quarterlySalesData = Object.entries(repQuarterlySales).map(([name, amount]) => ({
-      name,
-      amount
-    })).sort((a, b) => b.amount - a.amount);
-    setQuarterlyPersonalSales(quarterlySalesData);
-
-    // 4. 月内売上見込み（担当者別）
-    // = 新規案件フェーズ1-7 × 受注確率 ＋ salesRecordsの「新規」ラベル月間実績
     const repMonthForecast = {};
-    // パートA: 新規案件一覧のフェーズ1-7
-    newDealsList.forEach(deal => {
+    dealsList.forEach(deal => {
       if (deal.status === '失注' || deal.status === 'Dead' || deal.status === 'フェーズ8') return;
       const rep = deal.representative || '未設定';
       const budget = deal.expectedBudget || 0;
       const probability = PHASE_PROBABILITY[deal.status] || 0;
-      const forecast = budget * probability;
       if (!repMonthForecast[rep]) repMonthForecast[rep] = 0;
-      repMonthForecast[rep] += forecast;
+      repMonthForecast[rep] += budget * probability;
     });
-    // パートB: salesRecordsの「新規」ラベル月間実績を加算
     monthRecords.forEach(rec => {
       const rep = rec.representative;
       if (!repMonthForecast[rep]) repMonthForecast[rep] = 0;
       repMonthForecast[rep] += rec.budget;
     });
+    setMonthForecast(Object.entries(repMonthForecast).map(([name, value], index) => ({
+      label: name, value: Math.round(value), color: colors[index % colors.length]
+    })).sort((a, b) => b.value - a.value));
 
-    const monthForecastData = Object.entries(repMonthForecast).map(([name, value], index) => ({
-      label: name,
-      value: Math.round(value),
-      color: colors[index % colors.length]
-    })).sort((a, b) => b.value - a.value);
-    setMonthForecast(monthForecastData);
-
-    // 5. 滞留商談リスト（レコード登録日から90日以上、フェーズ8・失注・Dead以外）
     const stagnant = salesRecords
       .filter(rec => {
         if (rec.phase === 'フェーズ8' || rec.phase === '失注' || rec.phase === 'Dead') return false;
@@ -909,154 +818,122 @@ function NewDealsDashboard() {
       })
       .map(rec => {
         const recDate = new Date(rec.date);
-        const daysDiff = Math.floor((now - recDate) / (1000 * 60 * 60 * 24));
         return {
           id: rec.dealId,
           companyName: rec.companyName,
-          proposalMenu: rec.proposalMenu,
-          daysElapsed: daysDiff,
+          productName: rec.productName,
+          daysElapsed: Math.floor((now - recDate) / (1000 * 60 * 60 * 24)),
           expectedBudget: rec.budget
         };
       })
       .sort((a, b) => b.daysElapsed - a.daysElapsed);
     setStagnantDeals(stagnant);
-
   }, []);
+
+  const fetchKeyAccounts = async () => {
+    try {
+      const snapshot = await getDocs(collection(db, 'keyAccounts'));
+      const list = [];
+      snapshot.forEach(docSnap => list.push({ id: docSnap.id, ...docSnap.data() }));
+      setKeyAccounts(list);
+    } catch (error) {
+      console.error('対象企業リスト取得エラー:', error);
+    }
+  };
 
   useEffect(() => {
     fetchData();
+    fetchKeyAccounts();
     fetchStaffByRole('sales').then(staff => {
       setSalesRepList(staff.map(s => s.name));
-    }).catch(err => {
-      console.error('営業者リスト取得エラー:', err);
-    });
-  }, [fetchData, location.key]);
+    }).catch(err => console.error('営業者リスト取得エラー:', err));
+  }, [fetchData]);
 
-  // データ取得後 or 四半期変更時に再計算 + 目標再取得
   useEffect(() => {
-    if (rawNewDeals.length > 0 || rawSalesRecords.length > 0) {
-      calculateStats(rawNewDeals, rawSalesRecords, selectedQuarter);
-    }
+    calculateStats(deals, rawSalesRecords, selectedQuarter);
     fetchTarget();
-  }, [selectedQuarter, rawNewDeals, rawSalesRecords]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedQuarter, deals, rawSalesRecords]);
 
-  // 担当者リストを取得（スタッフマスターから）
   const representativeList = useMemo(() => {
     const repsInData = new Set();
-    deals.forEach(deal => {
-      if (deal.representative) {
-        repsInData.add(deal.representative);
-      }
-    });
-    // スタッフマスターの順番を維持しつつ、データに存在する担当者も追加
+    deals.forEach(deal => { if (deal.representative) repsInData.add(deal.representative); });
     const allReps = salesRepList.length > 0 ? [...salesRepList] : [];
-    repsInData.forEach(rep => {
-      if (!allReps.includes(rep)) {
-        allReps.push(rep);
-      }
-    });
+    repsInData.forEach(rep => { if (!allReps.includes(rep)) allReps.push(rep); });
+    if (allReps.length === 0) allReps.push('増田');
     return allReps;
   }, [deals, salesRepList]);
 
-  // 選択された担当者のサマリーデータを計算
   const representativeSummary = useMemo(() => {
-    if (!selectedRepresentative) {
-      return { totalCount: 0, phaseCounts: {}, phaseBudgets: {}, dealsList: [] };
-    }
-
-    // フェーズ2-7の案件をフィルタリング（7→2の順で定義）
+    if (!selectedRepresentative) return { totalCount: 0, phaseCounts: {}, phaseBudgets: {}, dealsList: [] };
     const targetPhases = ['フェーズ7', 'フェーズ6', 'フェーズ5', 'フェーズ4', 'フェーズ3', 'フェーズ2'];
-    const filteredDeals = deals.filter(deal =>
-      deal.representative === selectedRepresentative &&
-      targetPhases.includes(deal.status)
-    );
-
-    // 件数
-    const totalCount = filteredDeals.length;
-
-    // フェーズごとの件数
+    const filteredDeals = deals.filter(deal => deal.representative === selectedRepresentative && targetPhases.includes(deal.status));
     const phaseCounts = {};
-    targetPhases.forEach(phase => {
-      phaseCounts[phase] = 0;
-    });
+    const phaseBudgets = {};
+    targetPhases.forEach(phase => { phaseCounts[phase] = 0; phaseBudgets[phase] = 0; });
     filteredDeals.forEach(deal => {
       phaseCounts[deal.status] = (phaseCounts[deal.status] || 0) + 1;
-    });
-
-    // フェーズごとの予算合計
-    const phaseBudgets = {};
-    targetPhases.forEach(phase => {
-      phaseBudgets[phase] = 0;
-    });
-    filteredDeals.forEach(deal => {
       phaseBudgets[deal.status] += deal.expectedBudget || 0;
     });
-
-    // 案件一覧（7→2の順でソート）
     const dealsList = filteredDeals.map(deal => ({
-      id: deal.id,
-      companyName: deal.companyName || '',
-      productName: deal.productName || '',
-      status: deal.status,
-      expectedBudget: deal.expectedBudget || 0
+      id: deal.id, companyName: deal.companyName || '', productName: deal.productName || '',
+      status: deal.status, expectedBudget: deal.expectedBudget || 0
     })).sort((a, b) => {
       const phaseOrder = { 'フェーズ7': 1, 'フェーズ6': 2, 'フェーズ5': 3, 'フェーズ4': 4, 'フェーズ3': 5, 'フェーズ2': 6 };
       return (phaseOrder[a.status] || 99) - (phaseOrder[b.status] || 99);
     });
-
-    return { totalCount, phaseCounts, phaseBudgets, dealsList };
+    return { totalCount: filteredDeals.length, phaseCounts, phaseBudgets, dealsList };
   }, [deals, selectedRepresentative]);
 
-  // サービスごとの流入経路（useMemoで日付範囲変更時のみ再計算）
-  const leadSourceData = useMemo(() => {
-    const quarter = getQuarterRange();
-    // 期間指定: カスタム日付があればそちらを使用、なければ今四半期
-    const rangeStart = leadSourceDateFrom ? new Date(leadSourceDateFrom + 'T00:00:00') : quarter.start;
-    const rangeEnd = leadSourceDateTo ? new Date(leadSourceDateTo + 'T23:59:59') : quarter.end;
+  const handleAddDeal = async () => {
+    if (!addForm.companyName || !addForm.productName.trim()) return;
+    setIsSaving(true);
+    try {
+      const newDeal = {
+        companyName: addForm.companyName,
+        productName: addForm.productName.trim(),
+        representative: addForm.representative || '増田',
+        status: 'フェーズ1',
+        expectedBudget: addForm.expectedBudget ? Number(addForm.expectedBudget) : null,
+        isExistingProject: false,
+        salesTrack: 'account',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+      const docRef = await addDoc(collection(db, 'progressDashboard'), newDeal);
 
-    const leadSourceColors = {
-      'テレアポ': '#e74c3c',
-      'リファラル': '#3498db',
-      'パートナー': '#27ae60',
-      'ソーシャル': '#9b59b6',
-      '問い合わせフォーム': '#f39c12',
-      'アップセル': '#1abc9c',
-      'クロスセル': '#e67e22',
-      '未設定': '#95a5a6'
-    };
+      const today = new Date().toISOString().split('T')[0];
+      await addSalesRecord(docRef.id, {
+        phase: 'フェーズ1',
+        budget: addForm.expectedBudget ? Number(addForm.expectedBudget) : '',
+        salesRep: addForm.representative || '増田',
+        operatorRep: '',
+        date: today,
+        startDate: '',
+        endDate: '',
+        recordType: '新規',
+        createdAt: new Date()
+      }, 'newCaseSalesRecords');
 
-    const serviceLeadSource = {};
-    allSalesRecords.forEach(rec => {
-      // salesRecordsから「新規」ラベルかつ期間内のレコード
-      if (rec.recordType !== '新規') return;
-      if (!rec.date) return;
-      const recDate = new Date(rec.date);
-      if (recDate < rangeStart || recDate > rangeEnd) return;
+      setShowAddModal(false);
+      setAddForm({ companyName: '', productName: '', representative: '増田', expectedBudget: '' });
+      await fetchData();
+    } catch (error) {
+      console.error('案件の追加に失敗しました:', error);
+      alert('案件の追加に失敗しました');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
-      const service = rec.proposalMenu || 'その他';
-      const leadSource = rec.leadSource || '未設定';
-
-      if (!serviceLeadSource[service]) {
-        serviceLeadSource[service] = {};
-      }
-      if (!serviceLeadSource[service][leadSource]) {
-        serviceLeadSource[service][leadSource] = 0;
-      }
-      serviceLeadSource[service][leadSource] += rec.budget;
-    });
-
-    const result = {};
-    Object.entries(serviceLeadSource).forEach(([service, sources]) => {
-      const total = Object.values(sources).reduce((sum, amount) => sum + amount, 0);
-      result[service] = Object.entries(sources).map(([source, amount]) => ({
-        label: source,
-        value: amount,
-        percentage: total > 0 ? Math.round((amount / total) * 100) : 0,
-        color: leadSourceColors[source] || '#95a5a6'
-      })).sort((a, b) => b.value - a.value);
-    });
-    return result;
-  }, [allSalesRecords, leadSourceDateFrom, leadSourceDateTo]);
+  const handleSelectKeyAccount = (companyName) => {
+    const account = keyAccounts.find(a => a.companyName === companyName);
+    setAddForm(prev => ({
+      ...prev,
+      companyName,
+      productName: account?.proposalTheme || prev.productName
+    }));
+  };
 
   if (isLoading) {
     return (
@@ -1072,33 +949,38 @@ function NewDealsDashboard() {
   return (
     <DashboardContainer>
       <Header>
-        <Title>新規案件ダッシュボード</Title>
-        <select
-          value={selectedQuarter}
-          onChange={(e) => setSelectedQuarter(e.target.value)}
-          style={{ padding: '0.4rem 0.6rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.9rem', background: 'white' }}
-        >
-          {quarterOptions.map(opt => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </select>
+        <Title>アカウント営業ダッシュボード</Title>
+        <HeaderActions>
+          <select
+            value={selectedQuarter}
+            onChange={(e) => setSelectedQuarter(e.target.value)}
+            style={{ padding: '0.4rem 0.6rem', borderRadius: '6px', border: '1px solid #ddd', fontSize: '0.9rem', background: 'white' }}
+          >
+            {quarterOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <LinkButton to="/key-accounts">
+            <FiList />
+            対象企業リストを管理
+          </LinkButton>
+          <PrimaryButton onClick={() => setShowAddModal(true)}>
+            <FiPlus />
+            案件を登録
+          </PrimaryButton>
+        </HeaderActions>
       </Header>
 
-      {/* 1行目: 四半期実績 & 月間実績 */}
       <GridContainer>
         <Card>
           <CardTitle>
             <FiTarget />
-            チーム全体四半期売上実績（{quarter.label}）
+            四半期売上実績（{quarter.label}）
             <EditButton onClick={openTargetModal} title="目標値を編集">
               <FiEdit2 size={16} />
             </EditButton>
           </CardTitle>
-          <MeterGauge
-            value={quarterActual}
-            target={quarterTarget}
-            label="目標達成率"
-          />
+          <MeterGauge value={quarterActual} target={quarterTarget} label="目標達成率" />
         </Card>
 
         <Card>
@@ -1107,20 +989,14 @@ function NewDealsDashboard() {
             四半期内月別売上実績（{quarter.label}）
           </CardTitle>
           <div style={{ padding: '1rem' }}>
-            {/* 棒グラフ */}
             <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '1rem' }}>
               {quarterMonthlyActual.map((month, index) => {
                 const maxValue = Math.max(...quarterMonthlyActual.map(m => m.value), 1);
                 const heightPercent = (month.value / maxValue) * 100;
-                const barHeight = Math.max(heightPercent * 1.5, 15); // 最大150px、最小15px
+                const barHeight = Math.max(heightPercent * 1.5, 15);
                 return (
                   <div key={index} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, maxWidth: '120px' }}>
-                    <div style={{
-                      fontSize: '0.85rem',
-                      fontWeight: 'bold',
-                      color: month.isCurrentMonth ? '#27ae60' : '#666',
-                      marginBottom: '0.5rem'
-                    }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 'bold', color: month.isCurrentMonth ? '#27ae60' : '#666', marginBottom: '0.5rem' }}>
                       {formatCurrency(month.value)}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'flex-end', height: '150px' }}>
@@ -1128,22 +1004,12 @@ function NewDealsDashboard() {
                         width: '60px',
                         height: `${barHeight}px`,
                         minHeight: '30px',
-                        background: month.isCurrentMonth
-                          ? 'linear-gradient(180deg, #27ae60 0%, #219a52 100%)'
-                          : 'linear-gradient(180deg, #bdc3c7 0%, #95a5a6 100%)',
-                        borderRadius: '4px 4px 0 0',
-                        boxShadow: month.isCurrentMonth ? '0 2px 8px rgba(39, 174, 96, 0.3)' : 'none',
-                        transition: 'all 0.3s ease'
+                        background: month.isCurrentMonth ? 'linear-gradient(180deg, #27ae60 0%, #219a52 100%)' : 'linear-gradient(180deg, #bdc3c7 0%, #95a5a6 100%)',
+                        borderRadius: '4px 4px 0 0'
                       }} />
                     </div>
-                    <div style={{
-                      marginTop: '0.5rem',
-                      fontWeight: month.isCurrentMonth ? 'bold' : 'normal',
-                      color: month.isCurrentMonth ? '#27ae60' : '#666',
-                      fontSize: month.isCurrentMonth ? '1rem' : '0.9rem'
-                    }}>
-                      {month.label}
-                      {month.isCurrentMonth && <span style={{ fontSize: '0.75rem', marginLeft: '2px' }}>★</span>}
+                    <div style={{ marginTop: '0.5rem', fontWeight: month.isCurrentMonth ? 'bold' : 'normal', color: month.isCurrentMonth ? '#27ae60' : '#666' }}>
+                      {month.label}{month.isCurrentMonth && <span style={{ fontSize: '0.75rem', marginLeft: '2px' }}>★</span>}
                     </div>
                   </div>
                 );
@@ -1157,12 +1023,11 @@ function NewDealsDashboard() {
         </Card>
       </GridContainer>
 
-      {/* 2行目: 四半期見込み & 月間見込み */}
       <GridContainer>
         <Card>
           <CardTitle>
             <FiTrendingUp />
-            チーム全体四半期売上見込み（担当者別）
+            四半期売上見込み（担当者別）
           </CardTitle>
           <PieChart data={quarterForecast} />
           <TotalRow>
@@ -1174,7 +1039,7 @@ function NewDealsDashboard() {
         <Card>
           <CardTitle>
             <FiBarChart />
-            チーム全体月間売上見込み（{currentMonth.label}）
+            月間売上見込み（{currentMonth.label}）
           </CardTitle>
           <PieChart data={monthForecast} />
           <TotalRow>
@@ -1184,7 +1049,6 @@ function NewDealsDashboard() {
         </Card>
       </GridContainer>
 
-      {/* 3行目: 個人四半期売上 & 個人月間売上 */}
       <GridContainer>
         <Card>
           <CardTitle>
@@ -1192,26 +1056,12 @@ function NewDealsDashboard() {
             個人四半期売上（{quarter.label}）
           </CardTitle>
           <Table>
-            <thead>
-              <tr>
-                <Th>担当者</Th>
-                <Th style={{ textAlign: 'right' }}>売上額</Th>
-              </tr>
-            </thead>
+            <thead><tr><Th>担当者</Th><Th style={{ textAlign: 'right' }}>売上額</Th></tr></thead>
             <tbody>
-              {quarterlyPersonalSales.length > 0 ? (
-                quarterlyPersonalSales.map((person, index) => (
-                  <tr key={index}>
-                    <Td>{person.name}</Td>
-                    <Td style={{ textAlign: 'right' }}>{formatCurrency(person.amount)}</Td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <Td colSpan={2} style={{ textAlign: 'center', color: '#999' }}>
-                    この四半期の確定売上はありません
-                  </Td>
-                </tr>
+              {quarterlyPersonalSales.length > 0 ? quarterlyPersonalSales.map((person, index) => (
+                <tr key={index}><Td>{person.name}</Td><Td style={{ textAlign: 'right' }}>{formatCurrency(person.amount)}</Td></tr>
+              )) : (
+                <tr><Td colSpan={2} style={{ textAlign: 'center', color: '#999' }}>この四半期の確定売上はありません</Td></tr>
               )}
             </tbody>
           </Table>
@@ -1227,26 +1077,12 @@ function NewDealsDashboard() {
             個人月間売上（{currentMonth.label}）
           </CardTitle>
           <Table>
-            <thead>
-              <tr>
-                <Th>担当者</Th>
-                <Th style={{ textAlign: 'right' }}>確定金額</Th>
-              </tr>
-            </thead>
+            <thead><tr><Th>担当者</Th><Th style={{ textAlign: 'right' }}>確定金額</Th></tr></thead>
             <tbody>
-              {monthlyPersonalSales.length > 0 ? (
-                monthlyPersonalSales.map((person, index) => (
-                  <tr key={index}>
-                    <Td>{person.name}</Td>
-                    <Td style={{ textAlign: 'right' }}>{formatCurrency(person.amount)}</Td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <Td colSpan={2} style={{ textAlign: 'center', color: '#999' }}>
-                    今月の確定売上はありません
-                  </Td>
-                </tr>
+              {monthlyPersonalSales.length > 0 ? monthlyPersonalSales.map((person, index) => (
+                <tr key={index}><Td>{person.name}</Td><Td style={{ textAlign: 'right' }}>{formatCurrency(person.amount)}</Td></tr>
+              )) : (
+                <tr><Td colSpan={2} style={{ textAlign: 'center', color: '#999' }}>今月の確定売上はありません</Td></tr>
               )}
             </tbody>
           </Table>
@@ -1257,7 +1093,6 @@ function NewDealsDashboard() {
         </Card>
       </GridContainer>
 
-      {/* 担当者別案件サマリー */}
       <FullWidthContainer>
         <Card>
           <CardTitle>
@@ -1266,38 +1101,26 @@ function NewDealsDashboard() {
           </CardTitle>
           <SelectWrapper>
             <SelectLabel>担当者を選択:</SelectLabel>
-            <Select
-              value={selectedRepresentative}
-              onChange={(e) => setSelectedRepresentative(e.target.value)}
-            >
+            <Select value={selectedRepresentative} onChange={(e) => setSelectedRepresentative(e.target.value)}>
               <option value="">-- 選択してください --</option>
-              {representativeList.map(rep => (
-                <option key={rep} value={rep}>{rep}</option>
-              ))}
+              {representativeList.map(rep => (<option key={rep} value={rep}>{rep}</option>))}
             </Select>
           </SelectWrapper>
 
           {selectedRepresentative ? (
             <PersonSummaryContainer>
-              {/* 左: フェーズ別案件数（逆ピラミッド型ファネル） */}
               <SummaryBox>
                 <SummaryTitle>フェーズ別 案件数</SummaryTitle>
                 <FunnelContainer>
                   {['フェーズ2', 'フェーズ3', 'フェーズ4', 'フェーズ5', 'フェーズ6', 'フェーズ7'].map((phase, index, arr) => {
                     const count = representativeSummary.phaseCounts[phase] || 0;
-                    // 逆ピラミッド: フェーズ2が上（広い）、フェーズ7が下（狭い）、傾斜を緩やかに
                     const widthPercent = 100 - (index * 6);
                     const nextWidthPercent = index < arr.length - 1 ? 100 - ((index + 1) * 6) : widthPercent - 6;
                     const topIndent = (100 - widthPercent) / 2;
                     const bottomIndent = (100 - nextWidthPercent) / 2;
                     return (
                       <FunnelRow key={phase}>
-                        <FunnelBar
-                          color={STATUS_COLORS[phase]}
-                          topLeft={topIndent}
-                          bottomLeft={bottomIndent}
-                          style={{ width: '100%' }}
-                        >
+                        <FunnelBar color={STATUS_COLORS[phase]} topLeft={topIndent} bottomLeft={bottomIndent} style={{ width: '100%' }}>
                           {phase}: {count}件
                         </FunnelBar>
                       </FunnelRow>
@@ -1309,25 +1132,18 @@ function NewDealsDashboard() {
                 </div>
               </SummaryBox>
 
-              {/* 中央: フェーズ別予算合計（逆ピラミッド型ファネル） */}
               <SummaryBox>
                 <SummaryTitle>フェーズ別 想定予算合計</SummaryTitle>
                 <FunnelContainer>
                   {['フェーズ2', 'フェーズ3', 'フェーズ4', 'フェーズ5', 'フェーズ6', 'フェーズ7'].map((phase, index, arr) => {
                     const budget = representativeSummary.phaseBudgets[phase] || 0;
-                    // 逆ピラミッド: フェーズ2が上（広い）、フェーズ7が下（狭い）、傾斜を緩やかに
                     const widthPercent = 100 - (index * 6);
                     const nextWidthPercent = index < arr.length - 1 ? 100 - ((index + 1) * 6) : widthPercent - 6;
                     const topIndent = (100 - widthPercent) / 2;
                     const bottomIndent = (100 - nextWidthPercent) / 2;
                     return (
                       <FunnelRow key={phase}>
-                        <FunnelBar
-                          color={STATUS_COLORS[phase]}
-                          topLeft={topIndent}
-                          bottomLeft={bottomIndent}
-                          style={{ width: '100%' }}
-                        >
+                        <FunnelBar color={STATUS_COLORS[phase]} topLeft={topIndent} bottomLeft={bottomIndent} style={{ width: '100%' }}>
                           {phase}: {formatCurrency(budget)}
                         </FunnelBar>
                       </FunnelRow>
@@ -1339,7 +1155,6 @@ function NewDealsDashboard() {
                 </div>
               </SummaryBox>
 
-              {/* 右: 案件一覧 */}
               <SummaryBox>
                 <SummaryTitle>案件一覧</SummaryTitle>
                 {representativeSummary.dealsList.length > 0 ? (
@@ -1348,7 +1163,7 @@ function NewDealsDashboard() {
                       <thead>
                         <tr>
                           <DealListTh>会社名</DealListTh>
-                          <DealListTh>商材名</DealListTh>
+                          <DealListTh>提案内容</DealListTh>
                           <DealListTh>フェーズ</DealListTh>
                           <DealListTh style={{ textAlign: 'right' }}>想定予算</DealListTh>
                         </tr>
@@ -1358,9 +1173,7 @@ function NewDealsDashboard() {
                           <tr key={deal.id}>
                             <DealListTd>{deal.companyName}</DealListTd>
                             <DealListTd style={{ fontSize: '0.8rem', color: '#666' }}>{deal.productName}</DealListTd>
-                            <DealListTd>
-                              <PhaseBadge color={STATUS_COLORS[deal.status]}>{deal.status}</PhaseBadge>
-                            </DealListTd>
+                            <DealListTd><PhaseBadge color={STATUS_COLORS[deal.status]}>{deal.status}</PhaseBadge></DealListTd>
                             <DealListTd style={{ textAlign: 'right' }}>{formatCurrency(deal.expectedBudget)}</DealListTd>
                           </tr>
                         ))}
@@ -1368,9 +1181,7 @@ function NewDealsDashboard() {
                     </DealListTable>
                   </div>
                 ) : (
-                  <div style={{ textAlign: 'center', color: '#999', padding: '1rem' }}>
-                    該当する案件がありません
-                  </div>
+                  <div style={{ textAlign: 'center', color: '#999', padding: '1rem' }}>該当する案件がありません</div>
                 )}
               </SummaryBox>
             </PersonSummaryContainer>
@@ -1382,7 +1193,6 @@ function NewDealsDashboard() {
         </Card>
       </FullWidthContainer>
 
-      {/* 滞留商談リスト */}
       <FullWidthContainer>
         <Card>
           <CardTitle>
@@ -1394,7 +1204,7 @@ function NewDealsDashboard() {
               <thead>
                 <tr>
                   <Th>会社名</Th>
-                  <Th>提案メニュー</Th>
+                  <Th>提案内容</Th>
                   <Th style={{ textAlign: 'center' }}>経過日数</Th>
                   <Th style={{ textAlign: 'right' }}>想定予算</Th>
                 </tr>
@@ -1403,10 +1213,8 @@ function NewDealsDashboard() {
                 {stagnantDeals.map((deal) => (
                   <tr key={deal.id}>
                     <Td>{deal.companyName}</Td>
-                    <Td>{deal.proposalMenu}</Td>
-                    <Td style={{ textAlign: 'center' }}>
-                      <AlertBadge>{deal.daysElapsed}日</AlertBadge>
-                    </Td>
+                    <Td>{deal.productName}</Td>
+                    <Td style={{ textAlign: 'center' }}><AlertBadge>{deal.daysElapsed}日</AlertBadge></Td>
                     <Td style={{ textAlign: 'right' }}>{formatCurrency(deal.expectedBudget)}</Td>
                   </tr>
                 ))}
@@ -1420,91 +1228,11 @@ function NewDealsDashboard() {
         </Card>
       </FullWidthContainer>
 
-      {/* サービスごとの流入経路（期間指定付き） */}
-      <FullWidthContainer>
-        <Card>
-          <CardTitle>
-            <FiPieChart />
-            サービスごとの流入経路（売上ベース）
-          </CardTitle>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginTop: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.85rem', color: '#666' }}>期間指定:</span>
-            <input
-              type="date"
-              value={leadSourceDateFrom}
-              onChange={(e) => setLeadSourceDateFrom(e.target.value)}
-              style={{
-                padding: '0.4rem 0.6rem',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                fontSize: '0.85rem'
-              }}
-            />
-            <span style={{ fontSize: '0.85rem', color: '#666' }}>〜</span>
-            <input
-              type="date"
-              value={leadSourceDateTo}
-              onChange={(e) => setLeadSourceDateTo(e.target.value)}
-              style={{
-                padding: '0.4rem 0.6rem',
-                border: '1px solid #ddd',
-                borderRadius: '4px',
-                fontSize: '0.85rem'
-              }}
-            />
-            {(leadSourceDateFrom || leadSourceDateTo) && (
-              <button
-                onClick={() => { setLeadSourceDateFrom(''); setLeadSourceDateTo(''); }}
-                style={{
-                  padding: '0.4rem 0.8rem',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                  background: '#f8f9fa',
-                  cursor: 'pointer',
-                  fontSize: '0.85rem'
-                }}
-              >
-                リセット
-              </button>
-            )}
-            {!leadSourceDateFrom && !leadSourceDateTo && (
-              <span style={{ fontSize: '0.8rem', color: '#999' }}>
-                未指定時は今四半期（{quarter.label}）を表示
-              </span>
-            )}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
-            {Object.entries(leadSourceData).map(([service, data]) => (
-              <div key={service} style={{
-                background: '#f8f9fa',
-                padding: '1rem',
-                borderRadius: '8px',
-                border: '1px solid #e9ecef'
-              }}>
-                <h4 style={{ margin: '0 0 0.75rem 0', color: '#2c3e50', fontSize: '0.95rem' }}>{service}</h4>
-                <PieChart data={data} />
-                <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: '#666', textAlign: 'center' }}>
-                  合計: {formatCurrency(data.reduce((sum, item) => sum + item.value, 0))}
-                </div>
-              </div>
-            ))}
-          </div>
-          {Object.keys(leadSourceData).length === 0 && (
-            <div style={{ textAlign: 'center', padding: '2rem', color: '#999' }}>
-              該当期間の流入経路データがありません
-            </div>
-          )}
-        </Card>
-      </FullWidthContainer>
-
-      {/* 目標編集モーダル */}
       {showTargetModal && (
         <Modal onClick={() => setShowTargetModal(false)}>
           <ModalContent onClick={(e) => e.stopPropagation()}>
             <ModalTitle>四半期目標を編集</ModalTitle>
-            <div style={{ marginBottom: '0.5rem', color: '#666' }}>
-              {quarter.label}の目標売上金額
-            </div>
+            <div style={{ marginBottom: '0.5rem', color: '#666' }}>{quarter.label}の目標売上金額</div>
             <ModalInput
               type="number"
               value={editingTarget}
@@ -1512,16 +1240,62 @@ function NewDealsDashboard() {
               placeholder="目標金額を入力（例: 10000000）"
               min="0"
             />
-            <div style={{ fontSize: '0.85rem', color: '#999', marginBottom: '1rem' }}>
-              入力例: 1000万円 → 10000000
-            </div>
             <ModalButtons>
-              <ModalButton className="cancel" onClick={() => setShowTargetModal(false)}>
-                キャンセル
-              </ModalButton>
-              <ModalButton className="save" onClick={saveTarget}>
-                保存
-              </ModalButton>
+              <ModalButton className="cancel" onClick={() => setShowTargetModal(false)}>キャンセル</ModalButton>
+              <ModalButton className="save" onClick={saveTarget}>保存</ModalButton>
+            </ModalButtons>
+          </ModalContent>
+        </Modal>
+      )}
+
+      {showAddModal && (
+        <Modal onClick={() => setShowAddModal(false)}>
+          <ModalContent onClick={(e) => e.stopPropagation()}>
+            <ModalTitle>アカウント営業案件を登録</ModalTitle>
+
+            <ModalLabel>対象企業 *</ModalLabel>
+            <ModalSelect
+              value={addForm.companyName}
+              onChange={(e) => handleSelectKeyAccount(e.target.value)}
+            >
+              <option value="">-- 対象企業リストから選択 --</option>
+              {keyAccounts.map(account => (
+                <option key={account.id} value={account.companyName}>{account.companyName}</option>
+              ))}
+            </ModalSelect>
+            {keyAccounts.length === 0 && (
+              <div style={{ fontSize: '0.8rem', color: '#e67e22', marginTop: '-0.5rem', marginBottom: '1rem' }}>
+                対象企業が未登録です。先に「対象企業リストを管理」から登録してください。
+              </div>
+            )}
+
+            <ModalLabel>提案内容 *</ModalLabel>
+            <ModalInput
+              type="text"
+              value={addForm.productName}
+              onChange={(e) => setAddForm(prev => ({ ...prev, productName: e.target.value }))}
+              placeholder="例: ○○事業の年間包括提案"
+            />
+
+            <ModalLabel>担当者</ModalLabel>
+            <ModalInput
+              type="text"
+              value={addForm.representative}
+              onChange={(e) => setAddForm(prev => ({ ...prev, representative: e.target.value }))}
+            />
+
+            <ModalLabel>想定予算（円）</ModalLabel>
+            <ModalInput
+              type="number"
+              value={addForm.expectedBudget}
+              onChange={(e) => setAddForm(prev => ({ ...prev, expectedBudget: e.target.value }))}
+              placeholder="例: 5000000"
+              min="0"
+            />
+
+            <ModalButtons>
+              <ModalButton className="cancel" onClick={() => setShowAddModal(false)}>キャンセル</ModalButton>
+              <ModalButton className="save" onClick={handleAddDeal} disabled={isSaving}>登録</ModalButton>
             </ModalButtons>
           </ModalContent>
         </Modal>
@@ -1530,4 +1304,4 @@ function NewDealsDashboard() {
   );
 }
 
-export default NewDealsDashboard;
+export default AccountSalesDashboard;

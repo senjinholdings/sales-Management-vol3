@@ -24,7 +24,21 @@ service cloud.firestore {
       // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
       allow read, write: if true;
     }
-    
+
+    // 紹介者ごとのネクストアクション・コメント
+    match /introducers/{introducerId}/nextActions/{naId} {
+      allow read, write: if true;
+
+      match /comments/{commentId} {
+        allow read, write: if true;
+      }
+    }
+
+    // アカウント営業（増田管轄の大型自主提案）の対象企業リスト
+    match /keyAccounts/{document} {
+      allow read, write: if true;
+    }
+
     // 担当者マスタコレクション（パートナー専用）
     match /representatives/{document} {
       // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
@@ -75,6 +89,18 @@ service cloud.firestore {
 
     // 実施可否すり合わせコレクション（第一想起取れるくん専用）
     match /firstRecallBriefs/{document} {
+      // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
+      allow read, write: if true;
+    }
+
+    // 企業マスタコレクション（基本契約締結フラグ等）
+    match /companies/{document} {
+      // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
+      allow read, write: if true;
+    }
+
+    // 契約締結依頼コレクション
+    match /contractRequests/{document} {
       // 読み取り・書き込みを全て許可（本番環境では適切な認証を設定してください）
       allow read, write: if true;
     }

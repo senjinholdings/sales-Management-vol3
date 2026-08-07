@@ -18,8 +18,22 @@ import {
   fetchSalesRecords,
   ensureStandaloneNaProject
 } from '../services/projectService.js';
+import {
+  fetchAllIntroducerNextActions,
+  updateIntroducerNextActionStatus,
+  updateIntroducerNextAction,
+  deleteIntroducerNextAction,
+  addIntroducerNextAction,
+  fetchIntroducerNaComments,
+  addIntroducerNaComment,
+  updateIntroducerNaComment,
+  deleteIntroducerNaComment
+} from '../services/introducerNaService.js';
 import { fetchAllStaff } from '../services/staffService.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
+import ScheduleConfirmModal from './ScheduleConfirmModal.js';
+import DetailConfirmModal from './DetailConfirmModal.js';
+import { FIRST_RECALL_NA_LABELS } from '../utils/firstRecallNextAction.js';
 
 // ============================================
 // 定数
@@ -807,6 +821,9 @@ const NextActionManagementPage = () => {
   // 営業メモパネル再マウント用カウンター
   const [salesPanelKey, setSalesPanelKey] = useState(0);
 
+  // 第一想起①②NAカードから直接開くモーダル: { type: 'schedule' | 'detail', deal }
+  const [firstRecallModal, setFirstRecallModal] = useState(null);
+
   // ドラッグ中のカードID
   const dragItem = useRef(null);
 
@@ -815,7 +832,15 @@ const NextActionManagementPage = () => {
   const loadNas = useCallback(async () => {
     try {
       setIsLoading(true);
-      const data = await fetchAllNextActions();
+      const [dealNas, introducerNas] = await Promise.all([
+        fetchAllNextActions(),
+        fetchAllIntroducerNextActions()
+      ]);
+      const data = [...dealNas, ...introducerNas].sort((a, b) => {
+        const aTime = a.createdAt?.toMillis?.() || 0;
+        const bTime = b.createdAt?.toMillis?.() || 0;
+        return bTime - aTime;
+      });
       setAllNas(data);
     } catch (error) {
       console.error('Failed to fetch NAs:', error);
@@ -839,7 +864,12 @@ const NextActionManagementPage = () => {
   }, [loadNas, loadStaff]);
 
   // --- ユニークキー ---
-  const naKey = (na) => `${na.projectId}-${na.recordId}-${na.id}`;
+  const naKey = (na) => (
+    na.isIntroducerNa ? `introducer-${na.introducerId}-${na.id}` : `${na.projectId}-${na.recordId}-${na.id}`
+  );
+
+  // 同一NA判定（案件NA/紹介者NAのどちらでも使えるようnaKeyベースで比較する）
+  const isSameNa = (a, b) => naKey(a) === naKey(b);
 
   // URLパラメータからNA詳細を自動オープン（初回ロード時のみ）
   const initialNaParam = useRef(searchParams.get('na'));
@@ -935,15 +965,20 @@ const NextActionManagementPage = () => {
 
   const updateNaStatus = async (na, newStatus, extraFields = {}) => {
     try {
-      await updateSalesEntryStatus(na.projectId, na.recordId, na.id, newStatus, na.subCol || 'salesRecords');
-      // 追加フィールドがあればupdateSalesEntryで更新
-      if (Object.keys(extraFields).length > 0) {
-        await updateSalesEntry(na.projectId, na.recordId, na.id, extraFields, na.subCol || 'salesRecords');
+      if (na.isIntroducerNa) {
+        await updateIntroducerNextActionStatus(na.introducerId, na.id, newStatus);
+        if (Object.keys(extraFields).length > 0) {
+          await updateIntroducerNextAction(na.introducerId, na.id, extraFields);
+        }
+      } else {
+        await updateSalesEntryStatus(na.projectId, na.recordId, na.id, newStatus, na.subCol || 'salesRecords');
+        // 追加フィールドがあればupdateSalesEntryで更新
+        if (Object.keys(extraFields).length > 0) {
+          await updateSalesEntry(na.projectId, na.recordId, na.id, extraFields, na.subCol || 'salesRecords');
+        }
       }
       setAllNas(prev => prev.map(item =>
-        (item.id === na.id && item.projectId === na.projectId && item.recordId === na.recordId)
-          ? { ...item, actionStatus: newStatus, ...extraFields }
-          : item
+        isSameNa(item, na) ? { ...item, actionStatus: newStatus, ...extraFields } : item
       ));
       // 営業メモパネルが開いていたら再マウントしてステータスを同期
       if (salesPanel) setSalesPanelKey(prev => prev + 1);
@@ -971,13 +1006,18 @@ const NextActionManagementPage = () => {
     setNextNaSaving(true);
     try {
       const { na } = nextNaModal;
-      await addSalesEntry(na.projectId, na.recordId, {
+      const nextEntry = {
         memoContent: '',
         actionContent: nextNaContent.trim(),
         actionDueDate: nextNaDueDate,
         actionAssignee: na.actionAssignee || '',
         actionStatus: STATUS_ACTIVE,
-      }, na.subCol || 'salesRecords');
+      };
+      if (na.isIntroducerNa) {
+        await addIntroducerNextAction(na.introducerId, nextEntry);
+      } else {
+        await addSalesEntry(na.projectId, na.recordId, nextEntry, na.subCol || 'salesRecords');
+      }
       await loadNas();
       setNextNaModal(null);
     } catch (error) {
@@ -993,11 +1033,13 @@ const NextActionManagementPage = () => {
   const handleDeleteNa = async (na) => {
     if (!window.confirm('このNAを削除しますか？')) return;
     try {
-      await deleteSalesEntry(na.projectId, na.recordId, na.id, na.subCol || 'salesRecords');
-      setAllNas(prev => prev.filter(item =>
-        !(item.id === na.id && item.projectId === na.projectId && item.recordId === na.recordId)
-      ));
-      if (selectedNa?.id === na.id) closeDetail();
+      if (na.isIntroducerNa) {
+        await deleteIntroducerNextAction(na.introducerId, na.id);
+      } else {
+        await deleteSalesEntry(na.projectId, na.recordId, na.id, na.subCol || 'salesRecords');
+      }
+      setAllNas(prev => prev.filter(item => !isSameNa(item, na)));
+      if (selectedNa && isSameNa(selectedNa, na)) closeDetail();
     } catch (error) {
       console.error('Failed to delete NA:', error);
       alert('NAの削除に失敗しました');
@@ -1147,12 +1189,12 @@ const NextActionManagementPage = () => {
     e.stopPropagation();
     try {
       const updates = { actionContent: editContent, actionDueDate: editDueDate };
-      await updateSalesEntry(na.projectId, na.recordId, na.id, updates, na.subCol || 'salesRecords');
-      setAllNas(prev => prev.map(item =>
-        (item.id === na.id && item.projectId === na.projectId && item.recordId === na.recordId)
-          ? { ...item, ...updates }
-          : item
-      ));
+      if (na.isIntroducerNa) {
+        await updateIntroducerNextAction(na.introducerId, na.id, updates);
+      } else {
+        await updateSalesEntry(na.projectId, na.recordId, na.id, updates, na.subCol || 'salesRecords');
+      }
+      setAllNas(prev => prev.map(item => isSameNa(item, na) ? { ...item, ...updates } : item));
       setEditingCardId(null);
       if (salesPanel) setSalesPanelKey(prev => prev + 1);
     } catch (error) {
@@ -1176,8 +1218,34 @@ const NextActionManagementPage = () => {
     });
   };
 
+  // ①進行スケジュール確認／②詳細確認のNAは専用モーダルを直接開く（vol3ダッシュボードへの移設分）
+  const getFirstRecallModalType = (na) => {
+    if (na.isIntroducerNa || !na.actionContent) return null;
+    if (na.actionContent.includes(FIRST_RECALL_NA_LABELS.schedule)) return 'schedule';
+    if (na.actionContent.includes(FIRST_RECALL_NA_LABELS.detail)) return 'detail';
+    return null;
+  };
+
+  const openFirstRecallModal = async (na, type) => {
+    try {
+      const project = await fetchProjectById(na.projectId);
+      if (project) {
+        setFirstRecallModal({ type, deal: project });
+      }
+    } catch (error) {
+      console.error('Failed to fetch project for first-recall modal:', error);
+    }
+  };
+
   const openDetail = (na) => {
     if (editingCardId) return; // インライン編集中はスキップ
+
+    const firstRecallType = getFirstRecallModalType(na);
+    if (firstRecallType) {
+      openFirstRecallModal(na, firstRecallType);
+      return;
+    }
+
     setSelectedNa(na);
     setEditingField(null);
     setDetailContent(na.actionContent || '');
@@ -1210,13 +1278,13 @@ const NextActionManagementPage = () => {
       return;
     }
     try {
-      await updateSalesEntry(selectedNa.projectId, selectedNa.recordId, selectedNa.id, updates, selectedNa.subCol || 'salesRecords');
+      if (selectedNa.isIntroducerNa) {
+        await updateIntroducerNextAction(selectedNa.introducerId, selectedNa.id, updates);
+      } else {
+        await updateSalesEntry(selectedNa.projectId, selectedNa.recordId, selectedNa.id, updates, selectedNa.subCol || 'salesRecords');
+      }
       const updatedNa = { ...selectedNa, ...updates };
-      setAllNas(prev => prev.map(item =>
-        (item.id === selectedNa.id && item.projectId === selectedNa.projectId && item.recordId === selectedNa.recordId)
-          ? updatedNa
-          : item
-      ));
+      setAllNas(prev => prev.map(item => isSameNa(item, selectedNa) ? updatedNa : item));
       setSelectedNa(updatedNa);
       setEditingField(null);
       if (salesPanel) setSalesPanelKey(prev => prev + 1);
@@ -1243,7 +1311,9 @@ const NextActionManagementPage = () => {
 
   const loadComments = async (na) => {
     try {
-      const data = await fetchNaComments(na.projectId, na.recordId, na.id, na.subCol || 'salesRecords');
+      const data = na.isIntroducerNa
+        ? await fetchIntroducerNaComments(na.introducerId, na.id)
+        : await fetchNaComments(na.projectId, na.recordId, na.id, na.subCol || 'salesRecords');
       setComments(data);
     } catch (error) {
       console.error('Failed to load comments:', error);
@@ -1253,10 +1323,12 @@ const NextActionManagementPage = () => {
   const handleAddComment = async () => {
     if (!commentText.trim() || !selectedNa) return;
     try {
-      await addNaComment(selectedNa.projectId, selectedNa.recordId, selectedNa.id, {
-        content: commentText.trim(),
-        author: CURRENT_USER
-      }, selectedNa.subCol || 'salesRecords');
+      const commentData = { content: commentText.trim(), author: CURRENT_USER };
+      if (selectedNa.isIntroducerNa) {
+        await addIntroducerNaComment(selectedNa.introducerId, selectedNa.id, commentData);
+      } else {
+        await addNaComment(selectedNa.projectId, selectedNa.recordId, selectedNa.id, commentData, selectedNa.subCol || 'salesRecords');
+      }
       setCommentText('');
       await loadComments(selectedNa);
     } catch (error) {
@@ -1267,9 +1339,12 @@ const NextActionManagementPage = () => {
   const handleUpdateComment = async (commentId) => {
     if (!editCommentText.trim() || !selectedNa) return;
     try {
-      await updateNaComment(selectedNa.projectId, selectedNa.recordId, selectedNa.id, commentId, {
-        content: editCommentText.trim()
-      }, selectedNa.subCol || 'salesRecords');
+      const updates = { content: editCommentText.trim() };
+      if (selectedNa.isIntroducerNa) {
+        await updateIntroducerNaComment(selectedNa.introducerId, selectedNa.id, commentId, updates);
+      } else {
+        await updateNaComment(selectedNa.projectId, selectedNa.recordId, selectedNa.id, commentId, updates, selectedNa.subCol || 'salesRecords');
+      }
       setEditingCommentId(null);
       await loadComments(selectedNa);
     } catch (error) {
@@ -1280,7 +1355,11 @@ const NextActionManagementPage = () => {
   const handleDeleteComment = async (commentId) => {
     if (!selectedNa) return;
     try {
-      await deleteNaComment(selectedNa.projectId, selectedNa.recordId, selectedNa.id, commentId, selectedNa.subCol || 'salesRecords');
+      if (selectedNa.isIntroducerNa) {
+        await deleteIntroducerNaComment(selectedNa.introducerId, selectedNa.id, commentId);
+      } else {
+        await deleteNaComment(selectedNa.projectId, selectedNa.recordId, selectedNa.id, commentId, selectedNa.subCol || 'salesRecords');
+      }
       await loadComments(selectedNa);
     } catch (error) {
       console.error('Failed to delete comment:', error);
@@ -1395,7 +1474,9 @@ const NextActionManagementPage = () => {
                                 {dueStatus === 'urgent' && ' 急'}
                               </DueBadge>
                             )}
-                            {na.projectId !== STANDALONE_NA_PROJECT_ID && (
+                            {na.isIntroducerNa ? (
+                              <span>紹介者: {na.introducerName}</span>
+                            ) : na.projectId !== STANDALONE_NA_PROJECT_ID && (
                               <span>{na.companyName}{na.productName ? ` / ${na.productName}` : ''}</span>
                             )}
                             {isReviewing && na.reviewAssignee && (
@@ -1444,8 +1525,14 @@ const NextActionManagementPage = () => {
           <ModalBox onClick={e => e.stopPropagation()} style={{ maxWidth: '450px' }}>
             <ModalTitle>次のネクストアクションを入力</ModalTitle>
             <div style={{ padding: '0.5rem 0', marginBottom: '0.75rem', fontSize: '0.85rem', color: '#666', borderBottom: '1px solid #eee' }}>
-              {nextNaModal.na.companyName && <span style={{ fontWeight: 600, color: '#2c3e50' }}>{nextNaModal.na.companyName}</span>}
-              {nextNaModal.na.productName && <span> - {nextNaModal.na.productName}</span>}
+              {nextNaModal.na.isIntroducerNa ? (
+                <span style={{ fontWeight: 600, color: '#2c3e50' }}>紹介者: {nextNaModal.na.introducerName}</span>
+              ) : (
+                <>
+                  {nextNaModal.na.companyName && <span style={{ fontWeight: 600, color: '#2c3e50' }}>{nextNaModal.na.companyName}</span>}
+                  {nextNaModal.na.productName && <span> - {nextNaModal.na.productName}</span>}
+                </>
+              )}
             </div>
             <div style={{ marginBottom: '0.75rem' }}>
               <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.25rem' }}>NA内容 *</div>
@@ -1551,8 +1638,13 @@ const NextActionManagementPage = () => {
                 </DetailField>
               )}
 
-              {/* 案件情報（スタンドアロンNAでは非表示） */}
-              {selectedNa.projectId !== STANDALONE_NA_PROJECT_ID && (
+              {/* 案件情報・紹介者情報（スタンドアロンNAでは非表示） */}
+              {selectedNa.isIntroducerNa ? (
+                <DetailField>
+                  <DetailLabel>紹介者情報</DetailLabel>
+                  <DetailValue>{selectedNa.introducerName}</DetailValue>
+                </DetailField>
+              ) : selectedNa.projectId !== STANDALONE_NA_PROJECT_ID && (
                 <DetailField>
                   <DetailLabel>案件情報</DetailLabel>
                   <DetailValue>
@@ -1569,19 +1661,24 @@ const NextActionManagementPage = () => {
                 </DetailField>
               )}
 
-              {/* 同じ商材の他のNA */}
-              {selectedNa.projectId !== STANDALONE_NA_PROJECT_ID && (() => {
-                const relatedNas = allNas.filter(na =>
-                  na.projectId === selectedNa.projectId &&
-                  na.id !== selectedNa.id
-                );
-                return relatedNas.length > 0 ? (
+              {/* 同じ商材/同じ紹介者の他のNA */}
+              {(() => {
+                const relatedNas = selectedNa.isIntroducerNa
+                  ? allNas.filter(na => na.isIntroducerNa && na.introducerId === selectedNa.introducerId && na.id !== selectedNa.id)
+                  : selectedNa.projectId !== STANDALONE_NA_PROJECT_ID
+                    ? allNas.filter(na => !na.isIntroducerNa && na.projectId === selectedNa.projectId && na.id !== selectedNa.id)
+                    : [];
+                if (relatedNas.length === 0) return null;
+                const label = selectedNa.isIntroducerNa
+                  ? `この紹介者の他のNA（${relatedNas.length}件）`
+                  : `この商材の他のNA（${relatedNas.length}件）`;
+                return (
                   <DetailField>
-                    <DetailLabel>この商材の他のNA（{relatedNas.length}件）</DetailLabel>
+                    <DetailLabel>{label}</DetailLabel>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.25rem' }}>
                       {relatedNas.map(na => (
                         <div
-                          key={`${na.projectId}_${na.recordId}_${na.id}`}
+                          key={naKey(na)}
                           onClick={() => { setSelectedNa(na); }}
                           style={{
                             padding: '0.5rem 0.6rem',
@@ -1614,11 +1711,11 @@ const NextActionManagementPage = () => {
                       ))}
                     </div>
                   </DetailField>
-                ) : null;
+                );
               })()}
 
-              {/* 営業メモを開く（スタンドアロンNAでは非表示） */}
-              {selectedNa.projectId !== STANDALONE_NA_PROJECT_ID && (
+              {/* 営業メモを開く（スタンドアロンNA・紹介者NAでは非表示） */}
+              {!selectedNa.isIntroducerNa && selectedNa.projectId !== STANDALONE_NA_PROJECT_ID && (
                 <NavigateButton onClick={openSalesPanel}>
                   <FiExternalLink size={14} />
                   営業メモを開く
@@ -1850,6 +1947,26 @@ const NextActionManagementPage = () => {
           </div>
         </div>
       )}
+
+      {/* ①進行スケジュール確認／②詳細確認NAカードから直接開くモーダル */}
+      <ScheduleConfirmModal
+        isOpen={firstRecallModal?.type === 'schedule'}
+        onClose={() => setFirstRecallModal(null)}
+        deal={firstRecallModal?.deal}
+        onSaved={() => {
+          setFirstRecallModal(null);
+          loadNas();
+        }}
+      />
+      <DetailConfirmModal
+        isOpen={firstRecallModal?.type === 'detail'}
+        onClose={() => setFirstRecallModal(null)}
+        deal={firstRecallModal?.deal}
+        onSaved={() => {
+          setFirstRecallModal(null);
+          loadNas();
+        }}
+      />
     </PageContainer>
   );
 };

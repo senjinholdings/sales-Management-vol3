@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
 import { FiStar, FiPlus, FiTrash2, FiCheck, FiTarget } from 'react-icons/fi';
 import { db } from '../firebase.js';
-import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 
 // === styled-components ===
 const PageContainer = styled.div`
@@ -399,7 +399,7 @@ function CoreCustomerPage() {
         const monthKey = editField.replace('action_', '');
         updates[`actions.${monthKey}`] = editValue;
       }
-      await setDoc(doc(db, 'coreCustomers', customer.id), updates, { merge: true });
+      await updateDoc(doc(db, 'coreCustomers', customer.id), updates);
 
       // ローカル更新
       setCoreCustomers(prev => prev.map(c => {

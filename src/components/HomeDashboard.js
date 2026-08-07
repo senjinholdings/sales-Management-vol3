@@ -718,16 +718,17 @@ function HomeDashboard() {
         });
       });
 
-      // 新規案件と既存案件に分離
+      // 新規案件（パイプライン表示用）
       const newDeals = dealsList.filter(d => d.isExistingProject !== true);
-      const existingDeals = dealsList.filter(d => d.isExistingProject === true);
 
-      // 既存案件のsalesRecordsサブコレクションから全レコードを取得
+      // 既存案件のsalesRecords + 新規案件のnewCaseSalesRecordsから全レコードを取得
+      // （新規案件が成約(フェーズ8)した際の実績も売上集計に含めるため、両方とも対象にする）
       const allSalesRecords = [];
-      await Promise.all(existingDeals.map(async (deal) => {
+      await Promise.all(dealsList.map(async (deal) => {
+        const subCol = deal.isExistingProject === true ? 'salesRecords' : 'newCaseSalesRecords';
         try {
           const salesRecordsSnap = await getDocs(
-            collection(db, 'progressDashboard', deal.id, 'salesRecords')
+            collection(db, 'progressDashboard', deal.id, subCol)
           );
           const recs = [];
           salesRecordsSnap.forEach(rec => recs.push({ id: rec.id, ...rec.data() }));

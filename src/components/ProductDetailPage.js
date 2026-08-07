@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiArrowLeft, FiUser, FiCalendar, FiTag, FiEdit, FiFileText, FiSave, FiX, FiPlus, FiTrash2, FiTarget } from 'react-icons/fi';
+import { FiArrowLeft, FiUser, FiCalendar, FiTag, FiEdit, FiFileText, FiSave, FiX, FiPlus, FiTrash2, FiTarget, FiCheckSquare } from 'react-icons/fi';
 import { mockDeals, introducers } from '../data/mockData.js';
 import { STATUS_COLORS, STATUSES } from '../data/constants.js';
 import { db } from '../firebase.js';
 import { collection, query, where, orderBy, getDocs, doc, getDoc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
+import ContractRequestModal from './ContractRequestModal.js';
+import ScheduleConfirmModal from './ScheduleConfirmModal.js';
+import DetailConfirmModal from './DetailConfirmModal.js';
 
 const DetailContainer = styled.div`
   max-width: 1000px;
@@ -358,9 +361,36 @@ const Button = styled.button`
   &.secondary {
     background: #95a5a6;
     color: white;
-    
+
     &:hover {
       background: #7f8c8d;
+    }
+  }
+
+  &.schedule {
+    background: #27ae60;
+    color: white;
+
+    &:hover {
+      background: #219a52;
+    }
+  }
+
+  &.detail {
+    background: #f39c12;
+    color: white;
+
+    &:hover {
+      background: #d68910;
+    }
+  }
+
+  &:disabled {
+    background: #bdc3c7;
+    cursor: not-allowed;
+
+    &:hover {
+      background: #bdc3c7;
     }
   }
 `;
@@ -380,6 +410,9 @@ function ProductDetailPage() {
   const [error, setError] = useState(null);
   const [deal, setDeal] = useState(null);
   const [showBriefModal, setShowBriefModal] = useState(false);
+  const [showContractModal, setShowContractModal] = useState(false);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [showDetailModal, setShowDetailModal] = useState(false);
 
   // パートナー向けかどうかを判定
   const isPartnerView = window.location.pathname.startsWith('/partner-entry');
@@ -579,6 +612,10 @@ function ProductDetailPage() {
       </DetailContainer>
     );
   }
+
+  // ③契約締結依頼は①②(進行スケジュール確認・詳細確認)の両方が完了してから送信可能にする
+  const firstRecallContractStatus = deal.firstRecallContractStatus || 'waiting';
+  const isContractReady = ['ready', 'requested', 'signed'].includes(firstRecallContractStatus);
 
   // 日付フォーマット
   const formatDate = (dateString) => {
@@ -859,10 +896,29 @@ function ProductDetailPage() {
         <Title>{deal.productName}</Title>
         <HeaderSpacer />
         {!isPartnerView && (
-          <Button className="primary" onClick={() => setShowBriefModal(true)}>
-            <FiTarget />
-            第一想起 実施可否すり合わせ
-          </Button>
+          <>
+            <Button className="primary" onClick={() => setShowBriefModal(true)}>
+              <FiTarget />
+              第一想起 実施可否すり合わせ
+            </Button>
+            <Button className="schedule" onClick={() => setShowScheduleModal(true)}>
+              <FiCalendar />
+              ①進行スケジュール確認
+            </Button>
+            <Button className="detail" onClick={() => setShowDetailModal(true)}>
+              <FiCheckSquare />
+              ②詳細確認
+            </Button>
+            <Button
+              className="primary"
+              onClick={() => { if (isContractReady) setShowContractModal(true); }}
+              disabled={!isContractReady}
+              title={isContractReady ? undefined : '①②の確認が完了すると契約締結依頼を送信できます'}
+            >
+              <FiFileText />
+              契約締結依頼
+            </Button>
+          </>
         )}
       </Header>
 
@@ -871,6 +927,33 @@ function ProductDetailPage() {
         onClose={() => setShowBriefModal(false)}
         deal={deal}
         onSaved={() => alert('Slackに実施可否すり合わせ内容を送信しました。')}
+      />
+
+      <ContractRequestModal
+        isOpen={showContractModal}
+        onClose={() => setShowContractModal(false)}
+        deal={deal}
+        onSaved={() => alert('契約締結依頼を送信しました。')}
+      />
+
+      <ScheduleConfirmModal
+        isOpen={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        deal={deal}
+        onSaved={async () => {
+          await fetchDealData();
+          alert('①進行スケジュール確認を保存しました。');
+        }}
+      />
+
+      <DetailConfirmModal
+        isOpen={showDetailModal}
+        onClose={() => setShowDetailModal(false)}
+        deal={deal}
+        onSaved={async () => {
+          await fetchDealData();
+          alert('②詳細確認を保存しました。');
+        }}
       />
 
       <ContentGrid>

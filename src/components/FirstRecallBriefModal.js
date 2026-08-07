@@ -298,6 +298,11 @@ const SLACK_INTAKE_WEBHOOK_URL =
   process.env.REACT_APP_SLACK_WEBHOOK_URL ||
   '';
 
+// first-recall-brief-bot（Cloud Run）のAPI。設定されていればこちら経由で投稿し、
+// ボタン付き（実施可能／不可／要検討）でSlackに表示される。未設定時は従来のWebhook直投稿にフォールバック
+const FIRST_RECALL_BRIEF_BOT_URL = process.env.REACT_APP_FIRST_RECALL_BRIEF_BOT_URL || '';
+const FIRST_RECALL_BRIEF_BOT_SECRET = process.env.REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET || '';
+
 const PURPOSE_OPTIONS = ['売上UP', '指名検索増加', 'IMP'];
 const MALL_OPTIONS = ['Amazon', '楽天', 'Qoo10', '自社EC', '店頭', 'その他'];
 const MALLS_REQUIRING_NOTE = ['店頭', 'その他'];
@@ -404,6 +409,28 @@ const sendBriefToSlack = async (deal, form) => {
       link_names: 1,
     }),
   });
+};
+
+// first-recall-brief-bot経由で投稿する（実施可否ボタン付きでSlackに表示される）
+const sendBriefToBot = async (deal, form, salesMgmtBriefId) => {
+  const response = await fetch(FIRST_RECALL_BRIEF_BOT_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(FIRST_RECALL_BRIEF_BOT_SECRET ? { 'x-brief-secret': FIRST_RECALL_BRIEF_BOT_SECRET } : {}),
+    },
+    body: JSON.stringify({
+      text: buildSlackMessage(deal, form),
+      dealId: deal.id,
+      salesMgmtBriefId,
+      companyName: deal.companyName || '',
+      productName: deal.productName || '',
+      representative: deal.representative || '',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`first-recall-brief-botへの送信に失敗しました (status: ${response.status})`);
+  }
 };
 
 function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
@@ -573,7 +600,7 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
     setIsSubmitting(true);
     try {
       // Firestoreに保存（案件と紐づけ）
-      await addDoc(collection(db, 'firstRecallBriefs'), {
+      const docRef = await addDoc(collection(db, 'firstRecallBriefs'), {
         dealId: deal.id,
         companyName: deal.companyName || '',
         productName: deal.productName || '',
@@ -605,8 +632,13 @@ function FirstRecallBriefModal({ isOpen, onClose, deal, onSaved }) {
       });
 
       // Slackへ実施可否すり合わせ内容を送信
+      // botのAPIが設定されていればそちら経由（ボタン付き）、未設定なら従来のWebhook直投稿（ボタンなし）
       try {
-        await sendBriefToSlack(deal, formData);
+        if (FIRST_RECALL_BRIEF_BOT_URL) {
+          await sendBriefToBot(deal, formData, docRef.id);
+        } else {
+          await sendBriefToSlack(deal, formData);
+        }
       } catch (slackError) {
         console.error('Slack送信エラー:', slackError);
         alert('内容はFirestoreに保存されましたが、Slackへの送信に失敗しました。');
