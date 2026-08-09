@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import styled from 'styled-components';
 import {
   FiPlus,
@@ -488,6 +488,38 @@ const UnsavedText = styled.span`
   font-weight: 500;
 `;
 
+// ---- 振り返り内のタスク一覧（未完了・超過） ----
+
+const ReviewSummaryBlock = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+`;
+
+const ReviewSummaryTitle = styled.h3`
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #2c3e50;
+  margin: 0;
+`;
+
+const ReviewSummaryEmpty = styled.div`
+  font-size: 0.8rem;
+  color: #95a5a6;
+  padding: 0.25rem 0;
+`;
+
+const StateBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: ${(props) => (props.$running ? '#2980b9' : '#7f8c8d')};
+  background: ${(props) => (props.$running ? '#eaf4fd' : '#f0f0f0')};
+  border: 1px solid ${(props) => (props.$running ? '#3498db' : '#ddd')};
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
 // ============================================
 // 日付・時間ヘルパー
 // ============================================
@@ -550,6 +582,30 @@ const plannedEndTime = (hhmm, minutes) => {
 const formatClock = (ms) => {
   const d = new Date(ms);
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+/**
+ * タスクの状態と実績を分類する（実績はDBに保存せず都度計算）
+ * status: 'notStarted' | 'running' | 'done'
+ * 完了かつ予定ありの場合のみ diffMinutes / overdue を持つ（超過判定は表示行と共通）
+ */
+const getTaskTiming = (task) => {
+  const startedMs = toMillis(task.startedAt);
+  const endedMs = toMillis(task.endedAt);
+  if (startedMs === null) {
+    return { status: 'notStarted', actualMs: null, diffMinutes: null, overdue: false };
+  }
+  if (endedMs === null) {
+    return { status: 'running', actualMs: null, diffMinutes: null, overdue: false };
+  }
+  const actualMs = endedMs - startedMs;
+  if (task.plannedMinutes == null) {
+    return { status: 'done', actualMs, diffMinutes: null, overdue: false };
+  }
+  const actualMinutes = Math.round(actualMs / 60000);
+  const diffMinutes = actualMinutes - task.plannedMinutes;
+  const overdue = actualMs > task.plannedMinutes * 60000 && diffMinutes > 0;
+  return { status: 'done', actualMs, diffMinutes, overdue };
 };
 
 /** 予定開始時刻がある行を時刻昇順で先に、ない行はその後ろに追加順で並べる */
@@ -696,6 +752,24 @@ const DailyTimerPage = () => {
   }, [dayDocs, loadedDate, selectedDate, representative]);
 
   const reviewDirty = !isSameReview(reviewDraft, savedReview);
+
+  // 振り返り用の未完了・超過タスク一覧（選択中の担当者のみ、表示専用の派生データ）
+  // 実行中で予定超過中のタスクは実績未確定のため超過一覧には含めず、未完了一覧に載せる
+  const { unfinishedTasks, overdueTasks } = useMemo(() => {
+    const dayDoc = dayDocs.find((d) => d.representative === representative);
+    const tasks = sortTasksForDisplay(dayDoc?.tasks || []);
+    const unfinished = [];
+    const over = [];
+    tasks.forEach((task) => {
+      const timing = getTaskTiming(task);
+      if (timing.status !== 'done') {
+        unfinished.push({ task, timing });
+      } else if (timing.overdue) {
+        over.push({ task, timing });
+      }
+    });
+    return { unfinishedTasks: unfinished, overdueTasks: over };
+  }, [dayDocs, representative]);
 
   const confirmLeaveReview = () =>
     !reviewDirty ||
@@ -878,9 +952,7 @@ const DailyTimerPage = () => {
       );
     }
 
-    const actualMinutes = Math.round(actualMs / 60000);
-    const diffMinutes = actualMinutes - task.plannedMinutes;
-    const overdue = actualMs > plannedMs && diffMinutes > 0;
+    const { diffMinutes, overdue } = getTaskTiming(task);
     return (
       <TaskRow key={task.id} $overdue={overdue}>
         <TaskName>{task.name}</TaskName>
@@ -1055,6 +1127,44 @@ const DailyTimerPage = () => {
         </ReviewHeaderButton>
         {reviewOpen && (
           <ReviewBody>
+            <ReviewSummaryBlock>
+              <ReviewSummaryTitle>未完了タスク</ReviewSummaryTitle>
+              {unfinishedTasks.length === 0 ? (
+                <ReviewSummaryEmpty>未完了タスクはありません</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {unfinishedTasks.map(({ task, timing }) => (
+                    <TaskRow key={task.id}>
+                      <TaskName>{task.name}</TaskName>
+                      {task.plannedMinutes != null && (
+                        <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>
+                      )}
+                      <StateBadge $running={timing.status === 'running'}>
+                        {timing.status === 'running' ? '実行中' : '未開始'}
+                      </StateBadge>
+                    </TaskRow>
+                  ))}
+                </TaskList>
+              )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
+              <ReviewSummaryTitle>超過タスク</ReviewSummaryTitle>
+              {overdueTasks.length === 0 ? (
+                <ReviewSummaryEmpty>超過タスクはありません</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {overdueTasks.map(({ task, timing }) => (
+                    <TaskRow key={task.id} $overdue>
+                      <TaskName>{task.name}</TaskName>
+                      <ResultText $overdue>
+                        予定{task.plannedMinutes}分 / 実績{formatActual(timing.actualMs)}
+                      </ResultText>
+                      <OverdueBadge>超過{timing.diffMinutes}分</OverdueBadge>
+                    </TaskRow>
+                  ))}
+                </TaskList>
+              )}
+            </ReviewSummaryBlock>
             {REVIEW_FIELDS.map((field) => (
               <ReviewField key={field.key}>
                 <ReviewLabel htmlFor={`review-${field.key}`}>{field.label}</ReviewLabel>
