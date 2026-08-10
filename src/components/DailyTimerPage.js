@@ -661,6 +661,13 @@ const plannedEndTime = (hhmm, minutes) => {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 };
 
+/** 予定開始時刻 + 予定時間から終了予定を time input用の "09:30" 形式で返す */
+const plannedEndTimeInput = (hhmm, minutes) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  const total = (h * 60 + m + minutes) % (24 * 60);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
 /** タイムスタンプ(ms)を "9:13" 形式の時刻にする */
 const formatClock = (ms) => {
   const d = new Date(ms);
@@ -790,6 +797,10 @@ const DailyTimerPage = () => {
   // { rep, taskId, times: [{ start: "HH:MM", end: "HH:MM" | "" }] }
   const [editingTask, setEditingTask] = useState(null);
 
+  // 行直下のタスク差し込みフォーム（同時に開けるのは1つ、時刻編集とも排他）
+  // { rep, afterTaskId, startTime: "HH:MM"|"", name, minutes: string }
+  const [insertForm, setInsertForm] = useState(null);
+
   // 振り返り
   const [reviewDraft, setReviewDraft] = useState(normalizeReview());
   const [savedReview, setSavedReview] = useState(normalizeReview());
@@ -891,6 +902,7 @@ const DailyTimerPage = () => {
   const changeDate = (dateKey) => {
     if (!confirmLeaveReview()) return;
     setEditingTask(null);
+    setInsertForm(null);
     setSelectedDate(dateKey);
   };
 
@@ -933,6 +945,7 @@ const DailyTimerPage = () => {
   const handleCalendarSelect = (dateKey) => {
     if (!confirmLeaveReview()) return;
     setEditingTask(null);
+    setInsertForm(null);
     setSelectedDate(dateKey);
     setCalendarOpen(false);
   };
@@ -1002,7 +1015,46 @@ const DailyTimerPage = () => {
 
   // ---- 時刻のインライン編集 ----
 
+  // ---- 行直下のタスク差し込み ----
+
+  const beginInsertAfter = (rep, task) => {
+    // 予定終了時刻（予定開始+予定時間）が計算できる行はそれを自動入力、なければ空で開く
+    const startTime = task.plannedStartTime && task.plannedMinutes != null
+      ? plannedEndTimeInput(task.plannedStartTime, task.plannedMinutes)
+      : '';
+    setEditingTask(null);
+    setInsertForm({ rep, afterTaskId: task.id, startTime, name: '', minutes: '' });
+  };
+
+  const updateInsertForm = (field, value) => {
+    setInsertForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const toggleInsertMinutesChip = (min) => {
+    setInsertForm((prev) => ({
+      ...prev,
+      minutes: Number(prev.minutes) === min ? '' : String(min)
+    }));
+  };
+
+  const insertMinutesNum = Number(insertForm?.minutes);
+  const canInsert = !saving && !!insertForm
+    && insertForm.name.trim() !== ''
+    && insertForm.startTime !== ''
+    && insertForm.minutes.trim() !== ''
+    && Number.isInteger(insertMinutesNum) && insertMinutesNum > 0;
+
+  const handleInsertSave = () => {
+    if (!canInsert) return;
+    const { rep, name, startTime } = insertForm;
+    runMutation(async () => {
+      await addTask(rep, selectedDate, name.trim(), insertMinutesNum, startTime);
+      setInsertForm(null);
+    });
+  };
+
   const beginEditTask = (rep, task) => {
+    setInsertForm(null);
     const sessions = getTaskSessions(task);
     // 未開始は区間1つの新規入力（両方入力で完了扱い）
     const times = sessions.length === 0
@@ -1109,6 +1161,17 @@ const DailyTimerPage = () => {
       </EditIconButton>
     );
 
+    // この行の直下にタスクを差し込むフォームを開く（全状態で表示）
+    const insertIcon = (
+      <EditIconButton
+        onClick={() => beginInsertAfter(rep, task)}
+        disabled={saving}
+        title="この直後にタスクを追加"
+      >
+        <FiPlus size={14} />
+      </EditIconButton>
+    );
+
     // 予定の表示ラベル: 時刻+時間なら「予定 9:00-9:30」、時刻のみ「予定 9:00」、時間のみ「予定 30分」
     const scheduleLabel = hasPlannedStart
       ? hasPlanned
@@ -1133,6 +1196,7 @@ const DailyTimerPage = () => {
             <FiPlay size={12} /> 開始
           </ActionButton>
           {editIcon}
+          {insertIcon}
           {/* 開始済みの行は記録の信頼性を守るため削除ボタン自体を出さない */}
           <DeleteButton onClick={() => handleDelete(rep, task.id)} disabled={saving}>
             <FiTrash2 size={14} />
@@ -1157,6 +1221,7 @@ const DailyTimerPage = () => {
             <FiSquare size={12} /> 終了
           </ActionButton>
           {editIcon}
+          {insertIcon}
         </TaskRow>
       );
     }
@@ -1180,6 +1245,7 @@ const DailyTimerPage = () => {
           <ResultText>実績{formatActual(actualMs)}</ResultText>
           {resumeButton}
           {editIcon}
+          {insertIcon}
           <ValidityMark $type="none" title="予定時間が未設定のため判定なし">−</ValidityMark>
         </TaskRow>
       );
@@ -1200,6 +1266,7 @@ const DailyTimerPage = () => {
         {overdue && <OverdueBadge>超過{diffMinutes}分</OverdueBadge>}
         {resumeButton}
         {editIcon}
+        {insertIcon}
         {/* 妥当性: 実績が予定以内なら◯、超過なら×（判定は超過バッジと共通） */}
         {overdue ? (
           <ValidityMark $type="ng" title="実績が予定時間を超過">×</ValidityMark>
@@ -1351,9 +1418,53 @@ const DailyTimerPage = () => {
             <RepSection key={dayDoc.id}>
               <RepHeader><FiUser size={14} /> {dayDoc.representative}</RepHeader>
               <TaskList>
-                {sortTasksForDisplay(dayDoc.tasks || []).map((task) =>
-                  renderTaskRow(dayDoc.representative, task)
-                )}
+                {sortTasksForDisplay(dayDoc.tasks || []).map((task) => (
+                  <React.Fragment key={task.id}>
+                    {renderTaskRow(dayDoc.representative, task)}
+                    {insertForm &&
+                      insertForm.rep === dayDoc.representative &&
+                      insertForm.afterTaskId === task.id && (
+                        <TaskRow>
+                          <FormLabel>開始</FormLabel>
+                          <TimeInput
+                            type="time"
+                            value={insertForm.startTime}
+                            onChange={(e) => updateInsertForm('startTime', e.target.value)}
+                          />
+                          <Input
+                            placeholder="タスク名を入力..."
+                            value={insertForm.name}
+                            onChange={(e) => updateInsertForm('name', e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleInsertSave(); }}
+                            autoFocus
+                          />
+                          {PRESET_MINUTES.map((min) => (
+                            <MinutesChip
+                              key={min}
+                              $selected={insertForm.minutes !== '' && Number(insertForm.minutes) === min}
+                              onClick={() => toggleInsertMinutesChip(min)}
+                            >
+                              {min}分
+                            </MinutesChip>
+                          ))}
+                          <MinutesInput
+                            type="number"
+                            min="1"
+                            step="1"
+                            placeholder="分"
+                            value={insertForm.minutes}
+                            onChange={(e) => updateInsertForm('minutes', e.target.value)}
+                          />
+                          <AddButton onClick={handleInsertSave} disabled={!canInsert}>
+                            <FiPlus size={14} /> 追加
+                          </AddButton>
+                          <CancelButton onClick={() => setInsertForm(null)} disabled={saving}>
+                            キャンセル
+                          </CancelButton>
+                        </TaskRow>
+                      )}
+                  </React.Fragment>
+                ))}
               </TaskList>
             </RepSection>
           ))
