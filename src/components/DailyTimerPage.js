@@ -19,11 +19,14 @@ import { fetchStaffByRole } from '../services/staffService.js';
 import {
   fetchDailyTimersByDate,
   addTask,
+  addTaskAndStart,
   startTask,
   endTask,
   deleteTask,
   saveReview,
-  fetchDatesWithData
+  fetchDatesWithData,
+  getTaskSessions,
+  updateTaskSessions
 } from '../services/dailyTimerService.js';
 
 // ============================================
@@ -290,6 +293,11 @@ const AddButton = styled.button`
   &:disabled { background: #bdc3c7; cursor: not-allowed; }
 `;
 
+// 割り込みタスク用: 追加と同時にタイマーを開始する（開始ボタンと同じ緑系）
+const StartNowButton = styled(AddButton)`
+  background: #27ae60;
+`;
+
 // ---- タスク一覧 ----
 
 const RepSection = styled.div`
@@ -402,6 +410,81 @@ const EmptyText = styled.div`
   padding: 1.5rem;
   color: #95a5a6;
   font-size: 0.85rem;
+`;
+
+// 妥当性の自動判定表示（完了タスクのみ。◯=予定以内、×=超過、−=予定なし）
+const ValidityMark = styled.span`
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: ${(props) =>
+    props.$type === 'ok' ? '#27ae60' : props.$type === 'ng' ? '#e74c3c' : '#95a5a6'};
+  white-space: nowrap;
+`;
+
+// ---- 時刻のインライン編集 ----
+
+const EditIconButton = styled.button`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  color: #7f8c8d;
+  &:hover { color: #3498db; border-color: #3498db; }
+  &:disabled { color: #ddd; cursor: not-allowed; }
+`;
+
+const EditSessionsBox = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 260px;
+`;
+
+const EditSessionRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+`;
+
+const EditSessionLabel = styled.span`
+  font-size: 0.75rem;
+  color: #7f8c8d;
+  min-width: 40px;
+`;
+
+const EditSep = styled.span`
+  font-size: 0.8rem;
+  color: #7f8c8d;
+`;
+
+const EditHint = styled.span`
+  font-size: 0.75rem;
+  color: #95a5a6;
+`;
+
+const EditActions = styled.div`
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+`;
+
+const CancelButton = styled.button`
+  padding: 0.45rem 0.9rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  color: #7f8c8d;
+  font-size: 0.8rem;
+  cursor: pointer;
+  &:hover { border-color: #95a5a6; color: #2c3e50; }
+  &:disabled { color: #ddd; cursor: not-allowed; }
 `;
 
 // ---- 振り返り（アコーディオン） ----
@@ -584,28 +667,53 @@ const formatClock = (ms) => {
   return `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
 };
 
+/** タイムスタンプ(ms)を time input用の "09:13" 形式にする */
+const toInputTime = (ms) => {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
 /**
  * タスクの状態と実績を分類する（実績はDBに保存せず都度計算）
  * status: 'notStarted' | 'running' | 'done'
+ * 実績は閉じた作業区間の合算（closedMs）。実行中の経過は closedMs + (現在時刻 - runningStartMs)
  * 完了かつ予定ありの場合のみ diffMinutes / overdue を持つ（超過判定は表示行と共通）
  */
 const getTaskTiming = (task) => {
-  const startedMs = toMillis(task.startedAt);
-  const endedMs = toMillis(task.endedAt);
-  if (startedMs === null) {
-    return { status: 'notStarted', actualMs: null, diffMinutes: null, overdue: false };
+  const sessions = getTaskSessions(task);
+  if (sessions.length === 0) {
+    return {
+      status: 'notStarted', firstStartMs: null, closedMs: 0,
+      runningStartMs: null, actualMs: null, diffMinutes: null, overdue: false
+    };
   }
-  if (endedMs === null) {
-    return { status: 'running', actualMs: null, diffMinutes: null, overdue: false };
+  const firstStartMs = toMillis(sessions[0].startedAt);
+  const closedMs = sessions.reduce((sum, s) => {
+    const start = toMillis(s.startedAt);
+    const end = toMillis(s.endedAt);
+    return start !== null && end !== null ? sum + (end - start) : sum;
+  }, 0);
+  const last = sessions[sessions.length - 1];
+  if (toMillis(last.endedAt) === null) {
+    return {
+      status: 'running', firstStartMs, closedMs,
+      runningStartMs: toMillis(last.startedAt), actualMs: null, diffMinutes: null, overdue: false
+    };
   }
-  const actualMs = endedMs - startedMs;
+  const actualMs = closedMs;
   if (task.plannedMinutes == null) {
-    return { status: 'done', actualMs, diffMinutes: null, overdue: false };
+    return {
+      status: 'done', firstStartMs, closedMs,
+      runningStartMs: null, actualMs, diffMinutes: null, overdue: false
+    };
   }
   const actualMinutes = Math.round(actualMs / 60000);
   const diffMinutes = actualMinutes - task.plannedMinutes;
   const overdue = actualMs > task.plannedMinutes * 60000 && diffMinutes > 0;
-  return { status: 'done', actualMs, diffMinutes, overdue };
+  return {
+    status: 'done', firstStartMs, closedMs,
+    runningStartMs: null, actualMs, diffMinutes, overdue
+  };
 };
 
 /** 予定開始時刻がある行を時刻昇順で先に、ない行はその後ろに追加順で並べる */
@@ -678,6 +786,10 @@ const DailyTimerPage = () => {
   const [plannedMinutes, setPlannedMinutes] = useState('');
   const [plannedStartTime, setPlannedStartTime] = useState('');
 
+  // 時刻のインライン編集（同時に編集できるのは1行のみ）
+  // { rep, taskId, times: [{ start: "HH:MM", end: "HH:MM" | "" }] }
+  const [editingTask, setEditingTask] = useState(null);
+
   // 振り返り
   const [reviewDraft, setReviewDraft] = useState(normalizeReview());
   const [savedReview, setSavedReview] = useState(normalizeReview());
@@ -694,6 +806,7 @@ const DailyTimerPage = () => {
 
   const todayKey = formatDateKey(new Date());
   const tomorrowKey = shiftDateKey(todayKey, 1);
+  const isTodaySelected = selectedDate === todayKey;
 
   // 経過時間は保存せず「現在時刻 - 開始時刻」で毎秒計算し直す
   useEffect(() => {
@@ -777,6 +890,7 @@ const DailyTimerPage = () => {
 
   const changeDate = (dateKey) => {
     if (!confirmLeaveReview()) return;
+    setEditingTask(null);
     setSelectedDate(dateKey);
   };
 
@@ -818,6 +932,7 @@ const DailyTimerPage = () => {
 
   const handleCalendarSelect = (dateKey) => {
     if (!confirmLeaveReview()) return;
+    setEditingTask(null);
     setSelectedDate(dateKey);
     setCalendarOpen(false);
   };
@@ -861,6 +976,21 @@ const DailyTimerPage = () => {
     });
   };
 
+  // 割り込みタスク: 現在時刻を開始時刻として追加し、即実行中にする
+  // 予定開始時刻の入力は使わない（フォームの値はそのまま残す）
+  const handleAddAndStart = () => {
+    if (!canAdd) return;
+    runMutation(async () => {
+      await addTaskAndStart(
+        representative,
+        selectedDate,
+        taskName.trim(),
+        hasPlannedInput ? plannedNum : null
+      );
+      setTaskName('');
+    });
+  };
+
   const handleStart = (rep, taskId) =>
     runMutation(() => startTask(rep, selectedDate, taskId));
 
@@ -869,6 +999,43 @@ const DailyTimerPage = () => {
 
   const handleDelete = (rep, taskId) =>
     runMutation(() => deleteTask(rep, selectedDate, taskId));
+
+  // ---- 時刻のインライン編集 ----
+
+  const beginEditTask = (rep, task) => {
+    const sessions = getTaskSessions(task);
+    // 未開始は区間1つの新規入力（両方入力で完了扱い）
+    const times = sessions.length === 0
+      ? [{ start: '', end: '' }]
+      : sessions.map((s) => {
+          const endMs = toMillis(s.endedAt);
+          return {
+            start: toInputTime(toMillis(s.startedAt)),
+            end: endMs !== null ? toInputTime(endMs) : ''
+          };
+        });
+    setEditingTask({ rep, taskId: task.id, times });
+  };
+
+  const updateEditTime = (index, field, value) => {
+    setEditingTask((prev) => ({
+      ...prev,
+      times: prev.times.map((t, i) => (i === index ? { ...t, [field]: value } : t))
+    }));
+  };
+
+  const handleSaveEdit = () => {
+    const { rep, taskId, times } = editingTask;
+    runMutation(async () => {
+      await updateTaskSessions(
+        rep,
+        selectedDate,
+        taskId,
+        times.map((t) => ({ start: t.start, end: t.end || null }))
+      );
+      setEditingTask(null);
+    });
+  };
 
   const handleSaveReview = () => {
     if (!representative) {
@@ -882,11 +1049,65 @@ const DailyTimerPage = () => {
   };
 
   const renderTaskRow = (rep, task) => {
-    const startedMs = toMillis(task.startedAt);
-    const endedMs = toMillis(task.endedAt);
+    const timing = getTaskTiming(task);
     const hasPlanned = task.plannedMinutes != null;
     const plannedMs = hasPlanned ? task.plannedMinutes * 60000 : null;
     const hasPlannedStart = !!task.plannedStartTime;
+
+    // 時刻のインライン編集モード
+    if (editingTask && editingTask.rep === rep && editingTask.taskId === task.id) {
+      const editHint =
+        timing.status === 'notStarted'
+          ? '開始・終了の両方を入力すると完了として記録されます'
+          : timing.status === 'running'
+            ? '実行中の区間は終了を空のままにすると実行中を継続、入力するとその時刻で完了します'
+            : null;
+      return (
+        <TaskRow key={task.id}>
+          <TaskName>{task.name}</TaskName>
+          <EditSessionsBox>
+            {editingTask.times.map((t, i) => (
+              <EditSessionRow key={i}>
+                {editingTask.times.length > 1 && (
+                  <EditSessionLabel>区間{i + 1}</EditSessionLabel>
+                )}
+                <TimeInput
+                  type="time"
+                  value={t.start}
+                  onChange={(e) => updateEditTime(i, 'start', e.target.value)}
+                />
+                <EditSep>〜</EditSep>
+                <TimeInput
+                  type="time"
+                  value={t.end}
+                  onChange={(e) => updateEditTime(i, 'end', e.target.value)}
+                />
+              </EditSessionRow>
+            ))}
+            {editHint && <EditHint>{editHint}</EditHint>}
+            <EditActions>
+              <CancelButton onClick={() => setEditingTask(null)} disabled={saving}>
+                キャンセル
+              </CancelButton>
+              <ActionButton onClick={handleSaveEdit} disabled={saving}>
+                <FiSave size={12} /> 保存
+              </ActionButton>
+            </EditActions>
+          </EditSessionsBox>
+        </TaskRow>
+      );
+    }
+
+    // タイマー押し忘れの事後修正用（全状態で表示。過去日でも修正可）
+    const editIcon = (
+      <EditIconButton
+        onClick={() => beginEditTask(rep, task)}
+        disabled={saving}
+        title="時刻を修正"
+      >
+        <FiEdit3 size={14} />
+      </EditIconButton>
+    );
 
     // 予定の表示ラベル: 時刻+時間なら「予定 9:00-9:30」、時刻のみ「予定 9:00」、時間のみ「予定 30分」
     const scheduleLabel = hasPlannedStart
@@ -897,13 +1118,13 @@ const DailyTimerPage = () => {
         ? `予定 ${task.plannedMinutes}分`
         : null;
 
-    // 予定開始と実開始のズレ表示（開始済みの行のみ）
-    const startGapLabel = hasPlannedStart && startedMs !== null
-      ? `予定${formatTimeHM(task.plannedStartTime)} / 開始${formatClock(startedMs)}`
+    // 予定開始と実開始（初回区間の開始）のズレ表示（開始済みの行のみ）
+    const startGapLabel = hasPlannedStart && timing.firstStartMs !== null
+      ? `予定${formatTimeHM(task.plannedStartTime)} / 開始${formatClock(timing.firstStartMs)}`
       : null;
 
     // 未開始
-    if (startedMs === null) {
+    if (timing.status === 'notStarted') {
       return (
         <TaskRow key={task.id}>
           <TaskName>{task.name}</TaskName>
@@ -911,6 +1132,7 @@ const DailyTimerPage = () => {
           <ActionButton onClick={() => handleStart(rep, task.id)} disabled={saving}>
             <FiPlay size={12} /> 開始
           </ActionButton>
+          {editIcon}
           {/* 開始済みの行は記録の信頼性を守るため削除ボタン自体を出さない */}
           <DeleteButton onClick={() => handleDelete(rep, task.id)} disabled={saving}>
             <FiTrash2 size={14} />
@@ -919,9 +1141,9 @@ const DailyTimerPage = () => {
       );
     }
 
-    // 実行中: 経過時間は表示のたびに「現在時刻 - 開始時刻」で計算
-    if (endedMs === null) {
-      const elapsedMs = now - startedMs;
+    // 実行中: 経過 = 閉じた区間の合算 + (現在時刻 - 実行中区間の開始)
+    if (timing.status === 'running') {
+      const elapsedMs = timing.closedMs + (now - timing.runningStartMs);
       const overdue = hasPlanned && elapsedMs > plannedMs;
       const overdueMinutes = overdue ? Math.ceil((elapsedMs - plannedMs) / 60000) : 0;
       return (
@@ -934,25 +1156,35 @@ const DailyTimerPage = () => {
           <ActionButton $variant="stop" onClick={() => handleEnd(rep, task.id)} disabled={saving}>
             <FiSquare size={12} /> 終了
           </ActionButton>
+          {editIcon}
         </TaskRow>
       );
     }
 
-    // 完了: 実績 = 終了時刻 - 開始時刻
-    const actualMs = endedMs - startedMs;
+    // 完了: 実績 = 閉じた区間の合算
+    const { actualMs, diffMinutes, overdue } = timing;
 
-    // 予定なしの行は超過判定をせず実績のみ表示
+    // 再開は「今の時刻」で区間を追加するため、今日を表示中のときのみ可能
+    const resumeButton = isTodaySelected && (
+      <ActionButton onClick={() => handleStart(rep, task.id)} disabled={saving}>
+        <FiPlay size={12} /> 再開
+      </ActionButton>
+    );
+
+    // 予定なしの行は超過判定をせず実績のみ表示（妥当性は判定不能で「−」）
     if (!hasPlanned) {
       return (
         <TaskRow key={task.id}>
           <TaskName>{task.name}</TaskName>
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
+          {resumeButton}
+          {editIcon}
+          <ValidityMark $type="none" title="予定時間が未設定のため判定なし">−</ValidityMark>
         </TaskRow>
       );
     }
 
-    const { diffMinutes, overdue } = getTaskTiming(task);
     return (
       <TaskRow key={task.id} $overdue={overdue}>
         <TaskName>{task.name}</TaskName>
@@ -966,6 +1198,14 @@ const DailyTimerPage = () => {
               : ''}
         </ResultText>
         {overdue && <OverdueBadge>超過{diffMinutes}分</OverdueBadge>}
+        {resumeButton}
+        {editIcon}
+        {/* 妥当性: 実績が予定以内なら◯、超過なら×（判定は超過バッジと共通） */}
+        {overdue ? (
+          <ValidityMark $type="ng" title="実績が予定時間を超過">×</ValidityMark>
+        ) : (
+          <ValidityMark $type="ok" title="実績が予定時間以内">◯</ValidityMark>
+        )}
       </TaskRow>
     );
   };
@@ -1091,6 +1331,11 @@ const DailyTimerPage = () => {
             <AddButton onClick={handleAddTask} disabled={!canAdd}>
               <FiPlus size={14} /> 追加
             </AddButton>
+            {isTodaySelected && (
+              <StartNowButton onClick={handleAddAndStart} disabled={!canAdd}>
+                <FiPlay size={14} /> 今すぐ開始
+              </StartNowButton>
+            )}
           </FormRow>
         </AddForm>
       </Section>
