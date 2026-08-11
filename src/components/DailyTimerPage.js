@@ -14,7 +14,8 @@ import {
   FiCalendar,
   FiEdit3,
   FiSave,
-  FiLink
+  FiLink,
+  FiMenu
 } from 'react-icons/fi';
 import { fetchStaffByRole } from '../services/staffService.js';
 import {
@@ -27,7 +28,8 @@ import {
   saveReview,
   fetchDatesWithData,
   getTaskSessions,
-  updateTaskDetails
+  updateTaskDetails,
+  reorderTasks
 } from '../services/dailyTimerService.js';
 
 // ============================================
@@ -560,6 +562,29 @@ const LinkItem = styled.a`
   &:hover { text-decoration: underline; }
 `;
 
+// ---- ドラッグ&ドロップ並び替え ----
+
+// 行のラッパー。ドロップ位置の挿入線をborderで表示する
+const RowDragWrap = styled.div`
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+  border-top: 2px solid ${(props) => (props.$dropBefore ? '#3498db' : 'transparent')};
+  border-bottom: 2px solid ${(props) => (props.$dropAfter ? '#3498db' : 'transparent')};
+  opacity: ${(props) => (props.$dragging ? 0.4 : 1)};
+  & > *:last-child { flex: 1; min-width: 0; }
+`;
+
+const DragHandle = styled.span`
+  display: flex;
+  align-items: center;
+  padding: 0 0.15rem;
+  color: #bdc3c7;
+  cursor: grab;
+  &:hover { color: #7f8c8d; }
+  &:active { cursor: grabbing; }
+`;
+
 // ---- 振り返り（アコーディオン） ----
 
 const ReviewHeaderButton = styled.button`
@@ -804,6 +829,14 @@ const sortTasksForDisplay = (tasks) => {
   return [...withTime, ...withoutTime];
 };
 
+/**
+ * ドキュメントの表示順のタスク一覧を返す
+ * manualSort（一度でもD&Dで並び替えた）ならtasks配列の並びが正、
+ * 未設定の既存ドキュメントは従来どおり予定開始時刻ソート
+ */
+const getDisplayTasks = (dayDoc) =>
+  dayDoc?.manualSort ? (dayDoc.tasks || []) : sortTasksForDisplay(dayDoc?.tasks || []);
+
 const LAST_REP_STORAGE_KEY = 'dailyTimerLastRepresentative';
 
 // デイリータイマーの担当者は荒幡のみ（担当者マスターは他画面と共用のため画面側で絞る）
@@ -873,6 +906,10 @@ const DailyTimerPage = () => {
   // アウトプットリンクのポップオーバー（複数リンクの行のみ使用）
   // { rep, taskId } | null
   const [linksPopover, setLinksPopover] = useState(null);
+
+  // D&D並び替え（担当者をまたぐ移動は不可）
+  const [dragItem, setDragItem] = useState(null);           // { rep, taskId }
+  const [dropIndicator, setDropIndicator] = useState(null); // { rep, taskId, before }
 
   // 行直下のタスク差し込みフォーム（同時に開けるのは1つ、時刻編集とも排他）
   // { rep, afterTaskId, startTime: "HH:MM"|"", name, minutes: string }
@@ -958,7 +995,7 @@ const DailyTimerPage = () => {
   // 実行中で予定超過中のタスクは実績未確定のため超過一覧には含めず、未完了一覧に載せる
   const { unfinishedTasks, overdueTasks } = useMemo(() => {
     const dayDoc = dayDocs.find((d) => d.representative === representative);
-    const tasks = sortTasksForDisplay(dayDoc?.tasks || []);
+    const tasks = getDisplayTasks(dayDoc);
     const unfinished = [];
     const over = [];
     tasks.forEach((task) => {
@@ -1094,6 +1131,54 @@ const DailyTimerPage = () => {
 
   // ---- 時刻のインライン編集 ----
 
+  // ---- D&D並び替え ----
+
+  const handleDragStart = (rep, taskId) => (e) => {
+    e.dataTransfer.effectAllowed = 'move';
+    // FirefoxはsetDataしないとドラッグが始まらない
+    e.dataTransfer.setData('text/plain', taskId);
+    setEditingTask(null);
+    setInsertForm(null);
+    setLinksPopover(null);
+    setDragItem({ rep, taskId });
+  };
+
+  const handleDragEnd = () => {
+    setDragItem(null);
+    setDropIndicator(null);
+  };
+
+  const handleRowDragOver = (rep, taskId) => (e) => {
+    // 別担当者の行の上ではpreventDefaultしない=ドロップ不可
+    if (!dragItem || dragItem.rep !== rep || dragItem.taskId === taskId) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    const before = e.clientY < rect.top + rect.height / 2;
+    setDropIndicator((prev) =>
+      prev && prev.rep === rep && prev.taskId === taskId && prev.before === before
+        ? prev
+        : { rep, taskId, before }
+    );
+  };
+
+  const handleRowDrop = (dayDoc, targetTaskId) => (e) => {
+    e.preventDefault();
+    const indicator = dropIndicator;
+    handleDragEnd();
+    if (!dragItem || dragItem.rep !== dayDoc.representative || dragItem.taskId === targetTaskId) {
+      return;
+    }
+    // 現在の表示順を基準に、ドラッグ行を抜いてドロップ位置に差し込む
+    const original = getDisplayTasks(dayDoc).map((t) => t.id);
+    const ids = original.filter((id) => id !== dragItem.taskId);
+    const before = indicator && indicator.taskId === targetTaskId ? indicator.before : true;
+    const insertAt = ids.indexOf(targetTaskId) + (before ? 0 : 1);
+    ids.splice(insertAt, 0, dragItem.taskId);
+    if (ids.every((id, i) => id === original[i])) return; // 並びが変わらなければ保存しない
+    runMutation(() => reorderTasks(dayDoc.representative, selectedDate, ids));
+  };
+
   // ---- 行直下のタスク差し込み ----
 
   const beginInsertAfter = (rep, task) => {
@@ -1125,9 +1210,10 @@ const DailyTimerPage = () => {
 
   const handleInsertSave = () => {
     if (!canInsert) return;
-    const { rep, name, startTime } = insertForm;
+    const { rep, name, startTime, afterTaskId } = insertForm;
     runMutation(async () => {
-      await addTask(rep, selectedDate, name.trim(), insertMinutesNum, startTime);
+      // afterTaskId指定で配列上も押した行の直後に挿入（手動並び順の日でも位置が保たれる）
+      await addTask(rep, selectedDate, name.trim(), insertMinutesNum, startTime, afterTaskId);
       setInsertForm(null);
     });
   };
@@ -1551,9 +1637,35 @@ const DailyTimerPage = () => {
             <RepSection key={dayDoc.id}>
               <RepHeader><FiUser size={14} /> {dayDoc.representative}</RepHeader>
               <TaskList>
-                {sortTasksForDisplay(dayDoc.tasks || []).map((task) => (
+                {getDisplayTasks(dayDoc).map((task) => (
                   <React.Fragment key={task.id}>
-                    {renderTaskRow(dayDoc.representative, task)}
+                    <RowDragWrap
+                      $dragging={
+                        dragItem?.rep === dayDoc.representative && dragItem?.taskId === task.id
+                      }
+                      $dropBefore={
+                        dropIndicator?.rep === dayDoc.representative &&
+                        dropIndicator?.taskId === task.id &&
+                        dropIndicator.before
+                      }
+                      $dropAfter={
+                        dropIndicator?.rep === dayDoc.representative &&
+                        dropIndicator?.taskId === task.id &&
+                        !dropIndicator.before
+                      }
+                      onDragOver={handleRowDragOver(dayDoc.representative, task.id)}
+                      onDrop={handleRowDrop(dayDoc, task.id)}
+                    >
+                      <DragHandle
+                        draggable
+                        onDragStart={handleDragStart(dayDoc.representative, task.id)}
+                        onDragEnd={handleDragEnd}
+                        title="ドラッグで並び替え"
+                      >
+                        <FiMenu size={14} />
+                      </DragHandle>
+                      {renderTaskRow(dayDoc.representative, task)}
+                    </RowDragWrap>
                     {insertForm &&
                       insertForm.rep === dayDoc.representative &&
                       insertForm.afterTaskId === task.id && (

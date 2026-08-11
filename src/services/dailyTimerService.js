@@ -18,6 +18,8 @@ import {
  *   tasks: [{ id, name, plannedMinutes(number|null), plannedStartTime("HH:MM"|null),
  *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null) }],
  *             outputUrls([string]、任意。アウトプットのリンク。なしは未定義/空配列) }],
+ *   manualSort(boolean、任意): trueならtasks配列の並びが表示順の正（D&Dで初めて並び替えた時に立つ）。
+ *     未設定の既存ドキュメントは従来どおり予定開始時刻ソートで表示する
  *   review: { notAchieved, timeImprovement, reflection, nextAction }（1日1件の振り返り。tasksとは独立）
  *
  * sessionsは作業区間の配列（時系列順）。終了したタスクは「再開」で区間を追加できる。
@@ -70,11 +72,12 @@ const closeOpenSessions = (sessions, endedAt) =>
   sessions.map((s) => (s.endedAt ? s : { ...s, endedAt }));
 
 // merge:true でtasks以外のフィールド（review等）を保全する
-const saveTasks = async (ref, representative, date, tasks) => {
+const saveTasks = async (ref, representative, date, tasks, extra = {}) => {
   await setDoc(ref, {
     representative,
     date,
     tasks,
+    ...extra,
     updatedAt: Timestamp.now()
   }, { merge: true });
 };
@@ -105,18 +108,25 @@ export const fetchDailyTimersByDate = async (date) => {
  * @param {string} name - タスク名
  * @param {number|null} plannedMinutes - 予定時間（分・整数）。予定なしはnull
  * @param {string|null} plannedStartTime - 予定開始時刻（"HH:MM"）。未設定はnull
+ * @param {string|null} afterTaskId - 指定したタスクの直後に挿入（手動並び順の日でも位置が保たれる）。省略は末尾
  */
-export const addTask = async (representative, date, name, plannedMinutes, plannedStartTime) => {
+export const addTask = async (representative, date, name, plannedMinutes, plannedStartTime, afterTaskId = null) => {
   try {
     const { ref, data } = await getDayDoc(representative, date);
     const tasks = (data?.tasks || []).map(normalizeTask);
-    tasks.push({
+    const newTask = {
       id: generateTaskId(),
       name,
       plannedMinutes: plannedMinutes ?? null,
       plannedStartTime: plannedStartTime ?? null,
       sessions: []
-    });
+    };
+    const afterIndex = afterTaskId ? tasks.findIndex((t) => t.id === afterTaskId) : -1;
+    if (afterIndex >= 0) {
+      tasks.splice(afterIndex + 1, 0, newTask);
+    } else {
+      tasks.push(newTask);
+    }
     await saveTasks(ref, representative, date, tasks);
   } catch (error) {
     console.error('Failed to add task:', error);
@@ -326,6 +336,35 @@ export const deleteTask = async (representative, date, taskId) => {
     await saveTasks(ref, representative, date, updated);
   } catch (error) {
     console.error('Failed to delete task:', error);
+    throw error;
+  }
+};
+
+/**
+ * タスクの表示順を並び替える（D&D用）
+ * tasks配列を指定された順序に書き換え、manualSort: true を立てる
+ * （以後このドキュメントはtasks配列の並びが表示順の正となる）
+ * @param {string} representative - 担当者名
+ * @param {string} date - "YYYY-MM-DD"
+ * @param {Array<string>} orderedTaskIds - 新しい表示順のタスクID（現在の全タスクと過不足なく一致すること）
+ */
+export const reorderTasks = async (representative, date, orderedTaskIds) => {
+  try {
+    const { ref, data } = await getDayDoc(representative, date);
+    if (!data) throw new Error('対象の日報データが見つかりません');
+
+    const tasks = (data.tasks || []).map(normalizeTask);
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const idSetMatches =
+      orderedTaskIds.length === tasks.length && orderedTaskIds.every((id) => byId.has(id));
+    if (!idSetMatches) {
+      throw new Error('タスクが変更されています。画面を再読み込みしてください');
+    }
+
+    const ordered = orderedTaskIds.map((id) => byId.get(id));
+    await saveTasks(ref, representative, date, ordered, { manualSort: true });
+  } catch (error) {
+    console.error('Failed to reorder tasks:', error);
     throw error;
   }
 };
