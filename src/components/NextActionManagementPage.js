@@ -73,6 +73,23 @@ const getDueStatus = (dueDate) => {
   return 'normal';
 };
 
+/** 今日の日付を"YYYY-MM-DD"で返す（ローカル日付。toISOStringはUTCになるため使わない） */
+const getTodayDateString = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+};
+
+/**
+ * 期日が当日または超過しているtodoのNAは、本日必達カラムへ自動的に表示する（表示のみの導出）。
+ * DBのactionStatusは書き換えない: 全ユーザーのload時に一斉書き込みが走る方式は
+ * 紹介者NAの更新パス誤りでボードが読めなくなるバグ（旧feature/today-due-auto-move）と
+ * 書き込み競合の温床になったため採用しない。
+ */
+const isAutoPromotedToMustToday = (na) => {
+  const status = na.actionStatus || STATUS_ACTIVE;
+  return status === STATUS_ACTIVE && !!na.actionDueDate && na.actionDueDate <= getTodayDateString();
+};
+
 /** テキストエリアの自動リサイズハンドラー */
 const autoResize = (e) => {
   const el = e.target;
@@ -816,6 +833,13 @@ const NextActionManagementPage = () => {
   const [nextNaDueDate, setNextNaDueDate] = useState('');
   const [nextNaSaving, setNextNaSaving] = useState(false);
 
+  // doneドロップ時の次のNA入力モーダル（入力必須。閉じるとdoneへの移動自体を取り消す）
+  // ステータスはモーダル確定まで書き込まないため、キャンセル=何も起きない
+  const [doneNaModal, setDoneNaModal] = useState(null); // { na, extraFields }
+  const [doneNaContent, setDoneNaContent] = useState('');
+  const [doneNaDueDate, setDoneNaDueDate] = useState('');
+  const [doneNaSaving, setDoneNaSaving] = useState(false);
+
   // URLコピー済みフラグ
   const [copiedUrl, setCopiedUrl] = useState(false);
 
@@ -923,7 +947,10 @@ const NextActionManagementPage = () => {
     COLUMNS.forEach(col => { result[col.id] = []; });
     filteredNas.forEach(na => {
       const status = na.actionStatus || STATUS_ACTIVE;
-      if (result[status]) {
+      // 期日当日・超過のtodoは本日必達カラムへ自動表示（DBは書き換えない）
+      if (isAutoPromotedToMustToday(na)) {
+        result[STATUS_MUST_TODAY].push(na);
+      } else if (result[status]) {
         result[status].push(na);
       } else {
         // 不明ステータスはtodo列に
@@ -962,6 +989,12 @@ const NextActionManagementPage = () => {
     const na = dragItem.current;
     if (!na) return;
 
+    // 期日当日・超過で本日必達に自動表示されているカードはtodoへ戻せない（導出表示のため）
+    if (targetColumnId === STATUS_ACTIVE && isAutoPromotedToMustToday(na)) {
+      alert('期日が当日または超過しているため、このNAは本日必達に自動表示されます（todoへは戻せません）');
+      return;
+    }
+
     const currentStatus = na.actionStatus || STATUS_ACTIVE;
     if (currentStatus === targetColumnId) return;
 
@@ -975,7 +1008,46 @@ const NextActionManagementPage = () => {
     const extraFields = (currentStatus === STATUS_REVIEWING && targetColumnId !== STATUS_REVIEWING)
       ? { reviewAssignee: '' }
       : {};
+
+    // doneへの移動は次のNA入力を必須にする（確定までステータスは書き込まない）
+    // ステージ連動NA（対象案件）はdone時に次ステージNAが自動生成されるため対象外
+    if (targetColumnId === STATUS_DONE && !(na.stageNaStage != null && isStageTargetProject(na))) {
+      setDoneNaContent('');
+      setDoneNaDueDate('');
+      setDoneNaModal({ na, extraFields });
+      return;
+    }
+
     await updateNaStatus(na, targetColumnId, extraFields);
+  };
+
+  // doneドロップの確定: doneへ移動し、入力された次のNAをtodoに追加する
+  const handleConfirmDoneNa = async () => {
+    if (!doneNaModal || !doneNaContent.trim() || !doneNaDueDate) return;
+    setDoneNaSaving(true);
+    try {
+      const { na, extraFields } = doneNaModal;
+      await updateNaStatus(na, STATUS_DONE, extraFields);
+      const nextEntry = {
+        memoContent: '',
+        actionContent: doneNaContent.trim(),
+        actionDueDate: doneNaDueDate,
+        actionAssignee: na.actionAssignee || '',
+        actionStatus: STATUS_ACTIVE,
+      };
+      if (na.isIntroducerNa) {
+        await addIntroducerNextAction(na.introducerId, nextEntry);
+      } else {
+        await addSalesEntry(na.projectId, na.recordId, nextEntry, na.subCol || 'salesRecords');
+      }
+      await loadNas();
+      setDoneNaModal(null);
+    } catch (error) {
+      console.error('doneと次のNA登録エラー:', error);
+      alert('次のNAの登録に失敗しました');
+    } finally {
+      setDoneNaSaving(false);
+    }
   };
 
   const updateNaStatus = async (na, newStatus, extraFields = {}) => {
@@ -1627,6 +1699,57 @@ const NextActionManagementPage = () => {
                 style={{ padding: '0.5rem 1.25rem', border: 'none', borderRadius: '6px', background: '#3498db', color: 'white', fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem', opacity: (!nextNaContent.trim() || !nextNaDueDate || nextNaSaving) ? 0.5 : 1 }}
               >
                 {nextNaSaving ? '保存中...' : '追加'}
+              </button>
+            </div>
+          </ModalBox>
+        </ModalOverlay>
+      )}
+
+      {/* doneドロップ時の次のNA入力モーダル（入力必須、閉じるとdoneへの移動を取り消し） */}
+      {doneNaModal && (
+        <ModalOverlay onClick={() => setDoneNaModal(null)}>
+          <ModalBox onClick={e => e.stopPropagation()} style={{ maxWidth: '450px' }}>
+            <ModalTitle>doneにする前に、次のネクストアクションを入力</ModalTitle>
+            <div style={{ padding: '0.5rem 0', marginBottom: '0.75rem', fontSize: '0.85rem', color: '#666', borderBottom: '1px solid #eee' }}>
+              {doneNaModal.na.isIntroducerNa ? (
+                <span style={{ fontWeight: 600, color: '#2c3e50' }}>紹介者: {doneNaModal.na.introducerName}</span>
+              ) : (
+                <>
+                  {doneNaModal.na.companyName && <span style={{ fontWeight: 600, color: '#2c3e50' }}>{doneNaModal.na.companyName}</span>}
+                  {doneNaModal.na.productName && <span> - {doneNaModal.na.productName}</span>}
+                </>
+              )}
+              <div style={{ marginTop: '0.25rem' }}>done対象: {doneNaModal.na.actionContent}</div>
+            </div>
+            <div style={{ marginBottom: '0.75rem', fontSize: '0.75rem', color: '#e67e22' }}>
+              次のNAを入力するまでdoneになりません。キャンセルするとdoneへの移動は取り消されます。
+            </div>
+            <div style={{ marginBottom: '0.75rem' }}>
+              <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.25rem' }}>次のNA内容 *</div>
+              <textarea
+                value={doneNaContent}
+                onChange={(e) => setDoneNaContent(e.target.value)}
+                placeholder="次のアクション内容..."
+                style={{ width: '100%', minHeight: '80px', padding: '0.5rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem', resize: 'vertical', fontFamily: 'inherit' }}
+              />
+            </div>
+            <div style={{ marginBottom: '1rem' }}>
+              <div style={{ fontSize: '0.8rem', color: '#666', marginBottom: '0.25rem' }}>期日 *</div>
+              <input
+                type="date"
+                value={doneNaDueDate}
+                onChange={(e) => setDoneNaDueDate(e.target.value)}
+                style={{ padding: '0.5rem', border: '1px solid #ddd', borderRadius: '6px', fontSize: '0.9rem', width: '100%' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+              <ModalCancelBtn onClick={() => setDoneNaModal(null)}>キャンセル（移動を取り消す）</ModalCancelBtn>
+              <button
+                onClick={handleConfirmDoneNa}
+                disabled={!doneNaContent.trim() || !doneNaDueDate || doneNaSaving}
+                style={{ padding: '0.5rem 1.25rem', border: 'none', borderRadius: '6px', background: '#27ae60', color: 'white', fontWeight: 600, cursor: 'pointer', fontSize: '0.85rem', opacity: (!doneNaContent.trim() || !doneNaDueDate || doneNaSaving) ? 0.5 : 1 }}
+              >
+                {doneNaSaving ? '保存中...' : 'doneにして次のNAを登録'}
               </button>
             </div>
           </ModalBox>
