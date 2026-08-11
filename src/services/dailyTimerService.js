@@ -16,7 +16,8 @@ import {
  * フィールド:
  *   representative(string), date("YYYY-MM-DD"),
  *   tasks: [{ id, name, plannedMinutes(number|null), plannedStartTime("HH:MM"|null),
- *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null) }] }],
+ *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null) }],
+ *             outputUrls([string]、任意。アウトプットのリンク。なしは未定義/空配列) }],
  *   review: { notAchieved, timeImprovement, reflection, nextAction }（1日1件の振り返り。tasksとは独立）
  *
  * sessionsは作業区間の配列（時系列順）。終了したタスクは「再開」で区間を追加できる。
@@ -215,18 +216,37 @@ const timeToTimestamp = (date, hhmm) => {
   return Timestamp.fromDate(new Date(y, m - 1, d, h, min, 0, 0));
 };
 
+/** アウトプットリンクの正規化: trim・空行除去・スキーム補完・URL形式チェック */
+const normalizeOutputUrls = (urls) =>
+  urls
+    .map((u) => u.trim())
+    .filter((u) => u !== '')
+    .map((u) => {
+      const withScheme = /^https?:\/\//i.test(u) ? u : `https://${u}`;
+      try {
+        new URL(withScheme);
+      } catch {
+        throw new Error(`リンクのURL形式が正しくありません: ${u}`);
+      }
+      return withScheme;
+    });
+
 /**
- * タスクの作業区間の時刻を手動修正する（タイマー押し忘れの事後修正用）
+ * タスクの作業区間の時刻・アウトプットリンクを修正する
  * @param {string} representative - 担当者名
  * @param {string} date - "YYYY-MM-DD"
  * @param {string} taskId - タスクID
- * @param {Array<{start: string, end: string|null}>} sessionTimes - 区間ごとの時刻（"HH:MM"、その日付内・時系列順）
- * 制約:
+ * @param {Object} details
+ * @param {Array<{start: string, end: string|null}>|null} details.sessionTimes -
+ *   区間ごとの時刻（"HH:MM"、その日付内・時系列順）。nullならsessionsは変更しない
+ *   （未開始タスクにリンクだけ登録するケース）
+ * @param {Array<string>|undefined} details.outputUrls - アウトプットリンク。undefinedなら変更しない
+ * 時刻の制約:
  * - 区間の追加・削除はできない（未開始タスクのみ区間1つの新規入力=完了扱いを許可）
  * - endにnullを渡せるのは元々開いていた区間のみ（手動修正で実行中状態は作らない）
  * - 各区間で終了>開始、区間同士は重複不可
  */
-export const updateTaskSessions = async (representative, date, taskId, sessionTimes) => {
+export const updateTaskDetails = async (representative, date, taskId, { sessionTimes, outputUrls }) => {
   try {
     const { ref, data } = await getDayDoc(representative, date);
     if (!data) throw new Error('対象の日報データが見つかりません');
@@ -234,6 +254,17 @@ export const updateTaskSessions = async (representative, date, taskId, sessionTi
     const tasks = (data.tasks || []).map(normalizeTask);
     const target = tasks.find((t) => t.id === taskId);
     if (!target) throw new Error('対象のタスクが見つかりません');
+
+    const newUrls = outputUrls !== undefined ? normalizeOutputUrls(outputUrls) : undefined;
+
+    if (sessionTimes === null) {
+      // 時刻は変更せずリンクのみ更新
+      const updated = tasks.map((t) =>
+        t.id === taskId && newUrls !== undefined ? { ...t, outputUrls: newUrls } : t
+      );
+      await saveTasks(ref, representative, date, updated);
+      return;
+    }
 
     if (target.sessions.length === 0) {
       if (sessionTimes.length !== 1) throw new Error('未開始のタスクは区間1つのみ入力できます');
@@ -265,10 +296,14 @@ export const updateTaskSessions = async (representative, date, taskId, sessionTi
       return { startedAt, endedAt };
     });
 
-    const updated = tasks.map((t) => (t.id === taskId ? { ...t, sessions: newSessions } : t));
+    const updated = tasks.map((t) =>
+      t.id === taskId
+        ? { ...t, sessions: newSessions, ...(newUrls !== undefined ? { outputUrls: newUrls } : {}) }
+        : t
+    );
     await saveTasks(ref, representative, date, updated);
   } catch (error) {
-    console.error('Failed to update task sessions:', error);
+    console.error('Failed to update task details:', error);
     throw error;
   }
 };

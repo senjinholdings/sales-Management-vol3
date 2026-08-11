@@ -13,7 +13,8 @@ import {
   FiUser,
   FiCalendar,
   FiEdit3,
-  FiSave
+  FiSave,
+  FiLink
 } from 'react-icons/fi';
 import { fetchStaffByRole } from '../services/staffService.js';
 import {
@@ -26,7 +27,7 @@ import {
   saveReview,
   fetchDatesWithData,
   getTaskSessions,
-  updateTaskSessions
+  updateTaskDetails
 } from '../services/dailyTimerService.js';
 
 // ============================================
@@ -487,6 +488,78 @@ const CancelButton = styled.button`
   &:disabled { color: #ddd; cursor: not-allowed; }
 `;
 
+const EditFieldLabel = styled.span`
+  font-size: 0.75rem;
+  color: #7f8c8d;
+  font-weight: 500;
+`;
+
+const LinksTextarea = styled.textarea`
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 56px;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  resize: vertical;
+  &:focus { outline: none; border-color: #3498db; }
+`;
+
+// ---- アウトプットリンク表示 ----
+
+const LinkAnchor = styled.div`
+  position: relative;
+  display: flex;
+`;
+
+const LinkIconButton = styled.button`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 5px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  color: #2980b9;
+  font-size: 0.7rem;
+  font-weight: 600;
+  &:hover { border-color: #3498db; background: #eaf4fd; }
+`;
+
+const LinksPopover = styled.div`
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 100;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  padding: 0.5rem;
+  min-width: 200px;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+`;
+
+const LinkItem = styled.a`
+  display: block;
+  font-size: 0.8rem;
+  color: #2980b9;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  &:hover { text-decoration: underline; }
+`;
+
 // ---- 振り返り（アコーディオン） ----
 
 const ReviewHeaderButton = styled.button`
@@ -794,8 +867,12 @@ const DailyTimerPage = () => {
   const [plannedStartTime, setPlannedStartTime] = useState('');
 
   // 時刻のインライン編集（同時に編集できるのは1行のみ）
-  // { rep, taskId, times: [{ start: "HH:MM", end: "HH:MM" | "" }] }
+  // { rep, taskId, times: [{ start: "HH:MM", end: "HH:MM" | "" }], links: string }
   const [editingTask, setEditingTask] = useState(null);
+
+  // アウトプットリンクのポップオーバー（複数リンクの行のみ使用）
+  // { rep, taskId } | null
+  const [linksPopover, setLinksPopover] = useState(null);
 
   // 行直下のタスク差し込みフォーム（同時に開けるのは1つ、時刻編集とも排他）
   // { rep, afterTaskId, startTime: "HH:MM"|"", name, minutes: string }
@@ -903,6 +980,7 @@ const DailyTimerPage = () => {
     if (!confirmLeaveReview()) return;
     setEditingTask(null);
     setInsertForm(null);
+    setLinksPopover(null);
     setSelectedDate(dateKey);
   };
 
@@ -946,6 +1024,7 @@ const DailyTimerPage = () => {
     if (!confirmLeaveReview()) return;
     setEditingTask(null);
     setInsertForm(null);
+    setLinksPopover(null);
     setSelectedDate(dateKey);
     setCalendarOpen(false);
   };
@@ -1066,7 +1145,7 @@ const DailyTimerPage = () => {
             end: endMs !== null ? toInputTime(endMs) : ''
           };
         });
-    setEditingTask({ rep, taskId: task.id, times });
+    setEditingTask({ rep, taskId: task.id, times, links: (task.outputUrls || []).join('\n') });
   };
 
   const updateEditTime = (index, field, value) => {
@@ -1077,14 +1156,16 @@ const DailyTimerPage = () => {
   };
 
   const handleSaveEdit = () => {
-    const { rep, taskId, times } = editingTask;
+    const { rep, taskId, times, links } = editingTask;
+    // 時刻欄がすべて空（未開始タスクで時刻を入れなかった）ならsessionsは変更せずリンクのみ保存
+    const allTimesEmpty = times.every((t) => !t.start && !t.end);
     runMutation(async () => {
-      await updateTaskSessions(
-        rep,
-        selectedDate,
-        taskId,
-        times.map((t) => ({ start: t.start, end: t.end || null }))
-      );
+      await updateTaskDetails(rep, selectedDate, taskId, {
+        sessionTimes: allTimesEmpty
+          ? null
+          : times.map((t) => ({ start: t.start, end: t.end || null })),
+        outputUrls: links.split('\n')
+      });
       setEditingTask(null);
     });
   };
@@ -1137,6 +1218,14 @@ const DailyTimerPage = () => {
               </EditSessionRow>
             ))}
             {editHint && <EditHint>{editHint}</EditHint>}
+            <EditFieldLabel>アウトプットリンク（1行に1URL）</EditFieldLabel>
+            <LinksTextarea
+              placeholder={'https://...\nhttps://...'}
+              value={editingTask.links}
+              onChange={(e) =>
+                setEditingTask((prev) => ({ ...prev, links: e.target.value }))
+              }
+            />
             <EditActions>
               <CancelButton onClick={() => setEditingTask(null)} disabled={saving}>
                 キャンセル
@@ -1172,6 +1261,46 @@ const DailyTimerPage = () => {
       </EditIconButton>
     );
 
+    // アウトプットリンク: 1件なら直接開く、複数ならポップオーバーで選択
+    const outputUrls = task.outputUrls || [];
+    const isLinksPopoverOpen =
+      linksPopover && linksPopover.rep === rep && linksPopover.taskId === task.id;
+    const linkIcon = outputUrls.length > 0 && (
+      <LinkAnchor>
+        <LinkIconButton
+          onClick={() => {
+            if (outputUrls.length === 1) {
+              window.open(outputUrls[0], '_blank', 'noopener,noreferrer');
+            } else {
+              setLinksPopover(isLinksPopoverOpen ? null : { rep, taskId: task.id });
+            }
+          }}
+          title={outputUrls.length === 1 ? outputUrls[0] : `アウトプットリンク ${outputUrls.length}件`}
+        >
+          <FiLink size={13} />
+          {outputUrls.length > 1 && outputUrls.length}
+        </LinkIconButton>
+        {isLinksPopoverOpen && (
+          <>
+            <CalendarOverlay onClick={() => setLinksPopover(null)} />
+            <LinksPopover>
+              {outputUrls.map((url) => (
+                <LinkItem
+                  key={url}
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={url}
+                >
+                  {url.replace(/^https?:\/\//, '')}
+                </LinkItem>
+              ))}
+            </LinksPopover>
+          </>
+        )}
+      </LinkAnchor>
+    );
+
     // 予定の表示ラベル: 時刻+時間なら「予定 9:00-9:30」、時刻のみ「予定 9:00」、時間のみ「予定 30分」
     const scheduleLabel = hasPlannedStart
       ? hasPlanned
@@ -1197,6 +1326,7 @@ const DailyTimerPage = () => {
           </ActionButton>
           {editIcon}
           {insertIcon}
+          {linkIcon}
           {/* 開始済みの行は記録の信頼性を守るため削除ボタン自体を出さない */}
           <DeleteButton onClick={() => handleDelete(rep, task.id)} disabled={saving}>
             <FiTrash2 size={14} />
@@ -1222,6 +1352,7 @@ const DailyTimerPage = () => {
           </ActionButton>
           {editIcon}
           {insertIcon}
+          {linkIcon}
         </TaskRow>
       );
     }
@@ -1246,6 +1377,7 @@ const DailyTimerPage = () => {
           {resumeButton}
           {editIcon}
           {insertIcon}
+          {linkIcon}
           <ValidityMark $type="none" title="予定時間が未設定のため判定なし">−</ValidityMark>
         </TaskRow>
       );
@@ -1267,6 +1399,7 @@ const DailyTimerPage = () => {
         {resumeButton}
         {editIcon}
         {insertIcon}
+        {linkIcon}
         {/* 妥当性: 実績が予定以内なら◯、超過なら×（判定は超過バッジと共通） */}
         {overdue ? (
           <ValidityMark $type="ng" title="実績が予定時間を超過">×</ValidityMark>
