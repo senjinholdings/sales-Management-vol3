@@ -10,7 +10,7 @@ import { db } from '../firebase.js';
 import { collection, query, orderBy, getDocs, onSnapshot, deleteDoc, doc, updateDoc, serverTimestamp, addDoc, setDoc } from 'firebase/firestore';
 import ReceivedOrderModal from './ReceivedOrderModal.js';
 
-import { addSalesRecord } from '../services/projectService.js';
+import { addSalesRecord, saveReceivedOrder } from '../services/projectService.js';
 import { checkPhase4StagnationNa } from '../utils/phase4StagnationNa.js';
 import { useUndoContext } from '../contexts/UndoContext.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
@@ -1094,37 +1094,17 @@ function ProgressDashboard() {
   };
 
   // 受注情報保存 → 既存案件へ移行
+  // 対象案件はモーダルに渡したdeal（orderData.dealId）を使う。
+  // selectedDeal（パネルで開いている案件）を使うと、パネル未オープン時に何も保存されず、
+  // 別案件のパネルを開いたまま操作すると誤った案件へ書き込まれるため使わない
   const handleSaveReceivedOrder = async (orderData) => {
-    if (!selectedDeal) return;
+    const dealId = orderData.dealId || receivedOrderModal.deal?.id;
+    if (!dealId) return;
     try {
       setIsSavingOrder(true);
-
-      // 同一ドキュメントを既存案件へ移行（複製ドキュメントは作らない）
-      const dealRef = doc(db, 'progressDashboard', selectedDeal.id);
-      await updateDoc(dealRef, {
-        status: 'フェーズ8',
-        isExistingProject: true,
-        confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],
-        receivedOrderDate: orderData.receivedOrderDate,
-        receivedOrderAmount: orderData.receivedOrderAmount,
-        contractRequested: true,
-        updatedAt: serverTimestamp()
-      });
-
-      // 成約の営業記録を追加（成約案件一覧はこのレコードを表示）
-      await addSalesRecord(selectedDeal.id, {
-        phase: 'フェーズ8',
-        budget: orderData.receivedOrderAmount,
-        confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],
-        date: new Date().toISOString().split('T')[0],
-        salesRep: orderData.salesRep || '',
-        operatorRep: orderData.operatorRep || '',
-        startDate: orderData.startDate || '',
-        endDate: orderData.endDate || '',
-        recordType: '新規',
-        createdAt: new Date()
-      });
-
+      // 共通処理: 同一ドキュメントを既存案件へin-place移行し、
+      // タブ由来のフェーズ8レコードがあれば成約レコードへ昇格（二重計上の吸収）
+      await saveReceivedOrder(dealId, orderData);
       setReceivedOrderModal({ show: false, deal: null });
       setSelectedDeal(null);
       alert('受注情報が保存され、既存案件に移行しました');

@@ -470,6 +470,71 @@ export const fetchSalesRecords = async (projectId, subCol = 'salesRecords') => {
 };
 
 /**
+ * 受注確定を保存する（受注モーダルの保存処理の共通化）
+ * - 案件ドキュメントを既存案件へin-place移行する（複製ドキュメントは作らない）
+ * - 成約レコード: salesRecords内に「confirmedDateを持たないフェーズ8レコード」
+ *   （営業記録タブのフェーズ8更新で生まれたレコード）があれば、最新の1件に受注情報を
+ *   上書きして成約レコードへ昇格させる。これにより1回の受注で成約案件一覧に
+ *   2行出る二重計上を吸収する。confirmedDate付き（確定済みの過去の成約）は
+ *   保護し、新しい成約レコードを追加する
+ * @param {string} dealId - 案件ID
+ * @param {object} orderData - 受注モーダルの入力値
+ */
+export const saveReceivedOrder = async (dealId, orderData) => {
+  const today = new Date().toISOString().split('T')[0];
+  const confirmedDate = orderData.receivedOrderDate || today;
+
+  const dealRef = doc(db, 'progressDashboard', dealId);
+  await updateDoc(dealRef, {
+    status: 'フェーズ8',
+    isExistingProject: true,
+    confirmedDate,
+    receivedOrderDate: orderData.receivedOrderDate || '',
+    receivedOrderAmount: orderData.receivedOrderAmount,
+    contractRequested: true,
+    updatedAt: serverTimestamp()
+  });
+
+  const orderFields = {
+    phase: 'フェーズ8',
+    budget: orderData.receivedOrderAmount,
+    confirmedDate,
+    salesRep: orderData.salesRep || '',
+    operatorRep: orderData.operatorRep || '',
+    startDate: orderData.startDate || '',
+    endDate: orderData.endDate || ''
+  };
+
+  const records = await fetchSalesRecords(dealId, 'salesRecords');
+  const absorbTargets = records
+    .filter((r) => r.phase === 'フェーズ8' && !r.confirmedDate)
+    .sort((a, b) => {
+      const aDate = a.date || '';
+      const bDate = b.date || '';
+      if (aDate !== bDate) return bDate.localeCompare(aDate);
+      const aTime = a.createdAt?.toMillis?.() || (a.createdAt?.seconds ?? 0) * 1000;
+      const bTime = b.createdAt?.toMillis?.() || (b.createdAt?.seconds ?? 0) * 1000;
+      return bTime - aTime;
+    });
+
+  if (absorbTargets.length > 0) {
+    // 上書き時はdate（商談日）とrecordTypeを元レコードのまま維持する
+    const target = absorbTargets[0];
+    await updateSalesRecord(dealId, target.id, {
+      ...orderFields,
+      recordType: target.recordType || '新規'
+    }, 'salesRecords');
+  } else {
+    await addSalesRecord(dealId, {
+      ...orderFields,
+      date: today,
+      recordType: '新規',
+      createdAt: new Date()
+    }, 'salesRecords');
+  }
+};
+
+/**
  * 営業記録を更新する
  * @param {string} projectId - 案件ID
  * @param {string} recordId - 記録ID

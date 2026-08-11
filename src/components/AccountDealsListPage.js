@@ -1173,13 +1173,16 @@ function AccountDealsListPage() {
   };
 
   // 受注情報保存 → 既存案件へ移行
+  // 対象案件はモーダルに渡したdeal（orderData.dealId）を使う。
+  // selectedDealはパネル未オープン時にnullで何も保存されない・別案件へ誤書き込みの恐れがあるため使わない
   const handleSaveReceivedOrder = async (orderData) => {
-    if (!selectedDeal) return;
+    const targetDeal = receivedOrderModal.deal;
+    if (!targetDeal || !orderData.dealId || targetDeal.id !== orderData.dealId) return;
     try {
       setIsSavingOrder(true);
 
       // 新規側のレコードはフェーズ8に更新するが、isExistingProjectはfalseのまま残す
-      const dealRef = doc(db, 'progressDashboard', selectedDeal.id);
+      const dealRef = doc(db, 'progressDashboard', orderData.dealId);
       await updateDoc(dealRef, {
         status: 'フェーズ8',
         confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],
@@ -1191,14 +1194,14 @@ function AccountDealsListPage() {
 
       // 既存側に別レコードを作成
       const existingRef = await addDoc(collection(db, 'progressDashboard'), {
-        companyName: selectedDeal.companyName,
-        introducer: selectedDeal.introducer || '',
-        productName: selectedDeal.productName,
-        leadSource: selectedDeal.leadSource || '',
-        representative: selectedDeal.representative || '',
+        companyName: targetDeal.companyName,
+        introducer: targetDeal.introducer || '',
+        productName: targetDeal.productName,
+        leadSource: targetDeal.leadSource || '',
+        representative: targetDeal.representative || '',
         status: 'フェーズ8',
         expectedBudget: orderData.receivedOrderAmount,
-        rank: selectedDeal.rank || '',
+        rank: targetDeal.rank || '',
         isExistingProject: true,
         salesTrack: 'account',
         confirmedDate: orderData.receivedOrderDate || new Date().toISOString().split('T')[0],

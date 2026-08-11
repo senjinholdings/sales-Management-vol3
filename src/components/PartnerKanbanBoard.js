@@ -302,9 +302,10 @@ function PartnerKanbanBoard() {
       console.log('💾 パートナーカンバン受注情報保存開始:', orderData);
       
       // salesService経由で受注情報を保存
+      // 実施月はモーダルの受注日（YYYY-MM-DD）から導出する（旧モーダルのreceivedOrderMonthは現行では渡されない）
       await updateDealOrderInfo(
         orderData.dealId,
-        orderData.receivedOrderMonth,
+        orderData.receivedOrderMonth || (orderData.receivedOrderDate || '').slice(0, 7),
         orderData.receivedOrderAmount
       );
       
