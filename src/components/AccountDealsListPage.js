@@ -10,8 +10,8 @@ import { db } from '../firebase.js';
 import { collection, query, orderBy, getDocs, onSnapshot, deleteDoc, doc, updateDoc, serverTimestamp, addDoc, setDoc } from 'firebase/firestore';
 import ReceivedOrderModal from './ReceivedOrderModal.js';
 
-import { addSalesRecord, addSalesEntry } from '../services/projectService.js';
-import { resolveSalesSubCol, getLatestRecordId } from '../utils/firstRecallNextAction.js';
+import { addSalesRecord } from '../services/projectService.js';
+import { checkPhase4StagnationNa } from '../utils/phase4StagnationNa.js';
 import { useUndoContext } from '../contexts/UndoContext.js';
 import ProjectDetailPanel from './ProjectDetailPanel.js';
 
@@ -118,52 +118,6 @@ const calcElapsedDays = (createdAt) => {
   if (isNaN(created.getTime())) return null;
   const diff = Math.floor((new Date() - created) / (1000 * 60 * 60 * 24));
   return diff;
-};
-
-// フェーズ4滞留チェック用
-const PHASE4_STAGNATION_DAYS = 7;
-const PHASE4_STAGNATION_ACTION_CONTENT = '決済者に直接話すことを提案する';
-
-/**
- * フェーズ4に7日以上滞留している案件に、決裁者との直接対話を提案するNAを自動生成する。
- * phaseEnteredAtが無い古いデータはupdatedAtを基準時刻として代用する
- * （updatedAtが7日以上前ならその間フェーズも変わっていないことが保証されるため）。
- * phase4StagnationNaCreatedAtで一度生成済みかを判定し、重複生成を防ぐ。
- */
-const checkPhase4StagnationNa = async (deal) => {
-  if (deal.status !== 'フェーズ4') return;
-  if (deal.phase4StagnationNaCreatedAt) return;
-
-  let referenceDate = null;
-  if (deal.phaseEnteredAt?.toDate) {
-    referenceDate = deal.phaseEnteredAt.toDate();
-  } else if (deal.updatedAt) {
-    referenceDate = new Date(deal.updatedAt);
-  } else if (deal.createdAt) {
-    referenceDate = new Date(deal.createdAt);
-  }
-  if (!referenceDate || isNaN(referenceDate.getTime())) return;
-
-  const elapsedDays = Math.floor((new Date() - referenceDate) / (1000 * 60 * 60 * 24));
-  if (elapsedDays < PHASE4_STAGNATION_DAYS) return;
-
-  try {
-    const subCol = resolveSalesSubCol(deal);
-    const recordId = await getLatestRecordId(deal.id, subCol, deal.status || '');
-    await addSalesEntry(deal.id, recordId, {
-      memoContent: '',
-      actionContent: PHASE4_STAGNATION_ACTION_CONTENT,
-      actionDueDate: new Date().toISOString().split('T')[0],
-      actionAssignee: deal.representative || '',
-      actionStatus: 'active',
-      phase: deal.status,
-    }, subCol);
-    await updateDoc(doc(db, 'progressDashboard', deal.id), {
-      phase4StagnationNaCreatedAt: serverTimestamp(),
-    });
-  } catch (error) {
-    console.error('フェーズ4滞留NA自動生成に失敗:', error);
-  }
 };
 
 /** 期日バッジタイプを判定 */
@@ -743,11 +697,11 @@ function AccountDealsListPage() {
 
       const progressRef = doc(db, 'progressDashboard', dealId);
       // phaseEnteredAtはフェーズ4滞留チェックの基準時刻として使用する
+      // phase4StagnationNaCreatedAtはリセットしない（滞留NAは案件ごとに一度きり生成の方針）
       const updateData = {
         status: newStatus,
         updatedAt: serverTimestamp(),
         phaseEnteredAt: serverTimestamp(),
-        phase4StagnationNaCreatedAt: null,
       };
       if (newStatus === 'フェーズ8') {
         updateData.confirmedDate = new Date().toISOString().split('T')[0];

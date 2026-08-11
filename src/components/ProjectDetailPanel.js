@@ -3006,10 +3006,10 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
     // ドキュメント本体のstatusも更新（ダッシュボード集計に反映するため）
     // phaseEnteredAtはフェーズ4滞留チェック（案件一覧側）の基準時刻として使用する
     try {
+      // phase4StagnationNaCreatedAtはリセットしない（滞留NAは案件ごとに一度きり生成の方針）
       await updateProject(project.id, {
         status: newPhase,
         phaseEnteredAt: serverTimestamp(),
-        phase4StagnationNaCreatedAt: null,
       });
     } catch (error) {
       console.error('Failed to update document status:', error);
