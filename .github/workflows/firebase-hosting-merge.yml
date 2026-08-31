@@ -18,6 +18,7 @@ jobs:
 
       - name: Build admin app
         env:
+          CI: false
           PUBLIC_URL: /admin
           REACT_APP_SLACK_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_WEBHOOK_URL }}
           REACT_APP_SLACK_INTAKE_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_INTAKE_WEBHOOK_URL }}
@@ -35,6 +36,7 @@ jobs:
 
       - name: Build partner app
         env:
+          CI: false
           PUBLIC_URL: /partner
           REACT_APP_ENTRY_POINT: partner
           REACT_APP_SLACK_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_WEBHOOK_URL }}
