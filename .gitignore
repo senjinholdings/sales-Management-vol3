@@ -22,6 +22,11 @@
 
 # production
 /build
+# GitHub Actionsが毎回ビルドしてデプロイするため、コミット不要
+# （以前はここにビルド成果物を都度コミットしていたが、Slack Webhook URL等の
+#   REACT_APP_*値がJSにそのまま埋め込まれ、GitHubのシークレット保護に
+#   ブロックされる問題があった）
+/dist
 
 # misc
 .DS_Store

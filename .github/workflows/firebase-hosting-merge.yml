@@ -1,0 +1,57 @@
+name: Deploy to Firebase Hosting on merge
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - name: Build admin app
+        env:
+          PUBLIC_URL: /admin
+          REACT_APP_SLACK_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_WEBHOOK_URL }}
+          REACT_APP_SLACK_INTAKE_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_INTAKE_WEBHOOK_URL }}
+          REACT_APP_FIRST_RECALL_BRIEF_BOT_URL: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_URL }}
+          REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET }}
+          REACT_APP_CONTRACT_REQUEST_GAS_URL: ${{ secrets.REACT_APP_CONTRACT_REQUEST_GAS_URL }}
+        run: npm run build
+
+      - name: Move admin build into dist/
+        run: |
+          rm -rf dist
+          mkdir -p dist/admin dist/partner
+          cp -r build/* dist/admin/
+          sed -i 's/<title>.*<\/title>/<title>営業管理システム<\/title>/' dist/admin/index.html
+
+      - name: Build partner app
+        env:
+          PUBLIC_URL: /partner
+          REACT_APP_ENTRY_POINT: partner
+          REACT_APP_SLACK_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_WEBHOOK_URL }}
+          REACT_APP_SLACK_INTAKE_WEBHOOK_URL: ${{ secrets.REACT_APP_SLACK_INTAKE_WEBHOOK_URL }}
+          REACT_APP_FIRST_RECALL_BRIEF_BOT_URL: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_URL }}
+          REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET }}
+          REACT_APP_CONTRACT_REQUEST_GAS_URL: ${{ secrets.REACT_APP_CONTRACT_REQUEST_GAS_URL }}
+        run: npm run build
+
+      - name: Move partner build into dist/
+        run: |
+          cp -r build/* dist/partner/
+          sed -i 's/<title>.*<\/title>/<title>営業パートナー専用システム<\/title>/' dist/partner/index.html
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SALES_MANAGEMENT_STAGING }}
+          projectId: sales-management-staging
+          channelId: live
