@@ -66,6 +66,8 @@ const routeConfig = {
   '/new-deals-dashboard': { name: '新規案件ダッシュボード', icon: null },
   '/existing-deals-dashboard': { name: '既存案件ダッシュボード', icon: null },
   '/progress-dashboard': { name: '新規案件一覧', icon: null },
+  '/kanban': { name: '看板ボード', icon: null },
+  '/sales-results': { name: '成約案件一覧', icon: null },
   '/log-entry': { name: 'アクションログ記録', icon: null },
   '/action-logs': { name: 'アクションログ一覧', icon: null },
   '/closed-deals': { name: '成約案件一覧', icon: null },
@@ -86,6 +88,7 @@ const routeConfig = {
   '/operator-dashboard': { name: '運用管理', icon: null },
   '/next-action-management': { name: 'NA管理', icon: null },
   '/daily-timer': { name: '日報', icon: null },
+  '/weekly-report': { name: '週報', icon: null },
   
   // パートナー用ルート
   '/partner': { name: 'ホーム', icon: FiHome },

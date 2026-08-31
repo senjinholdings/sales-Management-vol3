@@ -7,6 +7,7 @@ import LoginPage from './components/LoginPage.js';
 import ProtectedRoute from './components/ProtectedRoute.js';
 import LogEntryPage from './components/LogEntryPage.js';
 import ProgressDashboard from './components/ProgressDashboard.js';
+import KanbanBoard from './components/KanbanBoard.js';
 import ProductDetailPage from './components/ProductDetailPage.js';
 import IntroducerMasterPage from './components/IntroducerMasterPage.js';
 import ActionLogList from './components/ActionLogList.js';
@@ -23,7 +24,9 @@ import NextActionManagementPage from './components/NextActionManagementPage.js';
 import ProposalMenuMasterPage from './components/ProposalMenuMasterPage.js';
 import LeadSourceMasterPage from './components/LeadSourceMasterPage.js';
 import ProjectManagementPage from './components/ProjectManagementPage.js';
+import WeeklyReportPage from './components/WeeklyReportPage.js';
 import ClosedDealsList from './components/ClosedDealsList.js';
+import SalesResultsList from './components/SalesResultsList.js';
 import ProposalDealsList from './components/ProposalDealsList.js';
 import OperatorDashboard from './components/OperatorDashboard.js';
 import CoreCustomerPage from './components/CoreCustomerPage.js';
@@ -407,6 +410,18 @@ function AdminApp() {
                   新規案件一覧
                 </NavDropdownLink>
               </NavDropdownItem>
+              <NavDropdownItem>
+                <NavDropdownLink to="/kanban" onClick={closeMobileMenu}>
+                  <FiGrid />
+                  看板ボード
+                </NavDropdownLink>
+              </NavDropdownItem>
+              <NavDropdownItem>
+                <NavDropdownLink to="/sales-results" onClick={closeMobileMenu}>
+                  <FiDollarSign />
+                  成約案件一覧
+                </NavDropdownLink>
+              </NavDropdownItem>
             </NavDropdownMenu>
           </NavDropdown>
           <NavDropdown className={openDropdown === 'existing' ? 'mobile-open' : ''}>
@@ -488,6 +503,12 @@ function AdminApp() {
               日報
             </NavLink>
           </NavItem>
+          <NavItem>
+            <NavLink to="/weekly-report" onClick={closeMobileMenu}>
+              <FiClipboard />
+              週報
+            </NavLink>
+          </NavItem>
           <NavDropdown className={openDropdown === 'master' ? 'mobile-open' : ''}>
             <NavDropdownButton onClick={() => toggleDropdown('master')}>
               <FiUsers />
@@ -544,6 +565,8 @@ function AdminApp() {
           <Route path="/new-deals-dashboard" element={<NewDealsDashboard />} />
           <Route path="/existing-deals-dashboard" element={<ExistingDealsDashboard />} />
           <Route path="/progress-dashboard" element={<ProgressDashboard />} />
+          <Route path="/kanban" element={<KanbanBoard />} />
+          <Route path="/sales-results" element={<SalesResultsList />} />
           <Route path="/log-entry" element={<LogEntryPage />} />
           <Route path="/action-logs" element={<ActionLogList />} />
           <Route path="/product/:id" element={<ProductDetailPage />} />
@@ -560,6 +583,7 @@ function AdminApp() {
           <Route path="/project-management" element={<ProjectManagementPage />} />
           <Route path="/staff-master" element={<StaffMasterPage />} />
           <Route path="/next-action-management" element={<NextActionManagementPage />} />
+          <Route path="/weekly-report" element={<WeeklyReportPage />} />
           <Route path="/operator-dashboard" element={<OperatorDashboard />} />
           <Route path="/core-customers" element={<CoreCustomerPage />} />
           <Route path="/account-sales-dashboard" element={<AccountSalesDashboard />} />

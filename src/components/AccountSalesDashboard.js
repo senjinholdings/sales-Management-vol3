@@ -680,25 +680,14 @@ function AccountSalesDashboard() {
           const salesRecordsSnap = await getDocs(
             collection(db, 'progressDashboard', deal.id, subCol)
           );
-          const recs = [];
-          salesRecordsSnap.forEach(rec => recs.push({ id: rec.id, ...rec.data() }));
-          recs.sort((a, b) => {
-            const aDate = a.date || '';
-            const bDate = b.date || '';
-            if (aDate !== bDate) return bDate.localeCompare(aDate);
-            const aTime = a.createdAt?.toMillis?.() || a.createdAt?.seconds * 1000 || 0;
-            const bTime = b.createdAt?.toMillis?.() || b.createdAt?.seconds * 1000 || 0;
-            return bTime - aTime;
-          });
-          const latestRep = (recs.length > 0 && recs[0].salesRep) ? recs[0].salesRep : (deal.representative || '未設定');
-
-          recs.forEach(rd => {
+          salesRecordsSnap.forEach(rec => {
+            const rd = rec.data();
             allSalesRecords.push({
               dealId: deal.id,
               companyName: deal.companyName || '',
               productName: deal.productName || '',
               confirmedDate: rd.confirmedDate || rd.date || '',
-              representative: latestRep,
+              representative: rd.salesRep || deal.representative || '未設定',
               recordType: rd.recordType,
               budget: typeof rd.budget === 'string' ? Number(rd.budget) || 0 : rd.budget || 0,
               date: rd.date,

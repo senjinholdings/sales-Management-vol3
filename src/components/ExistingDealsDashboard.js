@@ -715,25 +715,13 @@ function ExistingDealsDashboard() {
           const salesRecordsSnap = await getDocs(
             collection(db, 'progressDashboard', deal.id, 'salesRecords')
           );
-          // 最新レコードのsalesRepを担当者として採用
-          const recs = [];
-          salesRecordsSnap.forEach(rec => recs.push({ id: rec.id, ...rec.data() }));
-          recs.sort((a, b) => {
-            const aDate = a.date || '';
-            const bDate = b.date || '';
-            if (aDate !== bDate) return bDate.localeCompare(aDate);
-            const aTime = a.createdAt?.toMillis?.() || a.createdAt?.seconds * 1000 || 0;
-            const bTime = b.createdAt?.toMillis?.() || b.createdAt?.seconds * 1000 || 0;
-            return bTime - aTime;
-          });
-          const latestRep = (recs.length > 0 && recs[0].salesRep) ? recs[0].salesRep : (deal.representative || '未設定');
-
-          recs.forEach(rd => {
+          salesRecordsSnap.forEach(rec => {
+            const rd = rec.data();
             allSalesRecords.push({
               dealId: deal.id,
               companyName: deal.companyName || '',
               productName: deal.productName || '',
-              representative: latestRep,
+              representative: rd.salesRep || deal.representative || '未設定',
               proposalMenu: deal.proposalMenu,
               leadSource: deal.leadSource,
               recordType: rd.recordType,
