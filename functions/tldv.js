@@ -222,20 +222,19 @@ async function applyToDeal({ admin, db, dealId, meetingId, aiResult }) {
   await batch.commit();
 }
 
-async function notifySlack({ linkStatus, dealIds, title }) {
+/**
+ * 案件に紐付いた時だけ通知する。紐付かなかったMTG（社内MTG・URL未登録など）は
+ * 区別せず一律で何もしない（通知もステータス分岐も行わない）。
+ */
+async function notifySlack({ dealIds, title }) {
   const token = env('SLACK_BOT_TOKEN');
-  if (!token || linkStatus === 'internal') return; // 社内MTGは通知しない
+  if (!token || !dealIds?.length) return;
 
   const slack = new WebClient(token);
-  let text;
-  if (linkStatus === 'auto' && dealIds?.length > 0) {
-    const links = dealIds
-      .map((id) => `https://sales-management-staging.web.app/product/${id}`)
-      .join('\n');
-    text = `📹 議事録を登録しました: ${title}\n${dealIds.length}件の案件に自動で紐付けました。\n${links}`;
-  } else {
-    text = `📹 議事録を登録しました: ${title}\n案件には自動で紐付きませんでした（案件詳細にMTG URLの登録が必要です）。`;
-  }
+  const links = dealIds
+    .map((id) => `https://sales-management-staging.web.app/product/${id}`)
+    .join('\n');
+  const text = `📹 議事録を登録しました: ${title}\n${dealIds.length}件の案件に自動で紐付けました。\n${links}`;
 
   try {
     await slack.chat.postMessage({ channel: SLACK_CHANNEL, text });
@@ -305,9 +304,6 @@ function createTldvRouter({ admin, db }) {
       const recordingUrl = restInfo.url || data.url || existing?.recordingUrl || null;
       const conferenceId = restInfo.extraProperties?.conferenceId || data.extraProperties?.conferenceId || null;
 
-      const allEmails = [organizer.email, ...invitees.map((i) => i.email)].filter(Boolean);
-      const allInternal = allEmails.length > 0 && allEmails.every((e) => e.toLowerCase().endsWith('@senjinholdings.com'));
-
       const meetUrl = normalizeMeetUrl(conferenceId) || existing?.meetUrl || null;
 
       // 要約はtl;dv自身のAI機能（notes）を第一ソースにする（OpenAIの課金状態に依存しない）。
@@ -324,9 +320,9 @@ function createTldvRouter({ admin, db }) {
 
       // 案件紐付け：Meet URLが登録されている「全ての」案件に紐付ける
       // （1つのMTGで複数案件・複数サービスが同時に話されるケースがあるため、1件に絞らない）。
-      // URL一致は「その案件の定例・臨時MTGとして明示的に登録された」という強い意思表示なので、
-      // 参加者が社内のみかどうかより優先する（社内判定を先にすると、テスト録画のように
-      // 参加者が社内のみのケースでURL一致があっても紐付かなくなるバグがあった）
+      // 参加者の所属ドメインは見ない。URLが一致する＝その案件のMTGとして明示登録済み
+      // ということなので、それだけで判断する。一致しなければ記録するだけで何もしない
+      // （紐付かなかったことを通知したり特別扱いしたりしない）
       let dealIds = existing?.dealIds || [];
       let linkStatus = existing?.linkStatus || 'none';
       let matchReason = existing?.matchReason || null;
@@ -340,9 +336,6 @@ function createTldvRouter({ admin, db }) {
           linkStatus = 'auto';
           matchReason = 'meetUrl';
         }
-      }
-      if (dealIds.length === 0 && allInternal) {
-        linkStatus = 'internal';
       }
 
       await meetingRef.set({
@@ -379,7 +372,7 @@ function createTldvRouter({ admin, db }) {
 
       // 初回のみSlack通知（同じMTGへの再送で毎回通知しない）
       if (!existingSnap.exists || (isFirstTimeWithTranscript)) {
-        await notifySlack({ linkStatus, dealIds, title });
+        await notifySlack({ dealIds, title });
       }
 
       return res.status(200).json({ success: true, dealIds, linkStatus });
