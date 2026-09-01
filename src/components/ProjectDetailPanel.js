@@ -3451,36 +3451,38 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
         )}
 
         {/* タブバー（newCaseモードでは非表示） */}
-        {mode !== 'newCase' && (
-          <TabBar>
+        <TabBar>
+          {mode !== 'newCase' && (
             <Tab
               $active={activeTab === 'operator'}
               onClick={() => setActiveTab('operator')}
             >
               運用者向け
             </Tab>
-            {!hideSalesTab && (
-              <Tab
-                $active={activeTab === 'sales'}
-                onClick={() => setActiveTab('sales')}
-              >
-                営業向け
-              </Tab>
-            )}
+          )}
+          {!hideSalesTab && (
+            <Tab
+              $active={activeTab === 'sales'}
+              onClick={() => setActiveTab('sales')}
+            >
+              営業向け
+            </Tab>
+          )}
+          {mode !== 'newCase' && (
             <Tab
               $active={activeTab === 'keyPerson'}
               onClick={() => setActiveTab('keyPerson')}
             >
               キーパーソン
             </Tab>
-            <Tab
-              $active={activeTab === 'minutes'}
-              onClick={() => setActiveTab('minutes')}
-            >
-              議事録
-            </Tab>
-          </TabBar>
-        )}
+          )}
+          <Tab
+            $active={activeTab === 'minutes'}
+            onClick={() => setActiveTab('minutes')}
+          >
+            議事録
+          </Tab>
+        </TabBar>
 
         {/* タブコンテンツ */}
         <TabContent>
@@ -3497,7 +3499,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           {activeTab === 'keyPerson' && mode !== 'newCase' && (
             <KeyPersonTab project={project} />
           )}
-          {activeTab === 'minutes' && mode !== 'newCase' && (
+          {activeTab === 'minutes' && (
             <MinutesTab project={project} />
           )}
         </TabContent>
