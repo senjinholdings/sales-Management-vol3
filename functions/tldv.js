@@ -105,6 +105,28 @@ async function fetchTranscriptText(meetingId, apiKey) {
 }
 
 /**
+ * tl;dv自身のAI要約（トピックごとの要約）を取得する。
+ * OpenAIとは独立した機能のため、OpenAI側の課金状態に関係なく要約を出せる。
+ * こちらを要約の第一ソースとし、OpenAIはネクストアクション抽出専用に使う。
+ */
+async function fetchMeetingNotesSummary(meetingId, apiKey) {
+  try {
+    const resp = await tldvFetch(`/meetings/${meetingId}/notes`, apiKey);
+    const topics = Array.isArray(resp.topics) ? resp.topics : [];
+    const fromTopics = topics
+      .slice()
+      .sort((a, b) => (a.order || 0) - (b.order || 0))
+      .map((t) => (t.summary ? `【${t.title || 'トピック'}】${t.summary}` : null))
+      .filter(Boolean)
+      .join('\n');
+    return fromTopics || resp.markdownContent || '';
+  } catch (error) {
+    console.error('tl;dv notes取得失敗（続行）:', error.message);
+    return '';
+  }
+}
+
+/**
  * OpenAIでMTG議事録を分析し、要約・ネクストアクション等を抽出する。
  * 既存のfunctions/index.js（旧receiveTldv）と同じプロンプト形式を踏襲。
  */
@@ -288,11 +310,17 @@ function createTldvRouter({ admin, db }) {
 
       const meetUrl = normalizeMeetUrl(conferenceId) || existing?.meetUrl || null;
 
-      // AI分析は本文が取れている時だけ実行（無駄なAPI呼び出しを避ける）
+      // 要約はtl;dv自身のAI機能（notes）を第一ソースにする（OpenAIの課金状態に依存しない）。
+      // OpenAIはネクストアクションの構造化抽出（担当・期日付き）専用に使う。
+      const tldvNotesSummary = await fetchMeetingNotesSummary(meetingId, apiKey);
+
       const openaiKey = env('OPENAI_API_KEY');
       const aiResult = (openaiKey && finalTranscript.length > 10)
         ? await analyzeMeeting(openaiKey, title, finalTranscript)
-        : { summary: existing?.aiSummary || '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
+        : { summary: '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
+
+      // tl;dv notes > OpenAI要約 > 既存値 の優先順で採用
+      aiResult.summary = tldvNotesSummary || aiResult.summary || existing?.aiSummary || '';
 
       // 案件紐付け：社内のみのMTGは対象外。Meet URLが登録されている「全ての」案件に紐付ける
       // （1つのMTGで複数案件・複数サービスが同時に話されるケースがあるため、1件に絞らない）
