@@ -322,15 +322,16 @@ function createTldvRouter({ admin, db }) {
       // tl;dv notes > OpenAI要約 > 既存値 の優先順で採用
       aiResult.summary = tldvNotesSummary || aiResult.summary || existing?.aiSummary || '';
 
-      // 案件紐付け：社内のみのMTGは対象外。Meet URLが登録されている「全ての」案件に紐付ける
-      // （1つのMTGで複数案件・複数サービスが同時に話されるケースがあるため、1件に絞らない）
+      // 案件紐付け：Meet URLが登録されている「全ての」案件に紐付ける
+      // （1つのMTGで複数案件・複数サービスが同時に話されるケースがあるため、1件に絞らない）。
+      // URL一致は「その案件の定例・臨時MTGとして明示的に登録された」という強い意思表示なので、
+      // 参加者が社内のみかどうかより優先する（社内判定を先にすると、テスト録画のように
+      // 参加者が社内のみのケースでURL一致があっても紐付かなくなるバグがあった）
       let dealIds = existing?.dealIds || [];
       let linkStatus = existing?.linkStatus || 'none';
       let matchReason = existing?.matchReason || null;
 
-      if (allInternal) {
-        linkStatus = 'internal';
-      } else if (dealIds.length === 0 && meetUrl) {
+      if (dealIds.length === 0 && meetUrl) {
         const dealsSnap = await db.collection('progressDashboard')
           .where('linkedMeetUrls', 'array-contains', meetUrl)
           .get();
@@ -339,6 +340,9 @@ function createTldvRouter({ admin, db }) {
           linkStatus = 'auto';
           matchReason = 'meetUrl';
         }
+      }
+      if (dealIds.length === 0 && allInternal) {
+        linkStatus = 'internal';
       }
 
       await meetingRef.set({
