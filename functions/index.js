@@ -25,12 +25,19 @@ const createTldvRouter = require('./tldv');
 const createCalendarRouter = require('./calendar');
 // 担当者の外部サービス連携ルーター（Chatwork APIトークン登録等）
 const createStaffRouter = require('./staff');
+// Slackの承認ボタン（お礼メッセージ送信）インタラクションルーター
+const { createSlackInteractionRouter } = require('./slackApproval');
 
 // CORS を設定
 app.use(cors({
   origin: true, // すべてのオリジンを許可（本番では制限すべき）
   credentials: true
 }));
+
+// Slackインタラクションは署名検証に生のリクエストボディが必要なため、
+// JSONパーサーより先にマウントする（express.jsonはcontent-typeが
+// application/jsonでなければ素通りするが、念のため順序でも保証する）
+app.use('/api/slack', createSlackInteractionRouter({ admin, db }));
 
 // JSONパースを有効化
 app.use(express.json());
@@ -418,6 +425,7 @@ exports.api = functions.runWith({
     'OPENAI_API_KEY',
     'SLACK_BOT_TOKEN',
     'TLDV_CALENDAR_SA_KEY',
-    'MEETING_SCHEDULE_SECRET'
+    'MEETING_SCHEDULE_SECRET',
+    'SLACK_SIGNING_SECRET'
   ]
 }).https.onRequest(app);

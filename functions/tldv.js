@@ -11,6 +11,7 @@ const express = require('express');
 const fetch = require('node-fetch');
 const OpenAI = require('openai');
 const { WebClient } = require('@slack/web-api');
+const { sendApprovalRequest } = require('./slackApproval');
 
 const TLDV_API_BASE = 'https://pasta.tldv.io/v1alpha1';
 const SLACK_CHANNEL = '#営業_議事録';
@@ -131,7 +132,7 @@ async function fetchMeetingNotesSummary(meetingId, apiKey) {
  * 既存のfunctions/index.js（旧receiveTldv）と同じプロンプト形式を踏襲。
  */
 async function analyzeMeeting(apiKey, title, transcriptText) {
-  const fallback = { summary: '', nextActions: [], meetingType: 'その他', relatedService: null };
+  const fallback = { summary: '', nextActions: [], meetingType: 'その他', relatedService: null, thankYouMessage: '' };
   try {
     const openai = new OpenAI({ apiKey });
     const completion = await openai.chat.completions.create({
@@ -139,7 +140,7 @@ async function analyzeMeeting(apiKey, title, transcriptText) {
       messages: [
         {
           role: 'system',
-          content: 'あなたは営業支援AIです。MTG議事録を分析して、ネクストアクションを抽出してください。回答はJSON形式のみで出力してください。'
+          content: 'あなたは営業支援AIです。MTG議事録を分析して、ネクストアクションとお礼メッセージ文案を作成してください。回答はJSON形式のみで出力してください。'
         },
         {
           role: 'user',
@@ -150,7 +151,8 @@ async function analyzeMeeting(apiKey, title, transcriptText) {
     { "content": "具体的なアクション", "owner": "自分 or 先方", "deadline": "YYYY-MM-DD or null" }
   ],
   "meetingType": "サービス提案 or ヒアリング or 定例 or その他",
-  "relatedService": "第一想起取れるくん or 獲得とれるくん or インハウスクラウド or null"
+  "relatedService": "第一想起取れるくん or 獲得とれるくん or インハウスクラウド or null",
+  "thankYouMessage": "先方に送るお礼メッセージの文案（3〜5行程度）。本日の議題に具体的に触れつつ丁寧な文体で。宛名・署名は付けない（送信前に担当者が確認・編集する前提）"
 }
 
 MTGタイトル: ${title || '不明'}
@@ -158,7 +160,7 @@ MTGタイトル: ${title || '不明'}
 ${transcriptText.substring(0, 6000)}`
         }
       ],
-      max_tokens: 1000,
+      max_tokens: 1200,
       temperature: 0.3
     });
     const content = completion.choices[0]?.message?.content || '';
@@ -257,6 +259,28 @@ async function notifySlack({ dealIds, title }) {
     await slack.chat.postMessage({ channel: SLACK_CHANNEL, text });
   } catch (error) {
     console.error('Slack通知失敗（続行）:', error.message);
+  }
+}
+
+/**
+ * まだ送っていない資料のうち一番新しいものを1件だけ取得する。
+ * お礼メッセージの下書きに自動で添付するために使う
+ * （どの資料をどのMTGで使ったか、という細かい紐付けまではせず、
+ *   単純に「まだ送っていない最新の1件」を拾う簡易な仕様）。
+ */
+async function pickUnsentMaterial(db, dealId) {
+  try {
+    const snap = await db.collection('progressDashboard').doc(dealId)
+      .collection('materials')
+      .where('sentAt', '==', null)
+      .get();
+    if (snap.empty) return null;
+    const materials = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    materials.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+    return materials[0];
+  } catch (error) {
+    console.error('未送付資料の取得失敗（続行）:', error.message);
+    return null;
   }
 }
 
@@ -363,6 +387,31 @@ function createTldvRouter({ admin, db }) {
         }
       }
 
+      const isFirstTimeWithTranscript = finalTranscript && !existing?.transcript;
+
+      // お礼メッセージの下書き：紐付いた・社内のみの参加者でない・まだ下書きしていない、
+      // の全てを満たす時だけ生成する。社内判定はこの機能専用のロジックで、
+      // 案件紐付け自体の判定（URL一致のみ）には使わない
+      const allEmails = [organizer.email, ...invitees.map((i) => i.email)].filter(Boolean);
+      const allInternal = allEmails.length > 0 && allEmails.every((e) => e.toLowerCase().endsWith('@senjinholdings.com'));
+
+      let thankYouDraft = existing?.thankYouDraft || null;
+      let thankYouStatus = existing?.thankYouStatus || null;
+      let thankYouMaterialId = existing?.thankYouMaterialId || null;
+
+      const shouldDraftThankYou = dealIds.length > 0 && !allInternal && finalTranscript &&
+        (isFirstTimeWithTranscript || event === 'TranscriptReady') &&
+        !thankYouStatus && aiResult.thankYouMessage;
+
+      if (shouldDraftThankYou) {
+        // 資料は複数案件に紐付いていても代表して1件目の案件のものを使う
+        // （1つのMTGで複数商材が話される場合でも、送るお礼メッセージは1通のため）
+        const material = await pickUnsentMaterial(db, dealIds[0]);
+        thankYouMaterialId = material ? material.id : null;
+        thankYouDraft = aiResult.thankYouMessage + (material ? `\n\n資料はこちら: ${material.url}` : '');
+        thankYouStatus = 'draft';
+      }
+
       await meetingRef.set({
         tldvMeetingId: meetingId,
         title,
@@ -381,6 +430,9 @@ function createTldvRouter({ admin, db }) {
         aiNextActions: aiResult.nextActions || [],
         aiMeetingType: aiResult.meetingType || 'その他',
         aiRelatedService: aiResult.relatedService || null,
+        thankYouDraft,
+        thankYouStatus,
+        thankYouMaterialId,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         ...(existingSnap.exists ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() })
       }, { merge: true });
@@ -388,7 +440,6 @@ function createTldvRouter({ admin, db }) {
       // 紐付いた案件ごとに、本文の分析結果があるときだけNAを自動生成
       // （AIはMTG全体から1つの要約・アクション一覧しか抽出しないため、同じ内容を
       //   該当する全案件に適用する。関係ないNAが混じる場合は営業が手動で削除する運用）
-      const isFirstTimeWithTranscript = finalTranscript && !existing?.transcript;
       if (dealIds.length > 0 && finalTranscript && (isFirstTimeWithTranscript || event === 'TranscriptReady')) {
         await Promise.all(dealIds.map((dealId) =>
           applyToDeal({ admin, db, dealId, meetingId, aiResult })
@@ -398,6 +449,13 @@ function createTldvRouter({ admin, db }) {
       // 初回のみSlack通知（同じMTGへの再送で毎回通知しない）
       if (!existingSnap.exists || (isFirstTimeWithTranscript)) {
         await notifySlack({ dealIds, title });
+      }
+
+      // お礼メッセージの下書きができたら、担当者のSlackに承認依頼DMを送る
+      if (shouldDraftThankYou) {
+        await sendApprovalRequest({ db, dealId: dealIds[0], meetingId, draftText: thankYouDraft }).catch((error) => {
+          console.error('お礼メッセージ承認通知エラー（続行）:', error.message);
+        });
       }
 
       return res.status(200).json({ success: true, dealIds, linkStatus });
