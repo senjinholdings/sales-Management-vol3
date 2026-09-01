@@ -335,9 +335,10 @@ function createTldvRouter({ admin, db }) {
       // tl;dv notes > OpenAI要約 > 既存値 の優先順で採用
       aiResult.summary = tldvNotesSummary || aiResult.summary || existing?.aiSummary || '';
 
-      // 案件紐付け：Meet URLが登録されている「全ての」案件に紐付ける
-      // （1つのMTGで複数案件・複数サービスが同時に話されるケースがあるため、1件に絞らない）。
-      // 参加者の所属ドメインは見ない。URLが一致する＝その案件のMTGとして明示登録済み
+      // 案件紐付け：Meet URLは案件（商材）単位ではなく会社（クライアント）単位で登録される
+      // （clientMeetingSettings.companyName）。一致した会社の「全ての」案件（商材）に紐付ける
+      // （1つのMTGで複数商材が同時に話されるケースがあるため、1件に絞らない）。
+      // 参加者の所属ドメインは見ない。URLが一致する＝その会社のMTGとして明示登録済み
       // ということなので、それだけで判断する。一致しなければ記録するだけで何もしない
       // （紐付かなかったことを通知したり特別扱いしたりしない）
       let dealIds = existing?.dealIds || [];
@@ -345,13 +346,20 @@ function createTldvRouter({ admin, db }) {
       let matchReason = existing?.matchReason || null;
 
       if (dealIds.length === 0 && meetUrl) {
-        const dealsSnap = await db.collection('progressDashboard')
-          .where('linkedMeetUrls', 'array-contains', meetUrl)
+        const clientSnap = await db.collection('clientMeetingSettings')
+          .where('meetUrl', '==', meetUrl)
+          .limit(1)
           .get();
-        if (!dealsSnap.empty) {
-          dealIds = dealsSnap.docs.map((d) => d.id);
-          linkStatus = 'auto';
-          matchReason = 'meetUrl';
+        if (!clientSnap.empty) {
+          const companyName = clientSnap.docs[0].data().companyName;
+          const dealsSnap = await db.collection('progressDashboard')
+            .where('companyName', '==', companyName)
+            .get();
+          if (!dealsSnap.empty) {
+            dealIds = dealsSnap.docs.map((d) => d.id);
+            linkStatus = 'auto';
+            matchReason = 'meetUrl';
+          }
         }
       }
 

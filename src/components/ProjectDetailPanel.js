@@ -24,7 +24,8 @@ import {
   addSalesEntry, fetchSalesEntries, deleteSalesEntry, updateSalesEntry, updateSalesEntryStatus,
   addNaComment, fetchNaComments, updateNaComment, deleteNaComment,
   fetchProjectById, completeStageWithSync, undoStageWithSync,
-  fetchMeetingsForDeal
+  fetchMeetingsForDeal,
+  fetchClientMeetingSettings, upsertClientMeetingSettings
 } from '../services/projectService.js';
 import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
@@ -877,42 +878,81 @@ const normalizeMeetUrl = (url) => {
   return String(url).trim().toLowerCase() || null;
 };
 
+const DAYS_OF_WEEK = ['月', '火', '水', '木', '金', '土', '日'];
+
 /**
  * MTGのURL登録セクション（定例・臨時MTGの自動紐付け用）。
  * 新規/既存どちらの案件でも、フェーズやmodeに関係なく常に表示する
  * （運用者向けタブは新規案件では非表示になるため、タブの外に置く）。
- * 同じMeet URLを複数の案件に登録できる（1つのMTGで複数案件が話されるケースに対応）。
+ * URLは案件（商材）ごとではなく会社（クライアント）ごとに1つ。
+ * companyNameが同じ案件は全て同じ設定を共有する（clientMeetingSettingsコレクション）ため、
+ * どれか1つの案件で登録・変更すると同じ会社の他の商材にも即座に反映される。
  */
-const MeetUrlsSection = ({ project, onProjectUpdate }) => {
-  const [meetUrlsText, setMeetUrlsText] = useState(
-    (project.linkedMeetUrls || [])
-      .map(code => (/^[a-z0-9]{3,4}-[a-z0-9]{4}-[a-z0-9]{3,4}$/.test(code) ? `https://meet.google.com/${code}` : code))
-      .join('\n')
-  );
+const MeetUrlsSection = ({ project }) => {
+  const [meetUrlText, setMeetUrlText] = useState('');
+  const [dayOfWeek, setDayOfWeek] = useState('');
+  const [time, setTime] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
-  const handleMeetUrlsBlur = async () => {
-    const codes = Array.from(new Set(
-      meetUrlsText.split('\n').map(line => normalizeMeetUrl(line)).filter(Boolean)
-    ));
+  useEffect(() => {
+    let cancelled = false;
+    setLoaded(false);
+    fetchClientMeetingSettings(project.companyName).then((settings) => {
+      if (cancelled) return;
+      const code = settings?.meetUrl || '';
+      setMeetUrlText(code ? `https://meet.google.com/${code}` : '');
+      setDayOfWeek(settings?.recurringDayOfWeek || '');
+      setTime(settings?.recurringTime || '');
+      setLoaded(true);
+    });
+    return () => { cancelled = true; };
+  }, [project.companyName]);
+
+  const saveSettings = async (overrides = {}) => {
+    const next = {
+      meetUrl: normalizeMeetUrl(meetUrlText) || null,
+      recurringDayOfWeek: dayOfWeek || null,
+      recurringTime: time || null,
+      ...overrides
+    };
     try {
-      await updateProject(project.id, { linkedMeetUrls: codes });
-      if (onProjectUpdate) {
-        onProjectUpdate({ ...project, linkedMeetUrls: codes });
-      }
+      await upsertClientMeetingSettings(project.companyName, next);
     } catch (error) {
-      console.error('Failed to update linkedMeetUrls:', error);
+      console.error('Failed to update client meeting settings:', error);
     }
   };
 
+  if (!loaded) return null;
+
   return (
-    <div style={{ padding: '0 1.5rem', marginTop: '0.75rem' }}>
-      <FormGroup $noMargin>
-        <Label>MTGのURL（定例・臨時。1行1件、Google MeetのURL。同じMTGで複数案件が話される場合は各案件に同じURLを登録）</Label>
-        <ActionInput
-          value={meetUrlsText}
-          onChange={e => setMeetUrlsText(e.target.value)}
-          onBlur={handleMeetUrlsBlur}
+    <div style={{ padding: '0 1.5rem', marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <FormGroup $noMargin style={{ flex: '1 1 320px' }}>
+        <Label>MTGのURL（定例・臨時。会社単位で1つ。同じ会社の全商材で共有）</Label>
+        <Input
+          value={meetUrlText}
+          onChange={e => setMeetUrlText(e.target.value)}
+          onBlur={() => saveSettings({ meetUrl: normalizeMeetUrl(meetUrlText) || null })}
           placeholder={'https://meet.google.com/xxx-xxxx-xxx'}
+        />
+      </FormGroup>
+      <FormGroup $noMargin style={{ width: '100px' }}>
+        <Label>定例の曜日</Label>
+        <Select
+          value={dayOfWeek}
+          onChange={e => { setDayOfWeek(e.target.value); saveSettings({ recurringDayOfWeek: e.target.value || null }); }}
+        >
+          <option value="">未設定</option>
+          {DAYS_OF_WEEK.map(d => <option key={d} value={d}>{d}曜日</option>)}
+        </Select>
+      </FormGroup>
+      <FormGroup $noMargin style={{ width: '120px' }}>
+        <Label>定例の時刻</Label>
+        <DateInput
+          type="time"
+          value={time}
+          onChange={e => setTime(e.target.value)}
+          onBlur={() => saveSettings({ recurringTime: time || null })}
+          style={{ width: '100%', boxSizing: 'border-box' }}
         />
       </FormGroup>
     </div>
@@ -3371,7 +3411,7 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
         </PanelHeader>
 
         {/* MTGのURL登録（新規/既存どちらの案件でも常に表示。tl;dv議事録の自動紐付けに使用） */}
-        <MeetUrlsSection project={project} onProjectUpdate={onProjectUpdate} />
+        <MeetUrlsSection project={project} />
 
         {/* 受注後の進行ステージ（運用管理から開いた場合のみ。基準日以降に受注した対象案件に限る） */}
         {showStageProgress && mode !== 'newCase' && isStageTargetProject(project) && (

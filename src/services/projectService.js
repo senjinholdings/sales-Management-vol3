@@ -11,6 +11,7 @@ import {
   setDoc,
   orderBy,
   where,
+  limit,
   serverTimestamp
 } from 'firebase/firestore';
 import { PROJECT_STAGES } from '../data/constants.js';
@@ -1175,6 +1176,53 @@ export const fetchMeetingsForDeal = async (projectId) => {
       });
   } catch (error) {
     console.error('Failed to fetch meetings for deal:', error);
+    throw error;
+  }
+};
+
+/**
+ * クライアント（会社名）ごとのMTG設定を取得する。
+ * コレクション: clientMeetingSettings（companyName一致で1件。同じ会社の全商材で共有する）
+ * @param {string} companyName - 会社名
+ */
+export const fetchClientMeetingSettings = async (companyName) => {
+  if (!companyName) return null;
+  try {
+    const q = query(collection(db, 'clientMeetingSettings'), where('companyName', '==', companyName), limit(1));
+    const snapshot = await getDocs(q);
+    if (snapshot.empty) return null;
+    return { id: snapshot.docs[0].id, ...snapshot.docs[0].data() };
+  } catch (error) {
+    console.error('Failed to fetch client meeting settings:', error);
+    throw error;
+  }
+};
+
+/**
+ * クライアント（会社名）ごとのMTG設定を作成/更新する。
+ * 同じ会社名の案件は全て同じ設定を共有するため、案件単位ではなくcompanyName単位で保存する。
+ * @param {string} companyName - 会社名
+ * @param {object} data - { meetUrl, recurringDayOfWeek, recurringTime }
+ */
+export const upsertClientMeetingSettings = async (companyName, data) => {
+  if (!companyName) return;
+  try {
+    const q = query(collection(db, 'clientMeetingSettings'), where('companyName', '==', companyName), limit(1));
+    const snapshot = await getDocs(q);
+    if (snapshot.empty) {
+      await addDoc(collection(db, 'clientMeetingSettings'), {
+        companyName,
+        ...data,
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      await updateDoc(doc(db, 'clientMeetingSettings', snapshot.docs[0].id), {
+        ...data,
+        updatedAt: serverTimestamp()
+      });
+    }
+  } catch (error) {
+    console.error('Failed to upsert client meeting settings:', error);
     throw error;
   }
 };
