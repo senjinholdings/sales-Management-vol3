@@ -1226,3 +1226,58 @@ export const upsertClientMeetingSettings = async (companyName, data) => {
     throw error;
   }
 };
+
+/**
+ * MTGで使う資料（提案資料等）のリンクを登録する。MTG前に登録しておくことで、
+ * MTG後のお礼メッセージにこの資料へのリンクを自動で付けられる。
+ * コレクション: progressDashboard/{dealId}/materials
+ * @param {string} projectId - 案件ID
+ * @param {{title: string, url: string}} data
+ */
+export const addMaterial = async (projectId, data) => {
+  try {
+    const ref = collection(db, 'progressDashboard', projectId, 'materials');
+    await addDoc(ref, {
+      title: data.title || '',
+      url: data.url || '',
+      sentAt: null,
+      sentVia: null,
+      sentMeetingId: null,
+      createdAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Failed to add material:', error);
+    throw error;
+  }
+};
+
+/**
+ * 案件に登録された資料を全件取得する（新しい順）
+ * @param {string} projectId - 案件ID
+ */
+export const fetchMaterials = async (projectId) => {
+  try {
+    const ref = collection(db, 'progressDashboard', projectId, 'materials');
+    const snapshot = await getDocs(ref);
+    return snapshot.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+  } catch (error) {
+    console.error('Failed to fetch materials:', error);
+    throw error;
+  }
+};
+
+/**
+ * 資料を削除する
+ * @param {string} projectId - 案件ID
+ * @param {string} materialId - 資料ID
+ */
+export const deleteMaterial = async (projectId, materialId) => {
+  try {
+    await deleteDoc(doc(db, 'progressDashboard', projectId, 'materials', materialId));
+  } catch (error) {
+    console.error('Failed to delete material:', error);
+    throw error;
+  }
+};

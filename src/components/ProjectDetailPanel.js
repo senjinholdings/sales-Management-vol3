@@ -14,7 +14,7 @@ import PhaseTooltip from './PhaseTooltip.js';
 import { linkifyText } from '../utils/linkify.js';
 import { db } from '../firebase.js';
 import { collection, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore';
-import { fetchAllStaff } from '../services/staffService.js';
+import { fetchAllStaff, fetchChatworkRooms } from '../services/staffService.js';
 import {
   updateProject,
   fetchMonthlyData, saveMonthlyData,
@@ -26,7 +26,8 @@ import {
   addNaComment, fetchNaComments, updateNaComment, deleteNaComment,
   fetchProjectById, completeStageWithSync, undoStageWithSync,
   fetchMeetingsForDeal,
-  fetchClientMeetingSettings, upsertClientMeetingSettings
+  fetchClientMeetingSettings, upsertClientMeetingSettings,
+  addMaterial, fetchMaterials, deleteMaterial
 } from '../services/projectService.js';
 import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
@@ -898,6 +899,9 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
   const [meetUrlText, setMeetUrlText] = useState('');
   const [dayOfWeek, setDayOfWeek] = useState('');
   const [time, setTime] = useState('');
+  const [chatworkRoomId, setChatworkRoomId] = useState('');
+  const [slackChannelId, setSlackChannelId] = useState('');
+  const [chatworkRooms, setChatworkRooms] = useState(null); // null=未取得/未連携
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -909,16 +913,37 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       setMeetUrlText(code ? `https://meet.google.com/${code}` : '');
       setDayOfWeek(settings?.recurringDayOfWeek || '');
       setTime(settings?.recurringTime || '');
+      setChatworkRoomId(settings?.chatworkRoomId || '');
+      setSlackChannelId(settings?.slackChannelId || '');
       setLoaded(true);
     });
     return () => { cancelled = true; };
   }, [project.companyName, refreshKey]);
+
+  // 案件の営業担当者のChatworkアカウントで参加ルーム一覧を取得する
+  // （お礼メッセージは担当者本人のアカウントとして送るため、その担当者が
+  //   参加しているルームしか送信先として選べない）
+  useEffect(() => {
+    let cancelled = false;
+    setChatworkRooms(null);
+    if (!project.representative) return;
+    fetchAllStaff().then((staff) => {
+      const rep = staff.find((s) => s.name === project.representative);
+      if (!rep) return;
+      return fetchChatworkRooms(rep.id).catch(() => null);
+    }).then((rooms) => {
+      if (!cancelled && rooms) setChatworkRooms(rooms);
+    });
+    return () => { cancelled = true; };
+  }, [project.representative]);
 
   const saveSettings = async (overrides = {}) => {
     const next = {
       meetUrl: normalizeMeetUrl(meetUrlText) || null,
       recurringDayOfWeek: dayOfWeek || null,
       recurringTime: time || null,
+      chatworkRoomId: chatworkRoomId || null,
+      slackChannelId: slackChannelId || null,
       ...overrides
     };
     try {
@@ -971,6 +996,43 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
             onChange={e => setTime(e.target.value)}
             onBlur={() => saveSettings({ recurringTime: time || null })}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.85rem', padding: '0.5rem' }}
+          />
+        </FormGroup>
+      </div>
+
+      <div style={{ fontSize: '0.78rem', color: '#95a5a6', margin: '0.9rem 0 0.6rem' }}>
+        お礼メッセージの送り先（会社単位で1つ。担当者本人のアカウントとして送信されます）
+      </div>
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <FormGroup $noMargin style={{ flex: '1 1 240px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>Chatworkのルーム</Label>
+          {chatworkRooms ? (
+            <Select
+              value={chatworkRoomId}
+              onChange={e => { setChatworkRoomId(e.target.value); saveSettings({ chatworkRoomId: e.target.value || null }); }}
+              style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+            >
+              <option value="">未設定</option>
+              {chatworkRooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </Select>
+          ) : (
+            <Input
+              value={chatworkRoomId}
+              onChange={e => setChatworkRoomId(e.target.value)}
+              onBlur={() => saveSettings({ chatworkRoomId: chatworkRoomId || null })}
+              placeholder={project.representative ? `${project.representative}がChatwork未連携（担当者管理で連携すると一覧から選べます）` : 'ルームID（担当者未設定）'}
+              style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+            />
+          )}
+        </FormGroup>
+        <FormGroup $noMargin style={{ flex: '1 1 200px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>SlackチャンネルID</Label>
+          <Input
+            value={slackChannelId}
+            onChange={e => setSlackChannelId(e.target.value)}
+            onBlur={() => saveSettings({ slackChannelId: slackChannelId || null })}
+            placeholder={'C0XXXXXXX（任意）'}
+            style={{ fontSize: '0.85rem', padding: '0.5rem' }}
           />
         </FormGroup>
       </div>
@@ -2807,6 +2869,145 @@ const MinutesLink = styled.a`
   display: inline-block;
 `;
 
+const MaterialsBox = styled.div`
+  background: #f8f9fa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1.25rem;
+`;
+
+const MaterialsList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+`;
+
+const MaterialItem = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  font-size: 0.82rem;
+`;
+
+const MaterialTitle = styled.a`
+  flex: 1;
+  min-width: 0;
+  color: #2c3e50;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  &:hover { color: #3498db; text-decoration: underline; }
+`;
+
+const MaterialSentBadge = styled.span`
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #1abc9c;
+  white-space: nowrap;
+`;
+
+/**
+ * MTGで使う資料（提案資料等）のリンクを事前に登録するセクション。
+ * MTG前に登録しておくと、お礼メッセージの下書きに未送付の最新資料が自動で添付される。
+ * 送付済みかどうか・いつ送ったかもここに表示する（閲覧数等のトラッキングは対象外）。
+ */
+const MaterialsSection = ({ project }) => {
+  const [materials, setMaterials] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isAdding, setIsAdding] = useState(false);
+  const [titleInput, setTitleInput] = useState('');
+  const [urlInput, setUrlInput] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      const data = await fetchMaterials(project.id);
+      setMaterials(data);
+    } catch (error) {
+      console.error('Failed to load materials:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [project.id]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAdd = async () => {
+    if (!titleInput.trim() || !urlInput.trim()) return;
+    try {
+      await addMaterial(project.id, { title: titleInput.trim(), url: urlInput.trim() });
+      setTitleInput('');
+      setUrlInput('');
+      setIsAdding(false);
+      await load();
+    } catch (error) {
+      console.error('Failed to add material:', error);
+    }
+  };
+
+  const handleDelete = async (materialId) => {
+    try {
+      await deleteMaterial(project.id, materialId);
+      await load();
+    } catch (error) {
+      console.error('Failed to delete material:', error);
+    }
+  };
+
+  if (isLoading) return null;
+
+  return (
+    <MaterialsBox>
+      <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#2c3e50', marginBottom: '0.6rem' }}>
+        資料（MTG前に登録。お礼メッセージに自動で付きます）
+      </div>
+      {materials.length > 0 && (
+        <MaterialsList>
+          {materials.map((m) => (
+            <MaterialItem key={m.id}>
+              <MaterialTitle href={m.url} target="_blank" rel="noopener noreferrer">{m.title}</MaterialTitle>
+              {m.sentAt ? (
+                <MaterialSentBadge>送付済み（{formatTimestamp(m.sentAt)}）</MaterialSentBadge>
+              ) : (
+                <MaterialSentBadge style={{ color: '#95a5a6' }}>未送付</MaterialSentBadge>
+              )}
+              <DeleteButton onClick={() => handleDelete(m.id)} style={{ width: '24px', height: '24px' }}>
+                <FiTrash2 size={12} />
+              </DeleteButton>
+            </MaterialItem>
+          ))}
+        </MaterialsList>
+      )}
+      {isAdding ? (
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <Input
+            value={titleInput}
+            onChange={e => setTitleInput(e.target.value)}
+            placeholder="資料タイトル"
+            style={{ flex: '1 1 160px', fontSize: '0.82rem', padding: '0.45rem' }}
+          />
+          <Input
+            value={urlInput}
+            onChange={e => setUrlInput(e.target.value)}
+            placeholder="リンク（Google Slides/Driveなど）"
+            style={{ flex: '2 1 240px', fontSize: '0.82rem', padding: '0.45rem' }}
+          />
+          <SmallButton $primary onClick={handleAdd} disabled={!titleInput.trim() || !urlInput.trim()}>追加</SmallButton>
+          <SmallButton onClick={() => { setIsAdding(false); setTitleInput(''); setUrlInput(''); }}>取消</SmallButton>
+        </div>
+      ) : (
+        <SmallButton onClick={() => setIsAdding(true)}><FiPlus size={12} /> 資料を登録</SmallButton>
+      )}
+    </MaterialsBox>
+  );
+};
+
 const MinutesTab = ({ project }) => {
   const [meetings, setMeetings] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -2828,14 +3029,14 @@ const MinutesTab = ({ project }) => {
     return () => { cancelled = true; };
   }, [project.id]);
 
-  if (isLoading) return <EmptyText>読み込み中...</EmptyText>;
-  if (meetings.length === 0) {
-    return <EmptyText>この案件に紐付いた議事録はまだありません</EmptyText>;
-  }
-
   return (
     <div>
-      {meetings.map((m) => (
+      <MaterialsSection project={project} />
+      {isLoading ? (
+        <EmptyText>読み込み中...</EmptyText>
+      ) : meetings.length === 0 ? (
+        <EmptyText>この案件に紐付いた議事録はまだありません</EmptyText>
+      ) : meetings.map((m) => (
         <MinutesCard key={m.id}>
           <MinutesHeader onClick={() => setExpandedId(expandedId === m.id ? null : m.id)}>
             <MinutesTitle>{m.title || '（タイトルなし）'}</MinutesTitle>
