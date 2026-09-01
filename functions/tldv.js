@@ -59,7 +59,18 @@ async function fetchMeetingInfo(meetingId, apiKey) {
 function extractProvidedSecret(req) {
   const authHeader = req.headers['authorization'] || '';
   const bearer = authHeader.replace(/^Bearer\s+/i, '');
-  return req.headers['x-webhook-secret'] || req.headers['x-api-key'] || bearer || null;
+  const raw = req.headers['x-webhook-secret'] || req.headers['x-api-key'] || bearer || null;
+  return raw ? normalizeSecret(raw) : null;
+}
+
+/**
+ * 前後の空白除去＋全角英数字を半角に変換する（IME経由のコピペでの誤変換対策）。
+ * 長さは一致するのに文字コードが違う、という事故を吸収する。
+ */
+function normalizeSecret(str) {
+  return String(str)
+    .trim()
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
 }
 
 /**
@@ -208,8 +219,8 @@ function createTldvRouter({ admin, db }) {
     // tl;dv側の認証UIが「Header Config」か「APIキー」かで実際に送られてくる
     // ヘッダー名・値が変わりうるため、TLDV_WEBHOOK_SECRET/TLDV_API_KEYの
     // どちらか、x-webhook-secret/x-api-key/Authorizationのどれかに一致すれば許可する
-    const webhookSecret = process.env.TLDV_WEBHOOK_SECRET;
-    const apiKeySecret = process.env.TLDV_API_KEY;
+    const webhookSecret = process.env.TLDV_WEBHOOK_SECRET ? normalizeSecret(process.env.TLDV_WEBHOOK_SECRET) : null;
+    const apiKeySecret = process.env.TLDV_API_KEY ? normalizeSecret(process.env.TLDV_API_KEY) : null;
     if (!webhookSecret && !apiKeySecret) {
       console.error('TLDV_WEBHOOK_SECRET / TLDV_API_KEY が未設定のため拒否');
       return res.status(500).json({ error: 'Webhook secret not configured' });
