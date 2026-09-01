@@ -216,7 +216,9 @@ function createTldvRouter({ admin, db }) {
     }
     const provided = extractProvidedSecret(req);
     if (!provided || (provided !== webhookSecret && provided !== apiKeySecret)) {
-      console.error('tl;dv Webhook認証失敗');
+      // 値は出さずヘッダー名のみ記録（原因切り分け用の一時ログ）
+      console.error('tl;dv Webhook認証失敗. 受信ヘッダー一覧:', Object.keys(req.headers));
+      console.error('extractProvidedSecretの取得結果の有無:', provided ? `値あり(長さ${provided.length})` : 'なし');
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
