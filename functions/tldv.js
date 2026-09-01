@@ -37,6 +37,32 @@ async function tldvFetch(path, apiKey) {
 }
 
 /**
+ * 会議のメタデータ（主催者・参加者・タイトル等）をREST APIから取得する。
+ * TranscriptReadyのWebhook本文にはこれらが含まれないため、常にAPIで補う。
+ * conferenceId等はドキュメント上の型に含まれておらず、取得できないことがある。
+ */
+async function fetchMeetingInfo(meetingId, apiKey) {
+  try {
+    const resp = await tldvFetch(`/meetings/${meetingId}`, apiKey);
+    return resp.data || resp;
+  } catch (error) {
+    console.error('tl;dv meeting情報取得失敗（続行）:', error.message);
+    return {};
+  }
+}
+
+/**
+ * Webhookのヘッダーから認証値を取り出す。
+ * tl;dv側の認証方式（Header Config／APIキー方式）がどちらでも通るよう、
+ * 複数のヘッダー名を許容する。
+ */
+function extractProvidedSecret(req) {
+  const authHeader = req.headers['authorization'] || '';
+  const bearer = authHeader.replace(/^Bearer\s+/i, '');
+  return req.headers['x-webhook-secret'] || req.headers['x-api-key'] || bearer || null;
+}
+
+/**
  * tl;dvの文字起こしを取得し、話者付きの1本のテキストに整形する。
  * まだ生成されていない場合（MeetingReady直後など）は空文字を返す。
  */
@@ -173,12 +199,17 @@ function createTldvRouter({ admin, db }) {
 
   router.post('/webhook', async (req, res) => {
     // Webhook認証（secret未設定時はfail-closed=拒否）
+    // tl;dv側の認証UIが「Header Config」か「APIキー」かで実際に送られてくる
+    // ヘッダー名・値が変わりうるため、TLDV_WEBHOOK_SECRET/TLDV_API_KEYの
+    // どちらか、x-webhook-secret/x-api-key/Authorizationのどれかに一致すれば許可する
     const webhookSecret = process.env.TLDV_WEBHOOK_SECRET;
-    if (!webhookSecret) {
-      console.error('TLDV_WEBHOOK_SECRET が未設定のため拒否');
+    const apiKeySecret = process.env.TLDV_API_KEY;
+    if (!webhookSecret && !apiKeySecret) {
+      console.error('TLDV_WEBHOOK_SECRET / TLDV_API_KEY が未設定のため拒否');
       return res.status(500).json({ error: 'Webhook secret not configured' });
     }
-    if (req.headers['x-webhook-secret'] !== webhookSecret) {
+    const provided = extractProvidedSecret(req);
+    if (!provided || (provided !== webhookSecret && provided !== apiKeySecret)) {
       console.error('tl;dv Webhook認証失敗');
       return res.status(401).json({ error: 'Unauthorized' });
     }
@@ -208,17 +239,26 @@ function createTldvRouter({ admin, db }) {
       const transcriptText = await fetchTranscriptText(meetingId, apiKey);
       const finalTranscript = transcriptText || existing?.transcript || '';
 
-      const organizer = data.organizer || {};
-      const invitees = Array.isArray(data.invitees) ? data.invitees : [];
+      // メタデータ：TranscriptReadyのWebhook本文には主催者・参加者・タイトル等が
+      // 含まれないため、REST APIの結果を主として使い、Webhook本文で補完する
+      // （conferenceId等ドキュメント外のフィールドが返る可能性に賭けて両方見る）
+      const restInfo = await fetchMeetingInfo(meetingId, apiKey);
+      const organizer = restInfo.organizer || data.organizer || {};
+      const invitees = Array.isArray(restInfo.invitees) ? restInfo.invitees : (Array.isArray(data.invitees) ? data.invitees : []);
+      const title = restInfo.name || data.name || existing?.title || '';
+      const happenedAt = restInfo.happenedAt || data.happenedAt || existing?.happenedAt || null;
+      const recordingUrl = restInfo.url || data.url || existing?.recordingUrl || null;
+      const conferenceId = restInfo.extraProperties?.conferenceId || data.extraProperties?.conferenceId || null;
+
       const allEmails = [organizer.email, ...invitees.map((i) => i.email)].filter(Boolean);
       const allInternal = allEmails.length > 0 && allEmails.every((e) => e.toLowerCase().endsWith('@senjinholdings.com'));
 
-      const meetUrl = normalizeMeetUrl(data.extraProperties?.conferenceId) || existing?.meetUrl || null;
+      const meetUrl = normalizeMeetUrl(conferenceId) || existing?.meetUrl || null;
 
       // AI分析は本文が取れている時だけ実行（無駄なAPI呼び出しを避ける）
       const openaiKey = process.env.OPENAI_API_KEY;
       const aiResult = (openaiKey && finalTranscript.length > 10)
-        ? await analyzeMeeting(openaiKey, data.name, finalTranscript)
+        ? await analyzeMeeting(openaiKey, title, finalTranscript)
         : { summary: existing?.aiSummary || '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
 
       // 案件紐付け：社内のみのMTGは対象外。Meet URLが案件に登録済みなら自動紐付け
@@ -242,10 +282,10 @@ function createTldvRouter({ admin, db }) {
 
       await meetingRef.set({
         tldvMeetingId: meetingId,
-        title: data.name || '',
-        happenedAt: data.happenedAt || null,
-        durationSec: data.duration || null,
-        recordingUrl: data.url || null,
+        title,
+        happenedAt,
+        durationSec: restInfo.duration || data.duration || existing?.durationSec || null,
+        recordingUrl,
         organizerEmail: organizer.email || null,
         organizerName: organizer.name || null,
         invitees: invitees.map((i) => ({ name: i.name || null, email: i.email || null })),
@@ -270,7 +310,7 @@ function createTldvRouter({ admin, db }) {
 
       // 初回のみSlack通知（同じMTGへの再送で毎回通知しない）
       if (!existingSnap.exists || (isFirstTimeWithTranscript)) {
-        await notifySlack({ linkStatus, dealId, title: data.name });
+        await notifySlack({ linkStatus, dealId, title });
       }
 
       return res.status(200).json({ success: true, dealId, linkStatus });
