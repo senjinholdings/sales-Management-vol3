@@ -199,20 +199,37 @@ async function applyToDeal({ admin, db, dealId, meetingId, aiResult }) {
   const actions = (aiResult.nextActions || []).filter((a) => (a.owner || '自分') !== '先方');
   const batch = db.batch();
 
-  actions.forEach((action, index) => {
-    const entryId = `tldvNa_${meetingId}_${index}`;
+  if (actions.length === 0) {
+    // ネクストアクションが無くても、議事録タブと同様に営業記録へ接触メモだけは残す
+    // （手動入力の「NAなしメモのみ保存」と同じ形。ここが無いと紐付いても営業記録に何も出ない）
+    const entryId = `tldvMemo_${meetingId}`;
     const entryRef = dealRef.collection(subCol).doc(recordId).collection('entries').doc(entryId);
     batch.set(entryRef, {
       memoContent: aiResult.summary || '',
-      actionContent: action.content || '',
-      actionDueDate: action.deadline || null,
-      actionAssignee: deal.representative || '',
+      actionContent: '',
+      actionDueDate: null,
+      actionAssignee: '',
       actionStatus: 'active',
       aiGenerated: true,
       sourceMeetingId: meetingId,
       createdAt: admin.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
-  });
+  } else {
+    actions.forEach((action, index) => {
+      const entryId = `tldvNa_${meetingId}_${index}`;
+      const entryRef = dealRef.collection(subCol).doc(recordId).collection('entries').doc(entryId);
+      batch.set(entryRef, {
+        memoContent: aiResult.summary || '',
+        actionContent: action.content || '',
+        actionDueDate: action.deadline || null,
+        actionAssignee: deal.representative || '',
+        actionStatus: 'active',
+        aiGenerated: true,
+        sourceMeetingId: meetingId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    });
+  }
 
   batch.update(dealRef, {
     lastContactDate: new Date().toISOString().split('T')[0],
