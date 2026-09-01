@@ -108,7 +108,7 @@ function createCalendarRouter({ admin, db }) {
       const requestId = `mtg-${start.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
 
       const eventBody = {
-        summary: title || `${companyName} MTG`,
+        summary: title || `${companyName}様-Senjin MTG`,
         start: { dateTime: start.toISOString(), timeZone: 'Asia/Tokyo' },
         end: { dateTime: end.toISOString(), timeZone: 'Asia/Tokyo' },
         attendees: (attendeeEmails || []).filter(Boolean).map((email) => ({ email })),

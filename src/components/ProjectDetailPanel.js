@@ -216,6 +216,11 @@ const DetailButton = styled(BriefButton)`
   &:hover { background: #d68910; }
 `;
 
+const MeetingButton = styled(BriefButton)`
+  background: #3498db;
+  &:hover { background: #2980b9; }
+`;
+
 // ============================================
 // Styled Components - タブ
 // ============================================
@@ -889,7 +894,7 @@ const DAYS_OF_WEEK = ['月', '火', '水', '木', '金', '土', '日'];
  * companyNameが同じ案件は全て同じ設定を共有する（clientMeetingSettingsコレクション）ため、
  * どれか1つの案件で登録・変更すると同じ会社の他の商材にも即座に反映される。
  */
-const MeetUrlsSection = ({ project, refreshKey, onRegisterClick }) => {
+const MeetUrlsSection = ({ project, refreshKey }) => {
   const [meetUrlText, setMeetUrlText] = useState('');
   const [dayOfWeek, setDayOfWeek] = useState('');
   const [time, setTime] = useState('');
@@ -926,39 +931,49 @@ const MeetUrlsSection = ({ project, refreshKey, onRegisterClick }) => {
   if (!loaded) return null;
 
   return (
-    <div style={{ padding: '0 1.5rem', marginTop: '0.75rem', display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-      <FormGroup $noMargin style={{ flex: '1 1 320px' }}>
-        <Label>MTGのURL（定例・臨時。会社単位で1つ。同じ会社の全商材で共有）</Label>
-        <Input
-          value={meetUrlText}
-          onChange={e => setMeetUrlText(e.target.value)}
-          onBlur={() => saveSettings({ meetUrl: normalizeMeetUrl(meetUrlText) || null })}
-          placeholder={'https://meet.google.com/xxx-xxxx-xxx'}
-        />
-      </FormGroup>
-      <FormGroup $noMargin style={{ width: '100px' }}>
-        <Label>定例の曜日</Label>
-        <Select
-          value={dayOfWeek}
-          onChange={e => { setDayOfWeek(e.target.value); saveSettings({ recurringDayOfWeek: e.target.value || null }); }}
-        >
-          <option value="">未設定</option>
-          {DAYS_OF_WEEK.map(d => <option key={d} value={d}>{d}曜日</option>)}
-        </Select>
-      </FormGroup>
-      <FormGroup $noMargin style={{ width: '120px' }}>
-        <Label>定例の時刻</Label>
-        <DateInput
-          type="time"
-          value={time}
-          onChange={e => setTime(e.target.value)}
-          onBlur={() => saveSettings({ recurringTime: time || null })}
-          style={{ width: '100%', boxSizing: 'border-box' }}
-        />
-      </FormGroup>
-      <SmallButton type="button" onClick={onRegisterClick} style={{ height: '38px' }}>
-        <FiCalendar size={14} /> MTGを登録
-      </SmallButton>
+    <div style={{
+      margin: '0.75rem 1.5rem 0',
+      padding: '0.75rem 1rem',
+      background: '#f8f9fa',
+      border: '1px solid #eee',
+      borderRadius: '8px'
+    }}>
+      <div style={{ fontSize: '0.78rem', color: '#95a5a6', marginBottom: '0.6rem' }}>
+        既にGoogleカレンダー等で動いている定例・臨時MTGがあれば、そのURLをここに手動で登録できます（会社単位で1つ。同じ会社の全商材で共有）
+      </div>
+      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <FormGroup $noMargin style={{ flex: '1 1 280px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>MTGのURL</Label>
+          <Input
+            value={meetUrlText}
+            onChange={e => setMeetUrlText(e.target.value)}
+            onBlur={() => saveSettings({ meetUrl: normalizeMeetUrl(meetUrlText) || null })}
+            placeholder={'https://meet.google.com/xxx-xxxx-xxx'}
+            style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+          />
+        </FormGroup>
+        <FormGroup $noMargin style={{ width: '95px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>曜日</Label>
+          <Select
+            value={dayOfWeek}
+            onChange={e => { setDayOfWeek(e.target.value); saveSettings({ recurringDayOfWeek: e.target.value || null }); }}
+            style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+          >
+            <option value="">未設定</option>
+            {DAYS_OF_WEEK.map(d => <option key={d} value={d}>{d}曜日</option>)}
+          </Select>
+        </FormGroup>
+        <FormGroup $noMargin style={{ width: '110px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>時刻</Label>
+          <DateInput
+            type="time"
+            value={time}
+            onChange={e => setTime(e.target.value)}
+            onBlur={() => saveSettings({ recurringTime: time || null })}
+            style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.85rem', padding: '0.5rem' }}
+          />
+        </FormGroup>
+      </div>
     </div>
   );
 };
@@ -3416,11 +3431,18 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           )}
         </PanelHeader>
 
-        {/* MTGのURL登録（新規/既存どちらの案件でも常に表示。tl;dv議事録の自動紐付けに使用） */}
+        {/* MTGを登録（新規/既存どちらの案件でも常に表示。Googleカレンダーに代理で予定を作成） */}
+        <HeaderActions style={{ padding: '0 1.5rem', marginTop: '0.75rem', marginBottom: 0 }}>
+          <MeetingButton onClick={() => setShowMeetingScheduleModal(true)}>
+            <FiCalendar />
+            MTGを登録
+          </MeetingButton>
+        </HeaderActions>
+
+        {/* 既存の定例・臨時MTGのURL手動登録（新規/既存どちらの案件でも常に表示。tl;dv議事録の自動紐付けに使用） */}
         <MeetUrlsSection
           project={project}
           refreshKey={meetUrlsRefreshKey}
-          onRegisterClick={() => setShowMeetingScheduleModal(true)}
         />
 
         {/* 受注後の進行ステージ（運用管理から開いた場合のみ。基準日以降に受注した対象案件に限る） */}

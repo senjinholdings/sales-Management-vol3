@@ -197,9 +197,20 @@ const Button = styled.button`
   }
 `;
 
+const DAY_NAMES = ['日', '月', '火', '水', '木', '金', '土'];
+
+/** "YYYY-MM-DDTHH:mm" から曜日・時刻の表示用文字列を作る（タイムゾーン変換を経由しない） */
+const describeWeeklySchedule = (startDateTime) => {
+  const match = String(startDateTime).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const [, y, mo, d, hh, mm] = match;
+  const dayOfWeek = DAY_NAMES[new Date(Number(y), Number(mo) - 1, Number(d)).getDay()];
+  return `毎週${dayOfWeek}曜日 ${hh}:${mm}`;
+};
+
 const getInitialFormData = (project) => ({
   organizerName: project?.representative || '',
-  title: project?.companyName ? `${project.companyName} MTG` : '',
+  title: project?.companyName ? `${project.companyName}様-Senjin MTG` : '',
   startDateTime: '',
   durationMinutes: '30',
   recurring: 'true',
@@ -342,7 +353,7 @@ function MeetingScheduleModal({ isOpen, onClose, project, onScheduled }) {
                 name="title"
                 value={formData.title}
                 onChange={handleChange}
-                placeholder={`${project.companyName} MTG`}
+                placeholder={`${project.companyName}様-Senjin MTG`}
                 disabled={isSubmitting}
               />
             </FormGroup>
@@ -383,6 +394,13 @@ function MeetingScheduleModal({ isOpen, onClose, project, onScheduled }) {
                   臨時（1回のみ）
                 </RadioLabel>
               </RadioGroup>
+              {formData.recurring === 'true' && (
+                <HintBox style={{ marginTop: '0.6rem' }}>
+                  {describeWeeklySchedule(formData.startDateTime)
+                    ? `「開始日時」で指定した ${describeWeeklySchedule(formData.startDateTime)} で、以降ずっと繰り返されます。`
+                    : '「開始日時」で指定した曜日・時刻で、以降ずっと繰り返されます。'}
+                </HintBox>
+              )}
             </FormGroup>
 
             <FormGroup>
