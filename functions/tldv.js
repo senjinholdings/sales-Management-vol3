@@ -133,7 +133,7 @@ ${transcriptText.substring(0, 6000)}`
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) return { ...fallback, ...JSON.parse(jsonMatch[0]) };
   } catch (error) {
-    console.error('AI分析エラー（続行）:', error.message);
+    console.error('AI分析エラー（続行）:', error.message, 'cause:', error.cause, 'code:', error.code, 'status:', error.status);
   }
   return fallback;
 }
