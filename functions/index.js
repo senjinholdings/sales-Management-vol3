@@ -23,6 +23,8 @@ const app = express();
 const createTldvRouter = require('./tldv');
 // Googleカレンダー連携ルーター（案件詳細の「MTGを登録」ボタンから代理で予定作成）
 const createCalendarRouter = require('./calendar');
+// 担当者の外部サービス連携ルーター（Chatwork APIトークン登録等）
+const createStaffRouter = require('./staff');
 
 // CORS を設定
 app.use(cors({
@@ -37,6 +39,8 @@ app.use(express.json());
 app.use('/api/tldv', createTldvRouter({ admin, db }));
 // カレンダー連携をマウント
 app.use('/api/meetings', createCalendarRouter({ admin, db }));
+// 担当者連携をマウント
+app.use('/api/staff', createStaffRouter({ admin, db }));
 
 // Firestoreコレクション参照
 const actionLogsRef = db.collection('actionLogs');

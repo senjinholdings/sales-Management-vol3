@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import styled from 'styled-components';
-import { FiPlus, FiTrash2, FiUser, FiUsers } from 'react-icons/fi';
-import { fetchAllStaff, addStaff, updateStaffEmail, deleteStaff } from '../services/staffService.js';
+import { FiPlus, FiTrash2, FiUser, FiUsers, FiCheck, FiMessageCircle } from 'react-icons/fi';
+import {
+  fetchAllStaff, addStaff, updateStaffEmail, deleteStaff,
+  registerChatworkToken, fetchChatworkStatus
+} from '../services/staffService.js';
 
 // ============================================
 // Styled Components
@@ -136,6 +139,131 @@ const EmptyText = styled.div`
   font-size: 0.85rem;
 `;
 
+const ChatworkRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+`;
+
+const ChatworkBadge = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  color: #1abc9c;
+  font-weight: 600;
+`;
+
+const ChatworkLink = styled.button`
+  background: none;
+  border: none;
+  padding: 0;
+  color: #3498db;
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-decoration: underline;
+  &:hover { color: #2980b9; }
+`;
+
+const ChatworkTokenInput = styled.input`
+  flex: 1;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  &:focus { outline: none; border-color: #3498db; }
+`;
+
+const ChatworkSaveButton = styled.button`
+  padding: 0.25rem 0.5rem;
+  border: none;
+  border-radius: 4px;
+  background: #3498db;
+  color: white;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+  &:hover { opacity: 0.9; }
+  &:disabled { background: #bdc3c7; cursor: not-allowed; }
+`;
+
+/**
+ * 担当者ごとのChatwork連携UI。
+ * トークンはCloud Functions経由でSecret Managerに保存され、Firestoreには一切置かない
+ * （案件データベースは現状アクセス制限が全開放のため、生きた認証情報を置けない）。
+ */
+const ChatworkConnect = ({ staffId }) => {
+  const [connected, setConnected] = useState(null); // null=確認中
+  const [editing, setEditing] = useState(false);
+  const [tokenInput, setTokenInput] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchChatworkStatus(staffId).then((isConnected) => {
+      if (!cancelled) setConnected(isConnected);
+    }).catch(() => { if (!cancelled) setConnected(false); });
+    return () => { cancelled = true; };
+  }, [staffId]);
+
+  const handleSave = async () => {
+    if (!tokenInput.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      await registerChatworkToken(staffId, tokenInput.trim());
+      setConnected(true);
+      setEditing(false);
+      setTokenInput('');
+    } catch (err) {
+      setError(err.message || '登録に失敗しました');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (connected === null) return null;
+
+  if (!editing && connected) {
+    return (
+      <ChatworkRow>
+        <ChatworkBadge><FiCheck size={12} /> Chatwork連携済み</ChatworkBadge>
+        <ChatworkLink onClick={() => setEditing(true)}>変更</ChatworkLink>
+      </ChatworkRow>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <ChatworkRow>
+        <ChatworkLink onClick={() => setEditing(true)}>
+          <FiMessageCircle size={12} style={{ verticalAlign: 'middle', marginRight: '0.2rem' }} />
+          Chatworkと連携する
+        </ChatworkLink>
+      </ChatworkRow>
+    );
+  }
+
+  return (
+    <ChatworkRow>
+      <ChatworkTokenInput
+        type="password"
+        placeholder="ChatworkのAPIトークン"
+        value={tokenInput}
+        onChange={(e) => setTokenInput(e.target.value)}
+        disabled={saving}
+      />
+      <ChatworkSaveButton onClick={handleSave} disabled={saving || !tokenInput.trim()}>
+        {saving ? '確認中...' : '登録'}
+      </ChatworkSaveButton>
+      <ChatworkLink onClick={() => { setEditing(false); setError(''); }}>取消</ChatworkLink>
+      {error && <span style={{ fontSize: '0.7rem', color: '#e74c3c' }}>{error}</span>}
+    </ChatworkRow>
+  );
+};
+
 // ============================================
 // コンポーネント
 // ============================================
@@ -238,6 +366,7 @@ const StaffMasterPage = () => {
                       placeholder="メールアドレス（未設定）"
                       onBlur={(e) => handleEmailBlur(s.id, e.target.value)}
                     />
+                    <ChatworkConnect staffId={s.id} />
                   </StaffInfo>
                   <DeleteButton onClick={() => handleDelete(s.id)}>
                     <FiTrash2 size={14} />
@@ -276,6 +405,7 @@ const StaffMasterPage = () => {
                       placeholder="メールアドレス（未設定）"
                       onBlur={(e) => handleEmailBlur(s.id, e.target.value)}
                     />
+                    <ChatworkConnect staffId={s.id} />
                   </StaffInfo>
                   <DeleteButton onClick={() => handleDelete(s.id)}>
                     <FiTrash2 size={14} />
