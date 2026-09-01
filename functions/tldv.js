@@ -16,6 +16,16 @@ const TLDV_API_BASE = 'https://pasta.tldv.io/v1alpha1';
 const SLACK_CHANNEL = '#営業_議事録';
 
 /**
+ * Secret Managerの値を前後の空白/改行を除いて取得する。
+ * `jq -r`等で値を流し込む際に混入した末尾改行がHTTPヘッダーで弾かれる
+ * 事故があったため、読み出し側でも必ずtrimする。
+ */
+function env(name) {
+  const v = process.env[name];
+  return v ? v.trim() : v;
+}
+
+/**
  * Google MeetのURLから会議コードを抽出して正規化する。
  * 抽出できない場合は元の値を小文字化・trimして返す（フォールバック）。
  */
@@ -133,7 +143,7 @@ ${transcriptText.substring(0, 6000)}`
     const jsonMatch = content.match(/\{[\s\S]*\}/);
     if (jsonMatch) return { ...fallback, ...JSON.parse(jsonMatch[0]) };
   } catch (error) {
-    console.error('AI分析エラー（続行）:', error.message, 'cause:', error.cause, 'code:', error.code, 'status:', error.status);
+    console.error('AI分析エラー（続行）:', error.message);
   }
   return fallback;
 }
@@ -191,7 +201,7 @@ async function applyToDeal({ admin, db, dealId, meetingId, aiResult }) {
 }
 
 async function notifySlack({ linkStatus, dealIds, title }) {
-  const token = process.env.SLACK_BOT_TOKEN;
+  const token = env('SLACK_BOT_TOKEN');
   if (!token || linkStatus === 'internal') return; // 社内MTGは通知しない
 
   const slack = new WebClient(token);
@@ -223,8 +233,8 @@ function createTldvRouter({ admin, db }) {
     // tl;dv側の認証UIが「Header Config」か「APIキー」かで実際に送られてくる
     // ヘッダー名・値が変わりうるため、TLDV_WEBHOOK_SECRET/TLDV_API_KEYの
     // どちらか、x-webhook-secret/x-api-key/Authorizationのどれかに一致すれば許可する
-    const webhookSecret = process.env.TLDV_WEBHOOK_SECRET ? normalizeSecret(process.env.TLDV_WEBHOOK_SECRET) : null;
-    const apiKeySecret = process.env.TLDV_API_KEY ? normalizeSecret(process.env.TLDV_API_KEY) : null;
+    const webhookSecret = env('TLDV_WEBHOOK_SECRET') ? normalizeSecret(env('TLDV_WEBHOOK_SECRET')) : null;
+    const apiKeySecret = env('TLDV_API_KEY') ? normalizeSecret(env('TLDV_API_KEY')) : null;
     if (!webhookSecret && !apiKeySecret) {
       console.error('TLDV_WEBHOOK_SECRET / TLDV_API_KEY が未設定のため拒否');
       return res.status(500).json({ error: 'Webhook secret not configured' });
@@ -247,7 +257,7 @@ function createTldvRouter({ admin, db }) {
       }
 
       const meetingId = data.meetingId || data.id;
-      const apiKey = process.env.TLDV_API_KEY;
+      const apiKey = env('TLDV_API_KEY');
       if (!apiKey) {
         console.error('TLDV_API_KEY が未設定');
         return res.status(500).json({ error: 'tl;dv API key not configured' });
@@ -279,7 +289,7 @@ function createTldvRouter({ admin, db }) {
       const meetUrl = normalizeMeetUrl(conferenceId) || existing?.meetUrl || null;
 
       // AI分析は本文が取れている時だけ実行（無駄なAPI呼び出しを避ける）
-      const openaiKey = process.env.OPENAI_API_KEY;
+      const openaiKey = env('OPENAI_API_KEY');
       const aiResult = (openaiKey && finalTranscript.length > 10)
         ? await analyzeMeeting(openaiKey, title, finalTranscript)
         : { summary: existing?.aiSummary || '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
