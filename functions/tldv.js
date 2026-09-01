@@ -175,14 +175,20 @@ async function applyToDeal({ admin, db, dealId, meetingId, aiResult }) {
   await batch.commit();
 }
 
-async function notifySlack({ linkStatus, dealId, title }) {
+async function notifySlack({ linkStatus, dealIds, title }) {
   const token = process.env.SLACK_BOT_TOKEN;
   if (!token || linkStatus === 'internal') return; // 社内MTGは通知しない
 
   const slack = new WebClient(token);
-  const text = linkStatus === 'auto' && dealId
-    ? `📹 議事録を登録しました: ${title}\n案件に自動で紐付けました。\nhttps://sales-management-staging.web.app/product/${dealId}`
-    : `📹 議事録を登録しました: ${title}\n案件には自動で紐付きませんでした（案件詳細にMTG URLの登録が必要です）。`;
+  let text;
+  if (linkStatus === 'auto' && dealIds?.length > 0) {
+    const links = dealIds
+      .map((id) => `https://sales-management-staging.web.app/product/${id}`)
+      .join('\n');
+    text = `📹 議事録を登録しました: ${title}\n${dealIds.length}件の案件に自動で紐付けました。\n${links}`;
+  } else {
+    text = `📹 議事録を登録しました: ${title}\n案件には自動で紐付きませんでした（案件詳細にMTG URLの登録が必要です）。`;
+  }
 
   try {
     await slack.chat.postMessage({ channel: SLACK_CHANNEL, text });
@@ -261,20 +267,20 @@ function createTldvRouter({ admin, db }) {
         ? await analyzeMeeting(openaiKey, title, finalTranscript)
         : { summary: existing?.aiSummary || '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
 
-      // 案件紐付け：社内のみのMTGは対象外。Meet URLが案件に登録済みなら自動紐付け
-      let dealId = existing?.dealId || null;
+      // 案件紐付け：社内のみのMTGは対象外。Meet URLが登録されている「全ての」案件に紐付ける
+      // （1つのMTGで複数案件・複数サービスが同時に話されるケースがあるため、1件に絞らない）
+      let dealIds = existing?.dealIds || [];
       let linkStatus = existing?.linkStatus || 'none';
       let matchReason = existing?.matchReason || null;
 
       if (allInternal) {
         linkStatus = 'internal';
-      } else if (!dealId && meetUrl) {
+      } else if (dealIds.length === 0 && meetUrl) {
         const dealsSnap = await db.collection('progressDashboard')
           .where('linkedMeetUrls', 'array-contains', meetUrl)
-          .limit(1)
           .get();
         if (!dealsSnap.empty) {
-          dealId = dealsSnap.docs[0].id;
+          dealIds = dealsSnap.docs.map((d) => d.id);
           linkStatus = 'auto';
           matchReason = 'meetUrl';
         }
@@ -290,7 +296,7 @@ function createTldvRouter({ admin, db }) {
         organizerName: organizer.name || null,
         invitees: invitees.map((i) => ({ name: i.name || null, email: i.email || null })),
         meetUrl,
-        dealId,
+        dealIds,
         linkStatus,
         matchReason,
         transcript: finalTranscript,
@@ -302,18 +308,22 @@ function createTldvRouter({ admin, db }) {
         ...(existingSnap.exists ? {} : { createdAt: admin.firestore.FieldValue.serverTimestamp() })
       }, { merge: true });
 
-      // 案件に紐付いていて、かつ本文の分析結果があるときだけNAを自動生成
+      // 紐付いた案件ごとに、本文の分析結果があるときだけNAを自動生成
+      // （AIはMTG全体から1つの要約・アクション一覧しか抽出しないため、同じ内容を
+      //   該当する全案件に適用する。関係ないNAが混じる場合は営業が手動で削除する運用）
       const isFirstTimeWithTranscript = finalTranscript && !existing?.transcript;
-      if (dealId && finalTranscript && (isFirstTimeWithTranscript || event === 'TranscriptReady')) {
-        await applyToDeal({ admin, db, dealId, meetingId, aiResult });
+      if (dealIds.length > 0 && finalTranscript && (isFirstTimeWithTranscript || event === 'TranscriptReady')) {
+        await Promise.all(dealIds.map((dealId) =>
+          applyToDeal({ admin, db, dealId, meetingId, aiResult })
+        ));
       }
 
       // 初回のみSlack通知（同じMTGへの再送で毎回通知しない）
       if (!existingSnap.exists || (isFirstTimeWithTranscript)) {
-        await notifySlack({ linkStatus, dealId, title });
+        await notifySlack({ linkStatus, dealIds, title });
       }
 
-      return res.status(200).json({ success: true, dealId, linkStatus });
+      return res.status(200).json({ success: true, dealIds, linkStatus });
     } catch (error) {
       console.error('tl;dv webhook処理エラー:', error);
       return res.status(500).json({ error: error.message });

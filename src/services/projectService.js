@@ -1158,12 +1158,13 @@ export const fetchAllNextActions = async () => {
 
 /**
  * 案件に紐付いたtl;dv議事録を取得する（新しい順）
- * コレクション: meetings/{tldvMeetingId}（dealId で絞り込み）
+ * コレクション: meetings/{tldvMeetingId}（dealIds配列にprojectIdを含むもので絞り込み。
+ * 1つのMTGで複数案件が話されることがあるため、案件は複数紐付きうる）
  * @param {string} projectId - 案件ID
  */
 export const fetchMeetingsForDeal = async (projectId) => {
   try {
-    const q = query(collection(db, 'meetings'), where('dealId', '==', projectId));
+    const q = query(collection(db, 'meetings'), where('dealIds', 'array-contains', projectId));
     const snapshot = await getDocs(q);
     return snapshot.docs
       .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))

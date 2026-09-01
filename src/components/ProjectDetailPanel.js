@@ -877,16 +877,53 @@ const normalizeMeetUrl = (url) => {
   return String(url).trim().toLowerCase() || null;
 };
 
-const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
-  const [formData, setFormData] = useState({
-    rank: project.rank || '',
-    clientGoal: project.clientGoal || ''
-  });
+/**
+ * MTGのURL登録セクション（定例・臨時MTGの自動紐付け用）。
+ * 新規/既存どちらの案件でも、フェーズやmodeに関係なく常に表示する
+ * （運用者向けタブは新規案件では非表示になるため、タブの外に置く）。
+ * 同じMeet URLを複数の案件に登録できる（1つのMTGで複数案件が話されるケースに対応）。
+ */
+const MeetUrlsSection = ({ project, onProjectUpdate }) => {
   const [meetUrlsText, setMeetUrlsText] = useState(
     (project.linkedMeetUrls || [])
       .map(code => (/^[a-z0-9]{3,4}-[a-z0-9]{4}-[a-z0-9]{3,4}$/.test(code) ? `https://meet.google.com/${code}` : code))
       .join('\n')
   );
+
+  const handleMeetUrlsBlur = async () => {
+    const codes = Array.from(new Set(
+      meetUrlsText.split('\n').map(line => normalizeMeetUrl(line)).filter(Boolean)
+    ));
+    try {
+      await updateProject(project.id, { linkedMeetUrls: codes });
+      if (onProjectUpdate) {
+        onProjectUpdate({ ...project, linkedMeetUrls: codes });
+      }
+    } catch (error) {
+      console.error('Failed to update linkedMeetUrls:', error);
+    }
+  };
+
+  return (
+    <div style={{ padding: '0 1.5rem', marginTop: '0.75rem' }}>
+      <FormGroup $noMargin>
+        <Label>MTGのURL（定例・臨時。1行1件、Google MeetのURL。同じMTGで複数案件が話される場合は各案件に同じURLを登録）</Label>
+        <ActionInput
+          value={meetUrlsText}
+          onChange={e => setMeetUrlsText(e.target.value)}
+          onBlur={handleMeetUrlsBlur}
+          placeholder={'https://meet.google.com/xxx-xxxx-xxx'}
+        />
+      </FormGroup>
+    </div>
+  );
+};
+
+const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
+  const [formData, setFormData] = useState({
+    rank: project.rank || '',
+    clientGoal: project.clientGoal || ''
+  });
   const [selectedMonth, setSelectedMonth] = useState('');
   const [monthlyTarget, setMonthlyTarget] = useState('');
   const [weeklySales, setWeeklySales] = useState({ w1: '', w2: '', w3: '', w4: '' });
@@ -952,21 +989,6 @@ const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
       }
     } catch (error) {
       console.error('Failed to update project field:', error);
-    }
-  };
-
-  /** MTGのURL欄を保存（1行1URL。tl;dvの議事録紐付けに使う会議コードへ正規化） */
-  const handleMeetUrlsBlur = async () => {
-    const codes = Array.from(new Set(
-      meetUrlsText.split('\n').map(line => normalizeMeetUrl(line)).filter(Boolean)
-    ));
-    try {
-      await updateProject(project.id, { linkedMeetUrls: codes });
-      if (onProjectUpdate) {
-        onProjectUpdate({ ...project, linkedMeetUrls: codes });
-      }
-    } catch (error) {
-      console.error('Failed to update linkedMeetUrls:', error);
     }
   };
 
@@ -1062,17 +1084,6 @@ const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
           />
         </FormGroup>
       </FormGrid>
-
-      {/* 定例・臨時MTGのURL（tl;dv議事録の自動紐付けに使用。1行1URL） */}
-      <FormGroup style={{ marginTop: '1rem' }}>
-        <Label>MTGのURL（定例・臨時。1行1件、Google MeetのURL）</Label>
-        <ActionInput
-          value={meetUrlsText}
-          onChange={e => setMeetUrlsText(e.target.value)}
-          onBlur={handleMeetUrlsBlur}
-          placeholder={'https://meet.google.com/xxx-xxxx-xxx'}
-        />
-      </FormGroup>
 
       {/* 月次売上管理 */}
       <SectionTitle>月次売上管理</SectionTitle>
@@ -3358,6 +3369,9 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
             </HeaderActions>
           )}
         </PanelHeader>
+
+        {/* MTGのURL登録（新規/既存どちらの案件でも常に表示。tl;dv議事録の自動紐付けに使用） */}
+        <MeetUrlsSection project={project} onProjectUpdate={onProjectUpdate} />
 
         {/* 受注後の進行ステージ（運用管理から開いた場合のみ。基準日以降に受注した対象案件に限る） */}
         {showStageProgress && mode !== 'newCase' && isStageTargetProject(project) && (
