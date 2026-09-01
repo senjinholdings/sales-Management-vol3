@@ -84,14 +84,25 @@ function createCalendarRouter({ admin, db }) {
         return res.status(400).json({ error: 'organizerEmail, companyName, startDateTime は必須です' });
       }
 
-      // "YYYY-MM-DDTHH:mm" をAsia/Tokyo（UTC+9固定）のローカル時刻として解釈する
+      // "YYYY-MM-DDTHH:mm" をAsia/Tokyo（UTC+9固定）のローカル時刻として解釈する。
+      // Cloud Functionsの実行環境はUTCのため、DateオブジェクトのgetHours()/getDay()は
+      // サーバーのローカル時区（UTC）で返ってしまい、JSTの壁時計時刻とズレる
+      // （例: JST 15:00はUTC 06:00になり、曜日も日付境界をまたぐとズレうる）。
+      // 表示・RRULE用の曜日・時刻は、入力文字列から直接パースして壁時計の値を使う
+      const match = String(startDateTime).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+      if (!match) {
+        return res.status(400).json({ error: 'startDateTimeの形式が不正です' });
+      }
+      const [y, mo, d, hh, mm] = match.slice(1).map(Number);
       const start = new Date(`${startDateTime}:00+09:00`);
       if (isNaN(start.getTime())) {
         return res.status(400).json({ error: 'startDateTimeの形式が不正です' });
       }
       const durMin = Number(durationMinutes) > 0 ? Number(durationMinutes) : 30;
       const end = new Date(start.getTime() + durMin * 60000);
-      const dayOfWeek = DAY_NAMES[start.getDay()];
+      // カレンダー日付そのもの（UTC変換を経由しない）から曜日を求める
+      const dayOfWeek = DAY_NAMES[new Date(Date.UTC(y, mo - 1, d)).getUTCDay()];
+      const wallClockTime = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 
       const calendar = getCalendarClientForUser(organizerEmail);
       const requestId = `mtg-${start.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -129,9 +140,7 @@ function createCalendarRouter({ admin, db }) {
         companyName,
         meetUrl,
         recurringDayOfWeek: recurring ? dayOfWeek : null,
-        recurringTime: recurring
-          ? `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`
-          : null,
+        recurringTime: recurring ? wallClockTime : null,
         calendarEventId: data.id,
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
