@@ -64,13 +64,17 @@ function extractProvidedSecret(req) {
 }
 
 /**
- * 前後の空白除去＋全角英数字を半角に変換する（IME経由のコピペでの誤変換対策）。
- * 長さは一致するのに文字コードが違う、という事故を吸収する。
+ * 前後の空白除去＋全角英数字を半角に変換＋小文字化する
+ * （IME経由のコピペでの誤変換・大文字化対策）。
+ * どちらの秘密値もランダムな16進数/UUID文字列なので大文字小文字を
+ * 区別しても強度は変わらない。長さは一致するのに文字コードが違う、
+ * という事故を吸収する。
  */
 function normalizeSecret(str) {
   return String(str)
     .trim()
-    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .toLowerCase();
 }
 
 /**
