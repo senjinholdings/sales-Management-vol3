@@ -21,6 +21,8 @@ const app = express();
 
 // tl;dv連携ルーター（議事録の永続化・案件紐付け・NA自動生成）
 const createTldvRouter = require('./tldv');
+// Googleカレンダー連携ルーター（案件詳細の「MTGを登録」ボタンから代理で予定作成）
+const createCalendarRouter = require('./calendar');
 
 // CORS を設定
 app.use(cors({
@@ -33,6 +35,8 @@ app.use(express.json());
 
 // tl;dv連携をマウント
 app.use('/api/tldv', createTldvRouter({ admin, db }));
+// カレンダー連携をマウント
+app.use('/api/meetings', createCalendarRouter({ admin, db }));
 
 // Firestoreコレクション参照
 const actionLogsRef = db.collection('actionLogs');
@@ -408,6 +412,8 @@ exports.api = functions.runWith({
     'TLDV_WEBHOOK_SECRET',
     'TLDV_API_KEY',
     'OPENAI_API_KEY',
-    'SLACK_BOT_TOKEN'
+    'SLACK_BOT_TOKEN',
+    'TLDV_CALENDAR_SA_KEY',
+    'MEETING_SCHEDULE_SECRET'
   ]
 }).https.onRequest(app);

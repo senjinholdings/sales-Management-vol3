@@ -25,6 +25,7 @@ jobs:
           REACT_APP_FIRST_RECALL_BRIEF_BOT_URL: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_URL }}
           REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET }}
           REACT_APP_CONTRACT_REQUEST_GAS_URL: ${{ secrets.REACT_APP_CONTRACT_REQUEST_GAS_URL }}
+          REACT_APP_MEETING_SCHEDULE_SECRET: ${{ secrets.REACT_APP_MEETING_SCHEDULE_SECRET }}
         run: npm run build
 
       - name: Move admin build into dist/
@@ -44,6 +45,7 @@ jobs:
           REACT_APP_FIRST_RECALL_BRIEF_BOT_URL: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_URL }}
           REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET: ${{ secrets.REACT_APP_FIRST_RECALL_BRIEF_BOT_SECRET }}
           REACT_APP_CONTRACT_REQUEST_GAS_URL: ${{ secrets.REACT_APP_CONTRACT_REQUEST_GAS_URL }}
+          REACT_APP_MEETING_SCHEDULE_SECRET: ${{ secrets.REACT_APP_MEETING_SCHEDULE_SECRET }}
         run: npm run build
 
       - name: Move partner build into dist/

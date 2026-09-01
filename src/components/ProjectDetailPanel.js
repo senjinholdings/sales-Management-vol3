@@ -4,6 +4,7 @@ import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, 
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
 import ContractRequestModal from './ContractRequestModal.js';
 import ScheduleConfirmModal from './ScheduleConfirmModal.js';
+import MeetingScheduleModal from './MeetingScheduleModal.js';
 import DetailConfirmModal from './DetailConfirmModal.js';
 import StageProgressBar from './StageProgressBar.js';
 import ContractBillingSection from './ContractBillingSection.js';
@@ -888,7 +889,7 @@ const DAYS_OF_WEEK = ['月', '火', '水', '木', '金', '土', '日'];
  * companyNameが同じ案件は全て同じ設定を共有する（clientMeetingSettingsコレクション）ため、
  * どれか1つの案件で登録・変更すると同じ会社の他の商材にも即座に反映される。
  */
-const MeetUrlsSection = ({ project }) => {
+const MeetUrlsSection = ({ project, refreshKey, onRegisterClick }) => {
   const [meetUrlText, setMeetUrlText] = useState('');
   const [dayOfWeek, setDayOfWeek] = useState('');
   const [time, setTime] = useState('');
@@ -906,7 +907,7 @@ const MeetUrlsSection = ({ project }) => {
       setLoaded(true);
     });
     return () => { cancelled = true; };
-  }, [project.companyName]);
+  }, [project.companyName, refreshKey]);
 
   const saveSettings = async (overrides = {}) => {
     const next = {
@@ -955,6 +956,9 @@ const MeetUrlsSection = ({ project }) => {
           style={{ width: '100%', boxSizing: 'border-box' }}
         />
       </FormGroup>
+      <SmallButton type="button" onClick={onRegisterClick} style={{ height: '38px' }}>
+        <FiCalendar size={14} /> MTGを登録
+      </SmallButton>
     </div>
   );
 };
@@ -3185,6 +3189,8 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
   const [showContractModal, setShowContractModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
+  const [showMeetingScheduleModal, setShowMeetingScheduleModal] = useState(false);
+  const [meetUrlsRefreshKey, setMeetUrlsRefreshKey] = useState(0);
 
   // モードに応じたサブコレクション名
   const salesSubCol = mode === 'newCase' ? 'newCaseSalesRecords' : 'salesRecords';
@@ -3411,7 +3417,11 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
         </PanelHeader>
 
         {/* MTGのURL登録（新規/既存どちらの案件でも常に表示。tl;dv議事録の自動紐付けに使用） */}
-        <MeetUrlsSection project={project} />
+        <MeetUrlsSection
+          project={project}
+          refreshKey={meetUrlsRefreshKey}
+          onRegisterClick={() => setShowMeetingScheduleModal(true)}
+        />
 
         {/* 受注後の進行ステージ（運用管理から開いた場合のみ。基準日以降に受注した対象案件に限る） */}
         {showStageProgress && mode !== 'newCase' && isStageTargetProject(project) && (
@@ -3484,6 +3494,13 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
       onClose={() => setShowContractModal(false)}
       deal={{ ...project, status: latestPhase || project.status }}
       onSaved={() => alert('契約締結依頼を送信しました。')}
+    />
+
+    <MeetingScheduleModal
+      isOpen={showMeetingScheduleModal}
+      onClose={() => setShowMeetingScheduleModal(false)}
+      project={project}
+      onScheduled={() => setMeetUrlsRefreshKey((k) => k + 1)}
     />
 
     <ScheduleConfirmModal
