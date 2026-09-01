@@ -1155,3 +1155,25 @@ export const fetchAllNextActions = async () => {
     throw error;
   }
 };
+
+/**
+ * 案件に紐付いたtl;dv議事録を取得する（新しい順）
+ * コレクション: meetings/{tldvMeetingId}（dealId で絞り込み）
+ * @param {string} projectId - 案件ID
+ */
+export const fetchMeetingsForDeal = async (projectId) => {
+  try {
+    const q = query(collection(db, 'meetings'), where('dealId', '==', projectId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs
+      .map((docSnap) => ({ id: docSnap.id, ...docSnap.data() }))
+      .sort((a, b) => {
+        const aTime = a.happenedAt ? new Date(a.happenedAt).getTime() : 0;
+        const bTime = b.happenedAt ? new Date(b.happenedAt).getTime() : 0;
+        return bTime - aTime;
+      });
+  } catch (error) {
+    console.error('Failed to fetch meetings for deal:', error);
+    throw error;
+  }
+};

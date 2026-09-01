@@ -23,7 +23,8 @@ import {
   addOperationMemo, fetchOperationMemos, updateOperationMemo, deleteOperationMemo,
   addSalesEntry, fetchSalesEntries, deleteSalesEntry, updateSalesEntry, updateSalesEntryStatus,
   addNaComment, fetchNaComments, updateNaComment, deleteNaComment,
-  fetchProjectById, completeStageWithSync, undoStageWithSync
+  fetchProjectById, completeStageWithSync, undoStageWithSync,
+  fetchMeetingsForDeal
 } from '../services/projectService.js';
 import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
@@ -868,11 +869,24 @@ const OperationMemoSection = ({ projectId }) => {
 // タブ1: 運用者向け
 // ============================================
 
+/** Google MeetのURLから会議コードを抽出して正規化する（tl;dv側の照合ロジックと同じ規則） */
+const normalizeMeetUrl = (url) => {
+  if (!url) return null;
+  const m = String(url).match(/meet\.google\.com\/([a-z0-9-]+)/i);
+  if (m) return m[1].toLowerCase();
+  return String(url).trim().toLowerCase() || null;
+};
+
 const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
   const [formData, setFormData] = useState({
     rank: project.rank || '',
     clientGoal: project.clientGoal || ''
   });
+  const [meetUrlsText, setMeetUrlsText] = useState(
+    (project.linkedMeetUrls || [])
+      .map(code => (/^[a-z0-9]{3,4}-[a-z0-9]{4}-[a-z0-9]{3,4}$/.test(code) ? `https://meet.google.com/${code}` : code))
+      .join('\n')
+  );
   const [selectedMonth, setSelectedMonth] = useState('');
   const [monthlyTarget, setMonthlyTarget] = useState('');
   const [weeklySales, setWeeklySales] = useState({ w1: '', w2: '', w3: '', w4: '' });
@@ -938,6 +952,21 @@ const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
       }
     } catch (error) {
       console.error('Failed to update project field:', error);
+    }
+  };
+
+  /** MTGのURL欄を保存（1行1URL。tl;dvの議事録紐付けに使う会議コードへ正規化） */
+  const handleMeetUrlsBlur = async () => {
+    const codes = Array.from(new Set(
+      meetUrlsText.split('\n').map(line => normalizeMeetUrl(line)).filter(Boolean)
+    ));
+    try {
+      await updateProject(project.id, { linkedMeetUrls: codes });
+      if (onProjectUpdate) {
+        onProjectUpdate({ ...project, linkedMeetUrls: codes });
+      }
+    } catch (error) {
+      console.error('Failed to update linkedMeetUrls:', error);
     }
   };
 
@@ -1033,6 +1062,17 @@ const OperatorTab = ({ project, onProjectUpdate, showBilling = false }) => {
           />
         </FormGroup>
       </FormGrid>
+
+      {/* 定例・臨時MTGのURL（tl;dv議事録の自動紐付けに使用。1行1URL） */}
+      <FormGroup style={{ marginTop: '1rem' }}>
+        <Label>MTGのURL（定例・臨時。1行1件、Google MeetのURL）</Label>
+        <ActionInput
+          value={meetUrlsText}
+          onChange={e => setMeetUrlsText(e.target.value)}
+          onBlur={handleMeetUrlsBlur}
+          placeholder={'https://meet.google.com/xxx-xxxx-xxx'}
+        />
+      </FormGroup>
 
       {/* 月次売上管理 */}
       <SectionTitle>月次売上管理</SectionTitle>
@@ -2625,6 +2665,144 @@ const SalesTab = ({ project, operators, salesReps, subCol = 'salesRecords', onPh
 // タブ3: キーパーソン
 // ============================================
 
+// ============================================
+// 議事録タブ（tl;dv連携）
+// ============================================
+
+const MinutesCard = styled.div`
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+`;
+
+const MinutesHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  cursor: pointer;
+`;
+
+const MinutesTitle = styled.div`
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #2c3e50;
+`;
+
+const MinutesDate = styled.div`
+  font-size: 0.8rem;
+  color: #95a5a6;
+  white-space: nowrap;
+`;
+
+const MinutesSummary = styled.div`
+  font-size: 0.85rem;
+  color: #555;
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+`;
+
+const MinutesDetail = styled.div`
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #f0f0f0;
+`;
+
+const MinutesTranscript = styled.div`
+  font-size: 0.8rem;
+  color: #555;
+  white-space: pre-wrap;
+  max-height: 300px;
+  overflow-y: auto;
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-top: 0.5rem;
+`;
+
+const MinutesActionList = styled.ul`
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.85rem;
+  color: #2c3e50;
+`;
+
+const MinutesLink = styled.a`
+  font-size: 0.8rem;
+  color: #3498db;
+  margin-top: 0.5rem;
+  display: inline-block;
+`;
+
+const MinutesTab = ({ project }) => {
+  const [meetings, setMeetings] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState(null);
+
+  useEffect(() => {
+    if (!project.id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchMeetingsForDeal(project.id);
+        if (!cancelled) setMeetings(data);
+      } catch (error) {
+        console.error('Failed to load meetings:', error);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [project.id]);
+
+  if (isLoading) return <EmptyText>読み込み中...</EmptyText>;
+  if (meetings.length === 0) {
+    return <EmptyText>この案件に紐付いた議事録はまだありません</EmptyText>;
+  }
+
+  return (
+    <div>
+      {meetings.map((m) => (
+        <MinutesCard key={m.id}>
+          <MinutesHeader onClick={() => setExpandedId(expandedId === m.id ? null : m.id)}>
+            <MinutesTitle>{m.title || '（タイトルなし）'}</MinutesTitle>
+            <MinutesDate>
+              {m.happenedAt ? new Date(m.happenedAt).toLocaleString('ja-JP') : ''}
+              {' '}{expandedId === m.id ? <FiChevronDown /> : <FiChevronRight />}
+            </MinutesDate>
+          </MinutesHeader>
+          {m.aiSummary && <MinutesSummary>{m.aiSummary}</MinutesSummary>}
+          {expandedId === m.id && (
+            <MinutesDetail>
+              {m.aiNextActions?.length > 0 && (
+                <>
+                  <strong style={{ fontSize: '0.85rem' }}>ネクストアクション</strong>
+                  <MinutesActionList>
+                    {m.aiNextActions.map((a, i) => (
+                      <li key={i}>{a.content}（{a.owner || '未定'}{a.deadline ? ' / ' + a.deadline : ''}）</li>
+                    ))}
+                  </MinutesActionList>
+                </>
+              )}
+              {m.transcript && <MinutesTranscript>{m.transcript}</MinutesTranscript>}
+              {m.recordingUrl && (
+                <div>
+                  <MinutesLink href={m.recordingUrl} target="_blank" rel="noopener noreferrer">
+                    🎥 録画を見る
+                  </MinutesLink>
+                </div>
+              )}
+            </MinutesDetail>
+          )}
+        </MinutesCard>
+      ))}
+    </div>
+  );
+};
+
 const KeyPersonTab = ({ project }) => {
   const [persons, setPersons] = useState([]);
   const [editingId, setEditingId] = useState(null);
@@ -3209,6 +3387,12 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
             >
               キーパーソン
             </Tab>
+            <Tab
+              $active={activeTab === 'minutes'}
+              onClick={() => setActiveTab('minutes')}
+            >
+              議事録
+            </Tab>
           </TabBar>
         )}
 
@@ -3226,6 +3410,9 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           )}
           {activeTab === 'keyPerson' && mode !== 'newCase' && (
             <KeyPersonTab project={project} />
+          )}
+          {activeTab === 'minutes' && mode !== 'newCase' && (
+            <MinutesTab project={project} />
           )}
         </TabContent>
       </Panel>

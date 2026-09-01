@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import styled from 'styled-components';
 import { FiPlus, FiTrash2, FiUser, FiUsers } from 'react-icons/fi';
-import { fetchAllStaff, addStaff, deleteStaff } from '../services/staffService.js';
+import { fetchAllStaff, addStaff, updateStaffEmail, deleteStaff } from '../services/staffService.js';
 
 // ============================================
 // Styled Components
@@ -83,16 +83,36 @@ const StaffItem = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.6rem 0.75rem;
   background: #f8f9fa;
   border: 1px solid #e0e0e0;
   border-radius: 6px;
 `;
 
+const StaffInfo = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+`;
+
 const StaffName = styled.span`
   font-size: 0.9rem;
   color: #2c3e50;
   font-weight: 500;
+`;
+
+const EmailInput = styled.input`
+  padding: 0.3rem 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  color: #7f8c8d;
+  background: transparent;
+  &:hover { border-color: #ddd; }
+  &:focus { outline: none; border-color: #3498db; background: white; color: #2c3e50; }
 `;
 
 const DeleteButton = styled.button`
@@ -163,6 +183,15 @@ const StaffMasterPage = () => {
     }
   };
 
+  const handleEmailBlur = async (staffId, email) => {
+    try {
+      await updateStaffEmail(staffId, email.trim());
+      await loadStaff();
+    } catch (error) {
+      console.error('Failed to update staff email:', error);
+    }
+  };
+
   const handleDelete = async (staffId) => {
     try {
       await deleteStaff(staffId);
@@ -200,7 +229,16 @@ const StaffMasterPage = () => {
             ) : (
               operators.map((s) => (
                 <StaffItem key={s.id}>
-                  <StaffName>{s.name}</StaffName>
+                  <StaffInfo>
+                    <StaffName>{s.name}</StaffName>
+                    <EmailInput
+                      key={`${s.id}-${s.email || ''}`}
+                      type="email"
+                      defaultValue={s.email || ''}
+                      placeholder="メールアドレス（未設定）"
+                      onBlur={(e) => handleEmailBlur(s.id, e.target.value)}
+                    />
+                  </StaffInfo>
                   <DeleteButton onClick={() => handleDelete(s.id)}>
                     <FiTrash2 size={14} />
                   </DeleteButton>
@@ -229,7 +267,16 @@ const StaffMasterPage = () => {
             ) : (
               salesReps.map((s) => (
                 <StaffItem key={s.id}>
-                  <StaffName>{s.name}</StaffName>
+                  <StaffInfo>
+                    <StaffName>{s.name}</StaffName>
+                    <EmailInput
+                      key={`${s.id}-${s.email || ''}`}
+                      type="email"
+                      defaultValue={s.email || ''}
+                      placeholder="メールアドレス（未設定）"
+                      onBlur={(e) => handleEmailBlur(s.id, e.target.value)}
+                    />
+                  </StaffInfo>
                   <DeleteButton onClick={() => handleDelete(s.id)}>
                     <FiTrash2 size={14} />
                   </DeleteButton>

@@ -4,6 +4,7 @@ import {
   getDocs,
   doc,
   addDoc,
+  updateDoc,
   deleteDoc,
   serverTimestamp
 } from 'firebase/firestore';
@@ -11,7 +12,7 @@ import {
 /**
  * スタッフ管理のFirestore操作サービス
  * コレクション: staffMembers/{docId}
- * フィールド: name(string), role("operator"|"sales"), createdAt(timestamp)
+ * フィールド: name(string), role("operator"|"sales"), email(string, 任意), createdAt(timestamp)
  */
 
 const COLLECTION_NAME = 'staffMembers';
@@ -67,6 +68,21 @@ export const fetchStaffByRole = async (role) => {
     return all.filter((s) => s.role === role);
   } catch (error) {
     console.error('Failed to fetch staff by role:', error);
+    throw error;
+  }
+};
+
+/**
+ * スタッフのメールアドレスを更新する
+ * @param {string} staffId - ドキュメントID
+ * @param {string} email - メールアドレス
+ */
+export const updateStaffEmail = async (staffId, email) => {
+  try {
+    const ref = doc(db, COLLECTION_NAME, staffId);
+    await updateDoc(ref, { email });
+  } catch (error) {
+    console.error('Failed to update staff email:', error);
     throw error;
   }
 };
