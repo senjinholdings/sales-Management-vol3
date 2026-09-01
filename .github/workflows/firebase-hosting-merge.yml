@@ -1,4 +1,4 @@
-name: Deploy to Firebase Hosting on merge
+name: Deploy to Firebase (Hosting + Functions) on merge
 on:
   push:
     branches:
@@ -57,3 +57,19 @@ jobs:
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_SALES_MANAGEMENT_STAGING }}
           projectId: sales-management-staging
           channelId: live
+
+      - name: Install functions dependencies
+        working-directory: functions
+        run: npm ci
+
+      - name: Write GCP service account key for functions deploy
+        run: echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT_SALES_MANAGEMENT_STAGING }}' > /tmp/gcp-key.json
+
+      - name: Deploy Cloud Functions
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-key.json
+        run: npx firebase-tools deploy --only functions --project sales-management-staging --non-interactive
+
+      - name: Clean up service account key
+        if: always()
+        run: rm -f /tmp/gcp-key.json

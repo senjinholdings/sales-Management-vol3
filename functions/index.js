@@ -36,39 +36,6 @@ app.use(express.json());
 const actionLogsRef = db.collection('actionLogs');
 const dealsRef = db.collection('deals');
 
-// 初期データ投入（一度だけ実行）
-const initializeData = async () => {
-  try {
-    // 既存データをチェック
-    const actionLogsSnapshot = await actionLogsRef.limit(1).get();
-    if (!actionLogsSnapshot.empty) {
-      console.log('データは既に存在します');
-      return;
-    }
-
-    console.log('初期データを投入中...');
-
-    // サンプル案件データ
-    const sampleDeals = [
-      { id: '1', name: 'サンプル案件1', status: 'progress' },
-      { id: '2', name: 'サンプル案件2', status: 'negotiation' },
-      { id: '3', name: 'サンプル案件3', status: 'proposal' }
-    ];
-
-    // 案件データ投入
-    for (const deal of sampleDeals) {
-      await dealsRef.doc(deal.id).set(deal);
-    }
-
-    console.log('初期データ投入完了');
-  } catch (error) {
-    console.error('初期データ投入エラー:', error);
-  }
-};
-
-// 初期化実行
-initializeData();
-
 // ヘルスチェックエンドポイント
 app.get('/api/health', (req, res) => {
   res.json({
@@ -430,10 +397,13 @@ app.use('/api/slack-interaction', express.urlencoded({ extended: true }));
  * receiveTldv: Zapierからtl;dvのノートデータを受信し、AI分析してSlack通知
  */
 app.post('/api/receive-tldv', async (req, res) => {
-  // Webhook認証
-  const config = functions.config();
-  const webhookSecret = config.webhook?.secret;
-  if (webhookSecret && req.headers['x-webhook-secret'] !== webhookSecret) {
+  // Webhook認証（secret未設定時はfail-closed=拒否。設定漏れで無認証のまま公開されるのを防ぐ）
+  const webhookSecret = process.env.TLDV_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.error('TLDV_WEBHOOK_SECRET が未設定のため拒否');
+    return res.status(500).json({ error: 'Webhook secret not configured' });
+  }
+  if (req.headers['x-webhook-secret'] !== webhookSecret) {
     console.error('Webhook認証失敗');
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -456,7 +426,7 @@ app.post('/api/receive-tldv', async (req, res) => {
       relatedService: null
     };
 
-    const openaiKey = config.openai?.api_key;
+    const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey && textToAnalyze.length > 10) {
       try {
         const openai = new OpenAI({ apiKey: openaiKey });
@@ -549,8 +519,8 @@ ${textToAnalyze}`
     console.log('🔍 案件数:', allDeals.length, '件, ベストマッチ:', bestMatch?.companyName || bestMatch?.productName || 'なし', '(スコア:', bestMatch?._score || 0, ')');
 
     // 3. Slack通知送信
-    const slackToken = config.slack?.bot_token;
-    const slackChannel = config.slack?.channel || '#mtg-actions';
+    const slackToken = process.env.SLACK_BOT_TOKEN;
+    const slackChannel = process.env.SLACK_CHANNEL || '#mtg-actions';
 
     if (!slackToken) {
       console.error('Slack Bot Token未設定');
@@ -750,7 +720,6 @@ app.post('/api/slack-events', async (req, res) => {
     if (!event.bot_id && !event.bot_profile && !isZapierFormat) return;
 
     // 自分自身のボットのメッセージは無視（名前やテキストで判定）
-    const config = functions.config();
     const botName = event.bot_profile?.name || '';
     if (botName === 'tldv議事録' || (event.text || '').includes('既存案件に登録') || (event.text || '').includes('新規案件として登録')) {
       console.log('⏭️ 自ボット投稿スキップ:', botName);
@@ -883,7 +852,7 @@ app.post('/api/slack-events', async (req, res) => {
       relatedService: null
     };
 
-    const openaiKey = config.openai?.api_key;
+    const openaiKey = process.env.OPENAI_API_KEY;
     if (openaiKey && textToAnalyze.length > 10) {
       try {
         const openai = new OpenAI({ apiKey: openaiKey });
@@ -959,8 +928,8 @@ ${textToAnalyze.substring(0, 3000)}`
     const bestMatch = allDeals.length > 0 && allDeals[0]._score > 0 ? allDeals[0] : null;
 
     // Slack通知送信
-    const slackToken = config.slack?.bot_token;
-    const slackChannel = config.slack?.channel || '#営業_議事録';
+    const slackToken = process.env.SLACK_BOT_TOKEN;
+    const slackChannel = process.env.SLACK_CHANNEL_TLDV || '#営業_議事録';
     const slack = new WebClient(slackToken);
 
     const meetingData = {
@@ -1060,10 +1029,13 @@ ${textToAnalyze.substring(0, 3000)}`
  * slackInteraction: Slackボタンクリック処理 → Firestore書き込み
  */
 app.post('/api/slack-interaction', async (req, res) => {
-  // Slack署名検証
-  const config = functions.config();
-  const signingSecret = config.slack?.signing_secret;
-  if (signingSecret) {
+  // Slack署名検証（secret未設定時はfail-closed=拒否。設定漏れで無認証のまま公開されるのを防ぐ）
+  const signingSecret = process.env.SLACK_SIGNING_SECRET;
+  if (!signingSecret) {
+    console.error('SLACK_SIGNING_SECRET が未設定のため拒否');
+    return res.status(500).send('Slack signing secret not configured');
+  }
+  {
     const timestamp = req.headers['x-slack-request-timestamp'];
     const slackSignature = req.headers['x-slack-signature'];
     const body = req.rawBody?.toString() || '';
@@ -1077,8 +1049,7 @@ app.post('/api/slack-interaction', async (req, res) => {
 
   try {
     const payload = JSON.parse(req.body.payload);
-    const config = functions.config();
-    const slackToken = config.slack?.bot_token;
+    const slackToken = process.env.SLACK_BOT_TOKEN;
     const slack = new WebClient(slackToken);
 
     // === モーダル送信（view_submission）の処理 ===
@@ -1466,4 +1437,13 @@ app.use((req, res) => {
 });
 
 // Firebase Functions でエクスポート
-exports.api = functions.https.onRequest(app);
+// 機密情報はSecret Manager経由（functions.config()は2025年末にRuntime Config APIが
+// 廃止されたため使用不可。値は `firebase functions:secrets:set <NAME>` で設定する）
+exports.api = functions.runWith({
+  secrets: [
+    'TLDV_WEBHOOK_SECRET',
+    'OPENAI_API_KEY',
+    'SLACK_BOT_TOKEN',
+    'SLACK_SIGNING_SECRET'
+  ]
+}).https.onRequest(app);
