@@ -29,7 +29,8 @@ import {
   fetchDatesWithData,
   getTaskSessions,
   updateTaskDetails,
-  reorderTasks
+  reorderTasks,
+  planNextDayTasks
 } from '../services/dailyTimerService.js';
 
 // ============================================
@@ -920,6 +921,11 @@ const DailyTimerPage = () => {
   const [savedReview, setSavedReview] = useState(normalizeReview());
   const [reviewOpen, setReviewOpen] = useState(false);
   const reviewKeyRef = useRef(null);
+  // 翌日の予定タスク（振り返り保存時にまとめて登録する）。ローカルidは編集用の一時キー
+  const [nextDayPlan, setNextDayPlan] = useState([]);
+  const [nextDayTaskName, setNextDayTaskName] = useState('');
+  const [nextDayPlannedMinutes, setNextDayPlannedMinutes] = useState('');
+  const [nextDayPlannedStartTime, setNextDayPlannedStartTime] = useState('');
 
   // カレンダー
   const [calendarOpen, setCalendarOpen] = useState(false);
@@ -1008,6 +1014,42 @@ const DailyTimerPage = () => {
     });
     return { unfinishedTasks: unfinished, overdueTasks: over };
   }, [dayDocs, representative]);
+
+  // 翌日の予定タスクの初期候補：今日の未完了タスクを自動で繰越候補にする
+  // （担当者×日付が変わった時だけ再セットし、以後の追加・削除はそのまま保持する）
+  const nextDayPlanKeyRef = useRef(null);
+  useEffect(() => {
+    const key = `${representative}_${loadedDate}`;
+    if (nextDayPlanKeyRef.current === key) return;
+    nextDayPlanKeyRef.current = key;
+    setNextDayPlan(
+      unfinishedTasks.map(({ task }) => ({
+        localId: `carry_${task.id}`,
+        name: task.name,
+        plannedMinutes: task.plannedMinutes,
+        plannedStartTime: null,
+        fromCarryover: true
+      }))
+    );
+  }, [unfinishedTasks, loadedDate, representative]);
+
+  const addNextDayTask = () => {
+    if (!nextDayTaskName.trim()) return;
+    setNextDayPlan((prev) => [...prev, {
+      localId: `new_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      name: nextDayTaskName.trim(),
+      plannedMinutes: nextDayPlannedMinutes.trim() === '' ? null : Number(nextDayPlannedMinutes),
+      plannedStartTime: nextDayPlannedStartTime || null,
+      fromCarryover: false
+    }]);
+    setNextDayTaskName('');
+    setNextDayPlannedMinutes('');
+    setNextDayPlannedStartTime('');
+  };
+
+  const removeNextDayTask = (localId) => {
+    setNextDayPlan((prev) => prev.filter((t) => t.localId !== localId));
+  };
 
   const confirmLeaveReview = () =>
     !reviewDirty ||
@@ -1264,6 +1306,12 @@ const DailyTimerPage = () => {
     runMutation(async () => {
       await saveReview(representative, selectedDate, reviewDraft);
       setSavedReview({ ...reviewDraft });
+      const tomorrowKey = shiftDateKey(selectedDate, 1);
+      await planNextDayTasks(representative, tomorrowKey, nextDayPlan.map((t) => ({
+        name: t.name,
+        plannedMinutes: t.plannedMinutes,
+        plannedStartTime: t.plannedStartTime
+      })));
     });
   };
 
@@ -1765,6 +1813,48 @@ const DailyTimerPage = () => {
                   ))}
                 </TaskList>
               )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
+              <ReviewSummaryTitle>翌日の予定（保存時にまとめて登録されます）</ReviewSummaryTitle>
+              {nextDayPlan.length === 0 ? (
+                <ReviewSummaryEmpty>翌日の予定タスクはありません</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {nextDayPlan.map((t) => (
+                    <TaskRow key={t.localId}>
+                      <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
+                      {t.plannedMinutes != null && (
+                        <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
+                      )}
+                      <DeleteButton onClick={() => removeNextDayTask(t.localId)}>
+                        <FiTrash2 size={14} />
+                      </DeleteButton>
+                    </TaskRow>
+                  ))}
+                </TaskList>
+              )}
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <Input
+                  placeholder="タスク名を追加"
+                  value={nextDayTaskName}
+                  onChange={(e) => setNextDayTaskName(e.target.value)}
+                />
+                <MinutesInput
+                  type="number"
+                  min="1"
+                  placeholder="分"
+                  value={nextDayPlannedMinutes}
+                  onChange={(e) => setNextDayPlannedMinutes(e.target.value)}
+                />
+                <TimeInput
+                  type="time"
+                  value={nextDayPlannedStartTime}
+                  onChange={(e) => setNextDayPlannedStartTime(e.target.value)}
+                />
+                <AddButton type="button" onClick={addNextDayTask} disabled={!nextDayTaskName.trim()}>
+                  <FiPlus size={14} /> 追加
+                </AddButton>
+              </div>
             </ReviewSummaryBlock>
             {REVIEW_FIELDS.map((field) => (
               <ReviewField key={field.key}>

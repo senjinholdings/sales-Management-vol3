@@ -27,6 +27,8 @@ const createCalendarRouter = require('./calendar');
 const createStaffRouter = require('./staff');
 // Slackの承認ボタン（お礼メッセージ送信）インタラクションルーター
 const { createSlackInteractionRouter } = require('./slackApproval');
+// 日報の記入漏れ防止（タイマー超過アラート・振り返り未実施リマインド）
+const { createOverrunChecker, createReviewReminder } = require('./dailyReportGuard');
 
 // CORS を設定
 app.use(cors({
@@ -429,3 +431,13 @@ exports.api = functions.runWith({
     'SLACK_SIGNING_SECRET'
   ]
 }).https.onRequest(app);
+
+// 日報: タイマーの止め忘れチェック（15分おき）
+exports.checkDailyTimerOverruns = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
+  .pubsub.schedule('every 15 minutes').timeZone('Asia/Tokyo')
+  .onRun(createOverrunChecker({ admin, db }));
+
+// 日報: 振り返り・翌日計画の未実施リマインド（10分おきに実行し、内部でJST時刻に応じて分岐）
+exports.dailyReviewReminder = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
+  .pubsub.schedule('every 10 minutes').timeZone('Asia/Tokyo')
+  .onRun(createReviewReminder({ db }));

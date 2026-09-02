@@ -382,4 +382,4 @@ function createSlackInteractionRouter({ admin, db }) {
   return router;
 }
 
-module.exports = { sendApprovalRequest, createSlackInteractionRouter };
+module.exports = { sendApprovalRequest, createSlackInteractionRouter, resolveSlackUserId };

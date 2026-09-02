@@ -16,8 +16,10 @@ import {
  * フィールド:
  *   representative(string), date("YYYY-MM-DD"),
  *   tasks: [{ id, name, plannedMinutes(number|null), plannedStartTime("HH:MM"|null),
- *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null) }],
- *             outputUrls([string]、任意。アウトプットのリンク。なしは未定義/空配列) }],
+ *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null), overrunAlertedAt(Timestamp|null、任意) }],
+ *             outputUrls([string]、任意。アウトプットのリンク。なしは未定義/空配列),
+ *             source("planned"|"adhoc"、任意): 前日の振り返りで計画されたタスクか、
+ *               当日その場で追加した臨時タスクかの区別。未設定の既存データは動作に影響なし }],
  *   manualSort(boolean、任意): trueならtasks配列の並びが表示順の正（D&Dで初めて並び替えた時に立つ）。
  *     未設定の既存ドキュメントは従来どおり予定開始時刻ソートで表示する
  *   review: { notAchieved, timeImprovement, reflection, nextAction }（1日1件の振り返り。tasksとは独立）
@@ -119,7 +121,8 @@ export const addTask = async (representative, date, name, plannedMinutes, planne
       name,
       plannedMinutes: plannedMinutes ?? null,
       plannedStartTime: plannedStartTime ?? null,
-      sessions: []
+      sessions: [],
+      source: 'adhoc'
     };
     const afterIndex = afterTaskId ? tasks.findIndex((t) => t.id === afterTaskId) : -1;
     if (afterIndex >= 0) {
@@ -155,7 +158,8 @@ export const addTaskAndStart = async (representative, date, name, plannedMinutes
       name,
       plannedMinutes: plannedMinutes ?? null,
       plannedStartTime: null,
-      sessions: [{ startedAt: now, endedAt: null }]
+      sessions: [{ startedAt: now, endedAt: null }],
+      source: 'adhoc'
     });
     await saveTasks(ref, representative, date, tasks);
   } catch (error) {
@@ -391,6 +395,35 @@ export const saveReview = async (representative, date, review) => {
     }, { merge: true });
   } catch (error) {
     console.error('Failed to save review:', error);
+    throw error;
+  }
+};
+
+/**
+ * 前日の振り返りのタイミングで、翌日の予定タスクをまとめて登録する。
+ * 既にこの関数で登録済み（source: 'planned'）かつ未着手（sessionsが空）のタスクは
+ * 一旦除去してから今回の一覧を書き込むため、同じ日に何度保存し直しても重複しない
+ * （一度でも開始したタスクはsourceに関わらず保持される＝上書きで消えることはない）
+ * @param {string} representative - 担当者名
+ * @param {string} date - 翌日の日付 "YYYY-MM-DD"
+ * @param {Array<{name: string, plannedMinutes: number|null, plannedStartTime: string|null}>} plannedTasks
+ */
+export const planNextDayTasks = async (representative, date, plannedTasks) => {
+  try {
+    const { ref, data } = await getDayDoc(representative, date);
+    const existing = (data?.tasks || []).map(normalizeTask);
+    const kept = existing.filter((t) => !(t.source === 'planned' && t.sessions.length === 0));
+    const newTasks = plannedTasks.map((p) => ({
+      id: generateTaskId(),
+      name: p.name,
+      plannedMinutes: p.plannedMinutes ?? null,
+      plannedStartTime: p.plannedStartTime ?? null,
+      sessions: [],
+      source: 'planned'
+    }));
+    await saveTasks(ref, representative, date, [...kept, ...newTasks]);
+  } catch (error) {
+    console.error('Failed to plan next day tasks:', error);
     throw error;
   }
 };
