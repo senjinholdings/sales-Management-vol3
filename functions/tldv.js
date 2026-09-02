@@ -351,10 +351,15 @@ function createTldvRouter({ admin, db }) {
       // OpenAIはネクストアクションの構造化抽出（担当・期日付き）専用に使う。
       const tldvNotesSummary = await fetchMeetingNotesSummary(meetingId, apiKey);
 
+      // テスト用: webhookペイロードにtestThankYouMessageがあれば、OpenAIを呼ばずに
+      // その文字列をそのまま使う（Slack承認→Chatwork送信の動作確認をクレジット消費なしで
+      // 行うためのフック。実際のtl;dvのペイロードにこのフィールドが入ることはない）
       const openaiKey = env('OPENAI_API_KEY');
-      const aiResult = (openaiKey && finalTranscript.length > 10)
-        ? await analyzeMeeting(openaiKey, title, finalTranscript)
-        : { summary: '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
+      const aiResult = data.testThankYouMessage
+        ? { summary: existing?.aiSummary || '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null, thankYouMessage: data.testThankYouMessage }
+        : (openaiKey && finalTranscript.length > 10)
+          ? await analyzeMeeting(openaiKey, title, finalTranscript)
+          : { summary: '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
 
       // tl;dv notes > OpenAI要約 > 既存値 の優先順で採用
       aiResult.summary = tldvNotesSummary || aiResult.summary || existing?.aiSummary || '';
