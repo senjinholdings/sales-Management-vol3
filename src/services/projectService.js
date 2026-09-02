@@ -1288,6 +1288,51 @@ export const updateMaterial = async (projectId, materialId, data) => {
   }
 };
 
+const DAY_NAMES_JA = ['日', '月', '火', '水', '木', '金', '土'];
+
+/** 今日から見て、指定した曜日（"日"〜"土"）の直近の日付を"YYYY-MM-DD"で返す（今日が該当曜日ならその日） */
+const nextOccurrenceDate = (dayOfWeekJa) => {
+  const targetIdx = DAY_NAMES_JA.indexOf(dayOfWeekJa);
+  if (targetIdx < 0) return null;
+  const now = new Date();
+  const diff = (targetIdx - now.getDay() + 7) % 7;
+  const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + diff);
+  const y = next.getFullYear();
+  const m = String(next.getMonth() + 1).padStart(2, '0');
+  const d = String(next.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+/**
+ * 定例MTGの直近の資料枠を先回りして用意する。
+ * MTGが実際に1回処理されるまで待つ自動生成（functions/tldv.js）とは別に、
+ * 既に定例で動いている会社の「曜日」をMeetUrlsSectionで登録・変更した瞬間、
+ * 即座に直近回の枠を作るために使う。同じ日付の枠が既にあれば何もしない
+ * @param {string} dealId - 案件ID
+ * @param {string} dayOfWeekJa - "日"〜"土"
+ */
+export const ensureUpcomingMaterialSlot = async (dealId, dayOfWeekJa) => {
+  try {
+    const scheduledDate = nextOccurrenceDate(dayOfWeekJa);
+    if (!dealId || !scheduledDate) return;
+    const ref = doc(db, 'progressDashboard', dealId, 'materials', `slot_${scheduledDate}`);
+    const snap = await getDoc(ref);
+    if (snap.exists()) return;
+    await setDoc(ref, {
+      title: '',
+      url: '',
+      scheduledDate,
+      meetingType: '定例',
+      sentAt: null,
+      sentVia: null,
+      sentMeetingId: null,
+      createdAt: serverTimestamp()
+    });
+  } catch (error) {
+    console.error('Failed to ensure upcoming material slot:', error);
+  }
+};
+
 /**
  * 資料を削除する
  * @param {string} projectId - 案件ID

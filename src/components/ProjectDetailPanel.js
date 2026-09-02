@@ -27,7 +27,7 @@ import {
   fetchProjectById, completeStageWithSync, undoStageWithSync,
   fetchMeetingsForDeal,
   fetchClientMeetingSettings, upsertClientMeetingSettings,
-  addMaterial, fetchMaterials, updateMaterial, deleteMaterial
+  addMaterial, fetchMaterials, updateMaterial, deleteMaterial, ensureUpcomingMaterialSlot
 } from '../services/projectService.js';
 import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
@@ -1085,9 +1085,15 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
         (settings?.chatworkMentions || []).map(m => ({ id: m.accountId, name: m.name }))
       );
       setLoaded(true);
+      // 既に定例で曜日が設定済みの会社は、この画面を開いた時点で直近回の資料枠が
+      // 用意されているか確認する（MTGが1回処理されるのを待つ自動生成とは別経路。
+      // 以前から手動登録されている定例MTGを後からこの機能でも拾うための入口）
+      if (settings?.recurringDayOfWeek) {
+        ensureUpcomingMaterialSlot(project.id, settings.recurringDayOfWeek);
+      }
     });
     return () => { cancelled = true; };
-  }, [project.companyName, refreshKey]);
+  }, [project.companyName, project.id, refreshKey]);
 
   // 案件の営業担当者のChatworkアカウントで参加ルーム一覧を取得する
   // （お礼メッセージは担当者本人のアカウントとして送るため、その担当者が
@@ -1165,7 +1171,11 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
           <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>曜日</Label>
           <Select
             value={dayOfWeek}
-            onChange={e => { setDayOfWeek(e.target.value); saveSettings({ recurringDayOfWeek: e.target.value || null }); }}
+            onChange={e => {
+              setDayOfWeek(e.target.value);
+              saveSettings({ recurringDayOfWeek: e.target.value || null });
+              if (e.target.value) ensureUpcomingMaterialSlot(project.id, e.target.value);
+            }}
             style={{ fontSize: '0.85rem', padding: '0.5rem' }}
           >
             <option value="">未設定</option>
