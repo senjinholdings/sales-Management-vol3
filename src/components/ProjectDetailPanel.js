@@ -887,6 +887,76 @@ const normalizeMeetUrl = (url) => {
 
 const DAYS_OF_WEEK = ['月', '火', '水', '木', '金', '土', '日'];
 
+const RoomPickerWrap = styled.div`
+  position: relative;
+`;
+
+const RoomDropdown = styled.div`
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  margin-top: 2px;
+  background: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+`;
+
+const RoomOption = styled.div`
+  padding: 0.5rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: ${props => props.$muted ? '#95a5a6' : '#2c3e50'};
+  background: ${props => props.$active ? '#eaf3fb' : 'white'};
+  &:hover { background: #f0f4f8; }
+`;
+
+/**
+ * Chatworkルームを名前で検索して選べるプルダウン（部屋数が多い担当者向け）。
+ * 入力欄に文字を打つと部屋名を部分一致でフィルタする。
+ */
+const ChatworkRoomPicker = ({ chatworkRoomId, chatworkRooms, onSelect }) => {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const selectedRoom = chatworkRooms.find(r => r.id === chatworkRoomId);
+  const displayValue = open ? query : (selectedRoom?.name || '');
+  const filtered = chatworkRooms.filter(r => r.name.toLowerCase().includes(query.toLowerCase()));
+
+  return (
+    <RoomPickerWrap>
+      <Input
+        value={displayValue}
+        onChange={e => setQuery(e.target.value)}
+        onFocus={() => { setQuery(''); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder="ルーム名で検索..."
+        style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+      />
+      {open && (
+        <RoomDropdown>
+          <RoomOption $muted onMouseDown={() => { onSelect(''); setOpen(false); }}>未設定</RoomOption>
+          {filtered.length === 0 ? (
+            <RoomOption $muted style={{ cursor: 'default' }}>一致するルームがありません</RoomOption>
+          ) : filtered.map(r => (
+            <RoomOption
+              key={r.id}
+              $active={r.id === chatworkRoomId}
+              onMouseDown={() => { onSelect(r.id); setOpen(false); }}
+            >
+              {r.name}
+            </RoomOption>
+          ))}
+        </RoomDropdown>
+      )}
+    </RoomPickerWrap>
+  );
+};
+
 /**
  * MTGのURL登録セクション（定例・臨時MTGの自動紐付け用）。
  * 新規/既存どちらの案件でも、フェーズやmodeに関係なく常に表示する
@@ -1007,14 +1077,11 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
         <FormGroup $noMargin style={{ flex: '1 1 240px' }}>
           <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>Chatworkのルーム</Label>
           {chatworkRooms ? (
-            <Select
-              value={chatworkRoomId}
-              onChange={e => { setChatworkRoomId(e.target.value); saveSettings({ chatworkRoomId: e.target.value || null }); }}
-              style={{ fontSize: '0.85rem', padding: '0.5rem' }}
-            >
-              <option value="">未設定</option>
-              {chatworkRooms.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </Select>
+            <ChatworkRoomPicker
+              chatworkRoomId={chatworkRoomId}
+              chatworkRooms={chatworkRooms}
+              onSelect={(id) => { setChatworkRoomId(id); saveSettings({ chatworkRoomId: id || null }); }}
+            />
           ) : (
             <Input
               value={chatworkRoomId}
