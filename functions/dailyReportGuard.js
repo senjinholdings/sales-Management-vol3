@@ -1,7 +1,9 @@
 /**
  * 日報（dailyTimers）の記入漏れ防止。2つのスケジュール実行Cloud Functionsで構成する：
- * - タイマーの止め忘れ: 予定時間を明らかに超えて動いたままのタスクを15分おきに検知し、
- *   本人にSlack DMで知らせる
+ * - タイマーの止め忘れ・つけ忘れ: 10分おきに実行し、(a) 予定時間を明らかに超えて
+ *   動いたままのタスク、(b) 日中（9時〜22時未満）なのに誰も実行中のタスクがない状態、
+ *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
+ *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）
  * - 振り返り・翌日計画の未実施: 23時に1回、0時台は10分おきに本人へ催促DM。1時以降は
  *   今回のスコープでは何も送らない（上長エスカレーションは将来の拡張として見送り）
  *
@@ -16,8 +18,9 @@ const { resolveSlackUserId } = require('./slackApproval');
 // タスクの経過時間が「予定+20分」かつ「予定×1.3倍」の両方を超えたら明らかな超過とみなす
 const OVERRUN_BUFFER_MINUTES = 20;
 const OVERRUN_RATIO = 1.3;
-// 同じセッションへの再アラートは60分間隔（動きっぱなしを検知するたび毎回送らない）
-const OVERRUN_REALERT_MINUTES = 60;
+// 「実行中のタスクなし」リマインドの対象時間帯（この時間外＝夜は送らない）
+const IDLE_CHECK_START_HOUR = 9;
+const IDLE_CHECK_END_HOUR = 22;
 
 const REVIEW_FIELD_KEYS = ['notAchieved', 'timeImprovement', 'reflection', 'nextAction'];
 
@@ -63,27 +66,32 @@ async function findStaffEmail(db, representative) {
 }
 
 /**
- * タイマーの止め忘れチェック（15分おき）。
- * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
+ * タイマーの止め忘れ・つけ忘れチェック（10分おき）。
+ * @param {{db: FirebaseFirestore.Firestore}} deps
  */
-function createOverrunChecker({ admin, db }) {
+function createOverrunChecker({ db }) {
   return async () => {
     const token = env('SLACK_BOT_TOKEN');
     if (!token) {
-      console.error('SLACK_BOT_TOKEN が未設定のためタイマー超過チェックをスキップ');
+      console.error('SLACK_BOT_TOKEN が未設定のためタイマーチェックをスキップ');
       return;
     }
     const slack = new WebClient(token);
-    const today = toJstDateStr(new Date());
+    const now = new Date();
+    const today = toJstDateStr(now);
+    const { hour } = jstHourMinute(now);
+    const isDaytime = hour >= IDLE_CHECK_START_HOUR && hour < IDLE_CHECK_END_HOUR;
 
     const snap = await db.collection('dailyTimers').where('date', '==', today).get();
     for (const docSnap of snap.docs) {
       const data = docSnap.data();
       const tasks = Array.isArray(data.tasks) ? data.tasks : [];
-      let changed = false;
 
+      let anyRunning = false;
       for (const task of tasks) {
-        if (task.plannedMinutes == null || !isRunningTask(task)) continue;
+        if (!isRunningTask(task)) continue;
+        anyRunning = true;
+        if (task.plannedMinutes == null) continue;
 
         const sessions = task.sessions;
         const last = sessions[sessions.length - 1];
@@ -94,9 +102,6 @@ function createOverrunChecker({ admin, db }) {
         const isOverrun = elapsedMinutes > task.plannedMinutes + OVERRUN_BUFFER_MINUTES &&
           elapsedMinutes > task.plannedMinutes * OVERRUN_RATIO;
         if (!isOverrun) continue;
-
-        const lastAlertMs = last.overrunAlertedAt?.toMillis?.();
-        if (lastAlertMs && (Date.now() - lastAlertMs) / 60000 < OVERRUN_REALERT_MINUTES) continue;
 
         try {
           const email = await findStaffEmail(db, data.representative);
@@ -110,13 +115,18 @@ function createOverrunChecker({ admin, db }) {
         } catch (error) {
           console.error('タイマー超過アラート送信失敗（続行）:', error.message);
         }
-
-        last.overrunAlertedAt = admin.firestore.Timestamp.now();
-        changed = true;
       }
 
-      if (changed) {
-        await docSnap.ref.update({ tasks });
+      // 日中（9時〜22時未満）なのに実行中のタスクが1つもない＝タイマーの開始忘れの可能性
+      if (!anyRunning && isDaytime) {
+        try {
+          const email = await findStaffEmail(db, data.representative);
+          if (email) {
+            await dmStaff(slack, email, '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？');
+          }
+        } catch (error) {
+          console.error('未実行リマインド送信失敗（続行）:', error.message);
+        }
       }
     }
   };

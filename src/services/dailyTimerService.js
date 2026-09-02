@@ -16,7 +16,7 @@ import {
  * フィールド:
  *   representative(string), date("YYYY-MM-DD"),
  *   tasks: [{ id, name, plannedMinutes(number|null), plannedStartTime("HH:MM"|null),
- *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null), overrunAlertedAt(Timestamp|null、任意) }],
+ *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null) }],
  *             outputUrls([string]、任意。アウトプットのリンク。なしは未定義/空配列),
  *             source("planned"|"adhoc"、任意): 前日の振り返りで計画されたタスクか、
  *               当日その場で追加した臨時タスクかの区別。未設定の既存データは動作に影響なし }],

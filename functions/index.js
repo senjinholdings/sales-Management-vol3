@@ -432,10 +432,10 @@ exports.api = functions.runWith({
   ]
 }).https.onRequest(app);
 
-// 日報: タイマーの止め忘れチェック（15分おき）
+// 日報: タイマーの止め忘れ・つけ忘れチェック（10分おき）
 exports.checkDailyTimerOverruns = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
-  .pubsub.schedule('every 15 minutes').timeZone('Asia/Tokyo')
-  .onRun(createOverrunChecker({ admin, db }));
+  .pubsub.schedule('every 10 minutes').timeZone('Asia/Tokyo')
+  .onRun(createOverrunChecker({ db }));
 
 // 日報: 振り返り・翌日計画の未実施リマインド（10分おきに実行し、内部でJST時刻に応じて分岐）
 exports.dailyReviewReminder = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
