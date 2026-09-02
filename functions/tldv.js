@@ -354,20 +354,19 @@ function createTldvRouter({ admin, db }) {
 
       const isFirstTimeWithTranscript = finalTranscript && !existing?.transcript;
 
-      // お礼メッセージの下書き：紐付いた・社内のみの参加者でない・まだ下書きしていない、
-      // の全てを満たす時だけ生成する。社内判定はこの機能専用のロジックで、
-      // 案件紐付け自体の判定（URL一致のみ）には使わない
-      const allEmails = [organizer.email, ...invitees.map((i) => i.email)].filter(Boolean);
-      const allInternal = allEmails.length > 0 && allEmails.every((e) => e.toLowerCase().endsWith('@senjinholdings.com'));
-
       let thankYouDraft = existing?.thankYouDraft || null;
       let thankYouStatus = existing?.thankYouStatus || null;
       let thankYouMaterialId = existing?.thankYouMaterialId || null;
 
-      // お礼メッセージのデフォルトは固定テンプレート（OpenAIは呼ばない＝コスト0）。
-      // 担当者がSlackの「指示して再生成」からトークンを使う判断をした時だけ、
-      // 議事録全文＋指示を踏まえてAIに書き直させる（functions/slackApproval.js側で実施）
-      const shouldDraftThankYou = dealIds.length > 0 && !allInternal && finalTranscript &&
+      // お礼メッセージの下書き：紐付いた・まだ下書きしていない、の2つを満たせば生成する。
+      // 参加者の所属ドメインでは社内/社外を判定しない（案件紐付け＝営業DBに登録された
+      // 対クライアントのMTGということなので、それ以上の判定は不要。招待者一覧はカレンダー
+      // 招待ベースで、実際にMeetに参加した社外ゲストを捕捉できるとは限らないため、
+      // メール判定は本質的に信頼できない）
+      // デフォルトは固定テンプレート（OpenAIは呼ばない＝コスト0）。担当者がSlackの
+      // 「指示して再生成」からトークンを使う判断をした時だけ、議事録全文＋指示を踏まえて
+      // AIに書き直させる（functions/slackApproval.js側で実施）
+      const shouldDraftThankYou = dealIds.length > 0 && finalTranscript &&
         (isFirstTimeWithTranscript || event === 'TranscriptReady') &&
         !thankYouStatus;
 
