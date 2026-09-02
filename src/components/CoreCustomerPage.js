@@ -201,11 +201,35 @@ const getQuarterRange = (quarterKey) => {
   };
 };
 
-const getPrevQuarterKey = (quarterKey) => {
+/** 四半期キーを大小比較できる整数に変換する（年*4+四半期番号-1） */
+const quarterKeyToIndex = (quarterKey) => {
   const [y, q] = quarterKey.split('-Q').map(Number);
-  if (q === 1) return `${y - 1}-Q4`;
-  return `${y}-Q${q - 1}`;
+  return y * 4 + (q - 1);
 };
+
+const quarterIndexToKey = (idx) => {
+  const y = Math.floor(idx / 4);
+  const q = (idx % 4) + 1;
+  return `${y}-Q${q}`;
+};
+
+/** 開始〜終了四半期（順不同で渡してもよい）を古い順に並べたキーの配列にする */
+const getQuarterRangeList = (startKey, endKey) => {
+  let startIdx = quarterKeyToIndex(startKey);
+  let endIdx = quarterKeyToIndex(endKey);
+  if (startIdx > endIdx) [startIdx, endIdx] = [endIdx, startIdx];
+  const keys = [];
+  for (let idx = startIdx; idx <= endIdx; idx++) keys.push(quarterIndexToKey(idx));
+  return keys;
+};
+
+const getQuarterShortLabel = (quarterKey) => {
+  const [y, q] = quarterKey.split('-Q').map(Number);
+  return `${String(y).slice(2)}年Q${q}`;
+};
+
+// 単月でこの金額を超えたことがある会社は、コア顧客候補として自動的に一覧に載せる
+const CORE_CANDIDATE_MONTHLY_THRESHOLD = 3000000;
 
 const generateQuarterOptions = () => {
   const now = new Date();
@@ -226,7 +250,9 @@ function CoreCustomerPage() {
   const [allSalesRecords, setAllSalesRecords] = useState([]);
   const [allDeals, setAllDeals] = useState([]);
   const { options: quarterOptions, current: currentQuarterKey } = useMemo(() => generateQuarterOptions(), []);
-  const [selectedQuarter, setSelectedQuarter] = useState(currentQuarterKey);
+  // 既定では直近4四半期分の推移が見える範囲にしておく（開始・終了は自由に選び直せる）
+  const [startQuarter, setStartQuarter] = useState(() => quarterIndexToKey(quarterKeyToIndex(currentQuarterKey) - 3));
+  const [endQuarter, setEndQuarter] = useState(currentQuarterKey);
 
   // 編集state
   const [editingId, setEditingId] = useState(null);
@@ -245,11 +271,10 @@ function CoreCustomerPage() {
     try {
       setIsLoading(true);
 
-      // 1. コア顧客リスト取得
+      // 1. コア顧客リスト取得（自動検出分の追加はsalesRecords取得後にまとめて行う）
       const coreSnap = await getDocs(collection(db, 'coreCustomers'));
       const cores = [];
       coreSnap.forEach(d => cores.push({ id: d.id, ...d.data() }));
-      setCoreCustomers(cores);
 
       // 2. 全案件 + salesRecords取得
       const progressSnap = await getDocs(collection(db, 'progressDashboard'));
@@ -284,6 +309,33 @@ function CoreCustomerPage() {
         } catch (err) { /* skip */ }
       }));
       setAllSalesRecords(records);
+
+      // 単月で300万円を一度でも超えたことがある会社を、候補一覧に自動で追加する
+      // （手動追加とは別に、この条件を満たした時点で自動的に「候補」として表示する）
+      const monthlyRevenueByCompany = {};
+      records.forEach(r => {
+        if (!r.companyName || !r.confirmedDate) return;
+        const d = new Date(r.confirmedDate);
+        if (isNaN(d.getTime())) return;
+        const key = `${r.companyName}__${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        monthlyRevenueByCompany[key] = (monthlyRevenueByCompany[key] || 0) + r.budget;
+      });
+      const qualifyingCompanies = new Set();
+      Object.entries(monthlyRevenueByCompany).forEach(([key, sum]) => {
+        if (sum >= CORE_CANDIDATE_MONTHLY_THRESHOLD) qualifyingCompanies.add(key.split('__')[0]);
+      });
+      const existingNames = new Set(cores.map(c => c.companyName));
+      const namesToAutoAdd = [...qualifyingCompanies].filter(name => !existingNames.has(name));
+      if (namesToAutoAdd.length > 0) {
+        const added = await Promise.all(namesToAutoAdd.map(async (name) => {
+          const docRef = doc(collection(db, 'coreCustomers'));
+          const newDoc = { companyName: name, quarters: {}, actions: {}, source: 'auto' };
+          await setDoc(docRef, newDoc);
+          return { id: docRef.id, ...newDoc };
+        }));
+        cores.push(...added);
+      }
+      setCoreCustomers(cores);
     } catch (error) {
       console.error('データ取得エラー:', error);
     } finally {
@@ -295,11 +347,14 @@ function CoreCustomerPage() {
     fetchData();
   }, [fetchData]);
 
+  // 選択された開始〜終了四半期の範囲（古い順）。編集対象（接触日・月別アクション）は
+  // 一番新しい（＝終了側の）四半期を「現在」として扱う
+  const quarterKeys = useMemo(() => getQuarterRangeList(startQuarter, endQuarter), [startQuarter, endQuarter]);
+  const focusQuarterKey = quarterKeys[quarterKeys.length - 1];
+
   // 四半期データ
   const quarterData = useMemo(() => {
-    const currentQ = getQuarterRange(selectedQuarter);
-    const prevQKey = getPrevQuarterKey(selectedQuarter);
-    const prevQ = getQuarterRange(prevQKey);
+    const focusQ = getQuarterRange(focusQuarterKey);
 
     return coreCustomers.map(customer => {
       const name = customer.companyName;
@@ -316,16 +371,21 @@ function CoreCustomerPage() {
           .reduce((sum, r) => sum + r.budget, 0);
       };
 
-      const currentRevenue = calcRevenue(currentQ);
-      const prevRevenue = calcRevenue(prevQ);
+      // 選択範囲の各四半期の売上推移
+      const revenueTrend = quarterKeys.map(qKey => ({
+        quarterKey: qKey,
+        label: getQuarterShortLabel(qKey),
+        revenue: calcRevenue(getQuarterRange(qKey)),
+      }));
+      const currentRevenue = revenueTrend[revenueTrend.length - 1]?.revenue || 0;
 
-      // コア顧客データ（四半期別）
-      const qData = customer.quarters?.[selectedQuarter] || {};
+      // コア顧客データ（四半期別、編集対象の四半期＝範囲の一番新しいもの）
+      const qData = customer.quarters?.[focusQuarterKey] || {};
 
-      // 月別アクション
+      // 月別アクション（編集対象の四半期の月のみ）
       const monthActions = {};
-      currentQ.months.forEach(m => {
-        const key = `${currentQ.year}-${String(m + 1).padStart(2, '0')}`;
+      focusQ.months.forEach(m => {
+        const key = `${focusQ.year}-${String(m + 1).padStart(2, '0')}`;
         monthActions[key] = customer.actions?.[key] || '';
       });
 
@@ -340,8 +400,8 @@ function CoreCustomerPage() {
 
       return {
         ...customer,
+        revenueTrend,
         currentRevenue,
-        prevRevenue,
         isCore,
         plannedContactDate: qData.plannedContactDate || '',
         actualContactDate: qData.actualContactDate || '',
@@ -349,7 +409,7 @@ function CoreCustomerPage() {
         proposalCount,
       };
     });
-  }, [coreCustomers, allSalesRecords, allDeals, selectedQuarter]);
+  }, [coreCustomers, allSalesRecords, allDeals, quarterKeys, focusQuarterKey]);
 
   // KPI計算（コア顧客 = 今四半期500万円以上）
   const kpis = useMemo(() => {
@@ -394,7 +454,7 @@ function CoreCustomerPage() {
     try {
       const updates = {};
       if (editField === 'plannedContactDate' || editField === 'actualContactDate') {
-        updates[`quarters.${selectedQuarter}.${editField}`] = editValue;
+        updates[`quarters.${focusQuarterKey}.${editField}`] = editValue;
       } else if (editField?.startsWith('action_')) {
         const monthKey = editField.replace('action_', '');
         updates[`actions.${monthKey}`] = editValue;
@@ -407,8 +467,8 @@ function CoreCustomerPage() {
         const updated = { ...c };
         if (editField === 'plannedContactDate' || editField === 'actualContactDate') {
           if (!updated.quarters) updated.quarters = {};
-          if (!updated.quarters[selectedQuarter]) updated.quarters[selectedQuarter] = {};
-          updated.quarters[selectedQuarter][editField] = editValue;
+          if (!updated.quarters[focusQuarterKey]) updated.quarters[focusQuarterKey] = {};
+          updated.quarters[focusQuarterKey][editField] = editValue;
         } else if (editField?.startsWith('action_')) {
           const monthKey = editField.replace('action_', '');
           if (!updated.actions) updated.actions = {};
@@ -430,9 +490,7 @@ function CoreCustomerPage() {
     setEditValue(value);
   };
 
-  const currentQ = getQuarterRange(selectedQuarter);
-  const prevQKey = getPrevQuarterKey(selectedQuarter);
-  const prevQ = getQuarterRange(prevQKey);
+  const focusQ = getQuarterRange(focusQuarterKey);
 
   if (isLoading) {
     return <PageContainer><LoadingMessage>データを読み込み中...</LoadingMessage></PageContainer>;
@@ -443,16 +501,24 @@ function CoreCustomerPage() {
       <PageTitle>
         <FiStar color="#f39c12" />
         コア顧客管理
-        <Select
-          value={selectedQuarter}
-          onChange={(e) => setSelectedQuarter(e.target.value)}
-          style={{ marginLeft: 'auto', fontSize: '0.9rem' }}
-        >
-          {quarterOptions.map(opt => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
-          ))}
-        </Select>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', color: '#7f8c8d', fontWeight: 'normal' }}>
+          <span>開始</span>
+          <Select value={startQuarter} onChange={(e) => setStartQuarter(e.target.value)} style={{ fontSize: '0.9rem' }}>
+            {quarterOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </Select>
+          <span>〜終了</span>
+          <Select value={endQuarter} onChange={(e) => setEndQuarter(e.target.value)} style={{ fontSize: '0.9rem' }}>
+            {quarterOptions.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </Select>
+        </div>
       </PageTitle>
+      <div style={{ marginTop: '-1rem', marginBottom: '1.5rem', fontSize: '0.78rem', color: '#999' }}>
+        接触日・月別アクションの入力欄、および「コア」判定は終了側の四半期（{focusQ.label}）が対象です
+      </div>
 
       {/* KPI */}
       <KpiRow>
@@ -473,7 +539,7 @@ function CoreCustomerPage() {
           <div style={{ fontSize: '0.75rem', color: '#999' }}>{kpis.contacted}/{kpis.totalCandidates}社</div>
         </KpiCard>
         <KpiCard>
-          <KpiLabel>候補 四半期売上合計</KpiLabel>
+          <KpiLabel>候補 四半期売上合計（{getQuarterShortLabel(focusQuarterKey)}）</KpiLabel>
           <KpiValue color="#27ae60">
             {formatCurrency(quarterData.reduce((sum, c) => sum + c.currentRevenue, 0))}
           </KpiValue>
@@ -518,11 +584,12 @@ function CoreCustomerPage() {
               <thead>
                 <tr>
                   <Th>会社名</Th>
-                  <Th style={{ textAlign: 'right' }}>前四半期売上<br/><span style={{ fontSize: '0.7rem', color: '#999' }}>({prevQ.label})</span></Th>
-                  <Th style={{ textAlign: 'right' }}>今四半期売上<br/><span style={{ fontSize: '0.7rem', color: '#999' }}>({currentQ.label})</span></Th>
+                  {quarterKeys.map(qKey => (
+                    <Th key={qKey} style={{ textAlign: 'right' }}>{getQuarterShortLabel(qKey)}売上</Th>
+                  ))}
                   <Th>接触予定日</Th>
                   <Th>対面接触日</Th>
-                  {currentQ.months.map(m => (
+                  {focusQ.months.map(m => (
                     <Th key={m}>{m + 1}月アクション</Th>
                   ))}
                   <Th style={{ textAlign: 'right' }}>提案数</Th>
@@ -538,9 +605,20 @@ function CoreCustomerPage() {
                       {customer.isCore && (
                         <span style={{ marginLeft: '0.5rem', padding: '0.1rem 0.4rem', borderRadius: '4px', background: '#f39c12', color: 'white', fontSize: '0.7rem', fontWeight: 'bold' }}>コア</span>
                       )}
+                      {customer.source === 'auto' && (
+                        <span style={{ marginLeft: '0.5rem', padding: '0.1rem 0.4rem', borderRadius: '4px', background: '#eaf3fb', color: '#2980b9', fontSize: '0.7rem', fontWeight: 'bold' }}>自動検出（単月300万円超）</span>
+                      )}
                     </Td>
-                    <Td style={{ textAlign: 'right' }}>{formatCurrency(customer.prevRevenue)}</Td>
-                    <Td style={{ textAlign: 'right', fontWeight: 'bold', color: '#27ae60' }}>{formatCurrency(customer.currentRevenue)}</Td>
+                    {customer.revenueTrend.map((t, i) => (
+                      <Td
+                        key={t.quarterKey}
+                        style={i === customer.revenueTrend.length - 1
+                          ? { textAlign: 'right', fontWeight: 'bold', color: '#27ae60' }
+                          : { textAlign: 'right' }}
+                      >
+                        {formatCurrency(t.revenue)}
+                      </Td>
+                    ))}
 
                     {/* 接触予定日 */}
                     <Td>
@@ -571,8 +649,8 @@ function CoreCustomerPage() {
                     </Td>
 
                     {/* 月別アクション */}
-                    {currentQ.months.map(m => {
-                      const monthKey = `${currentQ.year}-${String(m + 1).padStart(2, '0')}`;
+                    {focusQ.months.map(m => {
+                      const monthKey = `${focusQ.year}-${String(m + 1).padStart(2, '0')}`;
                       const actionField = `action_${monthKey}`;
                       return (
                         <Td key={m} style={{ minWidth: '150px' }}>
