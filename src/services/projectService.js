@@ -1269,6 +1269,26 @@ export const fetchMaterials = async (projectId) => {
 };
 
 /**
+ * 資料枠（先回りで空のまま作られたmaterialsドキュメント）にタイトル・URLを登録する。
+ * functions/calendar.js・functions/tldv.jsが自動生成する「MTG予定日だけ決まっていて
+ * 中身が未登録」の枠を、担当者が資料を用意した時点で埋めるために使う
+ * @param {string} projectId - 案件ID
+ * @param {string} materialId - 資料ID
+ * @param {{title: string, url: string}} data
+ */
+export const updateMaterial = async (projectId, materialId, data) => {
+  try {
+    await updateDoc(doc(db, 'progressDashboard', projectId, 'materials', materialId), {
+      title: data.title || '',
+      url: data.url || ''
+    });
+  } catch (error) {
+    console.error('Failed to update material:', error);
+    throw error;
+  }
+};
+
+/**
  * 資料を削除する
  * @param {string} projectId - 案件ID
  * @param {string} materialId - 資料ID

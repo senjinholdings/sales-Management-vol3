@@ -9,6 +9,7 @@
 
 const express = require('express');
 const { google } = require('googleapis');
+const { ensureMaterialSlot } = require('./materialSlots');
 
 function env(name) {
   const v = process.env[name];
@@ -64,7 +65,8 @@ function createCalendarRouter({ admin, db }) {
    *   startDateTime: string,      // "YYYY-MM-DDTHH:mm"（Asia/Tokyoのローカル時刻として解釈）
    *   durationMinutes: number,
    *   recurring: boolean,         // true=定例（毎週）, false=臨時（1回のみ）
-   *   attendeeEmails: string[]    // 任意（先方の参加者メール）
+   *   attendeeEmails: string[],   // 任意（先方の参加者メール）
+   *   dealId: string              // 任意（このMTGの資料枠を作る先の案件。パネルを開いていた案件）
    * }
    */
   router.post('/schedule', async (req, res) => {
@@ -79,7 +81,7 @@ function createCalendarRouter({ admin, db }) {
     }
 
     try {
-      const { organizerEmail, companyName, title, startDateTime, durationMinutes, recurring, attendeeEmails } = req.body || {};
+      const { organizerEmail, companyName, title, startDateTime, durationMinutes, recurring, attendeeEmails, dealId } = req.body || {};
       if (!organizerEmail || !companyName || !startDateTime) {
         return res.status(400).json({ error: 'organizerEmail, companyName, startDateTime は必須です' });
       }
@@ -150,6 +152,17 @@ function createCalendarRouter({ admin, db }) {
       } else {
         await settingsSnap.docs[0].ref.update(settingsData);
       }
+
+      // 資料枠を先回りして用意する（臨時は登録された今回分、定例はまず初回分。
+      // 定例の2回目以降はfunctions/tldv.js側でMTG終了のたびに次回分を生成する）
+      const scheduledDateStr = `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      await ensureMaterialSlot({
+        db,
+        admin,
+        dealId,
+        scheduledDate: scheduledDateStr,
+        meetingType: recurring ? '定例' : '臨時'
+      });
 
       return res.status(200).json({ success: true, meetUrl, eventId: data.id, htmlLink: data.htmlLink });
     } catch (error) {

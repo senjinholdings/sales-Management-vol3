@@ -322,7 +322,8 @@ function MeetingScheduleModal({ isOpen, onClose, project, onScheduled }) {
           startDateTime: formData.startDateTime,
           durationMinutes: Number(formData.durationMinutes),
           recurring: formData.recurring === 'true',
-          attendeeEmails
+          attendeeEmails,
+          dealId: project.id
         })
       });
 

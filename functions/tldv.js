@@ -11,6 +11,7 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const { sendApprovalRequest } = require('./slackApproval');
+const { ensureMaterialSlot } = require('./materialSlots');
 
 const TLDV_API_BASE = 'https://pasta.tldv.io/v1alpha1';
 
@@ -33,6 +34,15 @@ function normalizeMeetUrl(url) {
   const m = String(url).match(/meet\.google\.com\/([a-z0-9-]+)/i);
   if (m) return m[1].toLowerCase();
   return String(url).trim().toLowerCase();
+}
+
+/** 日付をAsia/Tokyo（UTC+9固定・DSTなし）の "YYYY-MM-DD" に変換する */
+function toJstDateStr(date) {
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(jst.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 async function tldvFetch(path, apiKey) {
@@ -227,12 +237,12 @@ async function applyToDeal({ admin, db, dealId, meetingId, aiResult }) {
 }
 
 /**
- * まだ送っていない資料のうち一番新しいものを1件だけ取得する。
- * お礼メッセージの下書きに自動で添付するために使う
- * （どの資料をどのMTGで使ったか、という細かい紐付けまではせず、
- *   単純に「まだ送っていない最新の1件」を拾う簡易な仕様）。
+ * まだ送っていない資料の中から、このMTGに対応する1件を選ぶ。
+ * scheduledDate（MTG予定日）を持つ資料枠がある場合は、MTG実施日以前のうち
+ * 一番近い（＝今回分の）ものを優先する。無ければ、日付を持たない従来型の
+ * 自由登録資料の中から作成日時が新しい順で選ぶ（過去の挙動を維持）。
  */
-async function pickUnsentMaterial(db, dealId) {
+async function pickUnsentMaterial(db, dealId, referenceDateStr) {
   try {
     const snap = await db.collection('progressDashboard').doc(dealId)
       .collection('materials')
@@ -240,8 +250,15 @@ async function pickUnsentMaterial(db, dealId) {
       .get();
     if (snap.empty) return null;
     const materials = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    materials.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
-    return materials[0];
+
+    const dated = materials
+      .filter((m) => m.scheduledDate && (!referenceDateStr || m.scheduledDate <= referenceDateStr) && (m.title || m.url))
+      .sort((a, b) => (a.scheduledDate < b.scheduledDate ? 1 : -1));
+    if (dated.length > 0) return dated[0];
+
+    const undated = materials.filter((m) => !m.scheduledDate && (m.title || m.url));
+    undated.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+    return undated[0] || null;
   } catch (error) {
     console.error('未送付資料の取得失敗（続行）:', error.message);
     return null;
@@ -334,21 +351,40 @@ function createTldvRouter({ admin, db }) {
       let linkStatus = existing?.linkStatus || 'none';
       let matchReason = existing?.matchReason || null;
 
-      if (dealIds.length === 0 && meetUrl) {
-        const clientSnap = await db.collection('clientMeetingSettings')
-          .where('meetUrl', '==', meetUrl)
-          .limit(1)
-          .get();
-        if (!clientSnap.empty) {
-          const companyName = clientSnap.docs[0].data().companyName;
-          const dealsSnap = await db.collection('progressDashboard')
-            .where('companyName', '==', companyName)
+      // このMeet URLの会社設定（clientMeetingSettings）。案件紐付け・メンション組み立て・
+      // 定例MTGの次回資料枠の先回り生成、すべてで使うため一度だけ取得する
+      let clientSettings = null;
+      if (meetUrl) {
+        try {
+          const settingsSnap = await db.collection('clientMeetingSettings')
+            .where('meetUrl', '==', meetUrl)
+            .limit(1)
             .get();
-          if (!dealsSnap.empty) {
-            dealIds = dealsSnap.docs.map((d) => d.id);
-            linkStatus = 'auto';
-            matchReason = 'meetUrl';
-          }
+          if (!settingsSnap.empty) clientSettings = settingsSnap.docs[0].data();
+        } catch (error) {
+          console.error('clientMeetingSettings取得失敗（続行）:', error.message);
+        }
+      }
+
+      if (dealIds.length === 0 && clientSettings) {
+        const dealsSnap = await db.collection('progressDashboard')
+          .where('companyName', '==', clientSettings.companyName)
+          .get();
+        if (!dealsSnap.empty) {
+          dealIds = dealsSnap.docs.map((d) => d.id);
+          linkStatus = 'auto';
+          matchReason = 'meetUrl';
+        }
+      }
+
+      // 定例MTGは、今回分の処理が終わったタイミングで次回分の資料枠を先回りして
+      // 用意しておく（担当者がMTG直前に資料探しで慌てないように）。
+      // 臨時MTGの資料枠は登録時点（functions/calendar.js）で既に作成済みのためここでは作らない
+      if (dealIds.length > 0 && happenedAt && clientSettings?.recurringDayOfWeek) {
+        const happenedDate = new Date(happenedAt);
+        if (!isNaN(happenedDate.getTime())) {
+          const nextDateStr = toJstDateStr(new Date(happenedDate.getTime() + 7 * 24 * 60 * 60 * 1000));
+          await ensureMaterialSlot({ db, admin, dealId: dealIds[0], scheduledDate: nextDateStr, meetingType: '定例' });
         }
       }
 
@@ -372,29 +408,22 @@ function createTldvRouter({ admin, db }) {
 
       if (shouldDraftThankYou) {
         // 資料は複数案件に紐付いていても代表して1件目の案件のものを使う
-        // （1つのMTGで複数商材が話される場合でも、送るお礼メッセージは1通のため）
-        const material = await pickUnsentMaterial(db, dealIds[0]);
+        // （1つのMTGで複数商材が話される場合でも、送るお礼メッセージは1通のため）。
+        // 今回のMTG実施日以前で一番近い資料枠（scheduledDate）を優先して選ぶ
+        const referenceDateStr = happenedAt ? toJstDateStr(new Date(happenedAt)) : null;
+        const material = await pickUnsentMaterial(db, dealIds[0], referenceDateStr);
         thankYouMaterialId = material ? material.id : null;
 
         // 相手の担当者へのメンション（Chatworkの[To:accountId]タグ）。複数人選べるため
         // 選んだ順に並べる。承認DMの時点で最終形の文面を見せたいので、送信直前ではなく
         // ここで組み立てる
         let mentionPrefix = '';
-        try {
-          const settingsSnap = await db.collection('clientMeetingSettings')
-            .where('meetUrl', '==', meetUrl)
-            .limit(1)
-            .get();
-          if (!settingsSnap.empty) {
-            const settings = settingsSnap.docs[0].data();
-            const mentions = Array.isArray(settings.chatworkMentions) ? settings.chatworkMentions : [];
-            mentionPrefix = mentions
-              .map((m) => `[To:${m.accountId}]${m.name || ''}さん`)
-              .join('\n');
-            if (mentionPrefix) mentionPrefix += '\n';
-          }
-        } catch (error) {
-          console.error('メンション先取得失敗（続行）:', error.message);
+        if (clientSettings) {
+          const mentions = Array.isArray(clientSettings.chatworkMentions) ? clientSettings.chatworkMentions : [];
+          mentionPrefix = mentions
+            .map((m) => `[To:${m.accountId}]${m.name || ''}さん`)
+            .join('\n');
+          if (mentionPrefix) mentionPrefix += '\n';
         }
 
         const bodyTemplate = material

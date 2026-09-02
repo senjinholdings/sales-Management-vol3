@@ -27,7 +27,7 @@ import {
   fetchProjectById, completeStageWithSync, undoStageWithSync,
   fetchMeetingsForDeal,
   fetchClientMeetingSettings, upsertClientMeetingSettings,
-  addMaterial, fetchMaterials, deleteMaterial
+  addMaterial, fetchMaterials, updateMaterial, deleteMaterial
 } from '../services/projectService.js';
 import { getStageState, isStageTargetProject } from '../utils/stageProgress.js';
 
@@ -3115,6 +3115,22 @@ const MaterialSentBadge = styled.span`
   white-space: nowrap;
 `;
 
+const MeetingTypeBadge = styled.span`
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  white-space: nowrap;
+  background: ${(p) => (p.$recurring ? '#eaf3fb' : '#fdf2e3')};
+  color: ${(p) => (p.$recurring ? '#2980b9' : '#d35400')};
+`;
+
+const ScheduledDateLabel = styled.span`
+  font-size: 0.72rem;
+  color: #7f8c8d;
+  white-space: nowrap;
+`;
+
 /**
  * MTGで使う資料（提案資料等）のリンクを事前に登録するセクション。
  * MTG前に登録しておくと、お礼メッセージの下書きに未送付の最新資料が自動で添付される。
@@ -3126,6 +3142,9 @@ const MaterialsSection = ({ project }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [titleInput, setTitleInput] = useState('');
   const [urlInput, setUrlInput] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editUrl, setEditUrl] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -3162,22 +3181,78 @@ const MaterialsSection = ({ project }) => {
     }
   };
 
+  const startEdit = (m) => {
+    setEditingId(m.id);
+    setEditTitle(m.title || '');
+    setEditUrl(m.url || '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editTitle.trim() || !editUrl.trim()) return;
+    try {
+      await updateMaterial(project.id, editingId, { title: editTitle.trim(), url: editUrl.trim() });
+      setEditingId(null);
+      setEditTitle('');
+      setEditUrl('');
+      await load();
+    } catch (error) {
+      console.error('Failed to update material:', error);
+    }
+  };
+
   if (isLoading) return null;
+
+  // 定例・臨時MTGのために先回りで空作成された「資料枠」（title/urlが未登録）は
+  // 対応が必要なので先頭に、予定日が近い順で並べる。登録済みの資料はその後ろに続く
+  const isEmptySlot = (m) => !m.title && !m.url;
+  const pendingSlots = materials
+    .filter(isEmptySlot)
+    .sort((a, b) => (a.scheduledDate || '9999-99-99').localeCompare(b.scheduledDate || '9999-99-99'));
+  const filled = materials.filter((m) => !isEmptySlot(m));
+  const orderedMaterials = [...pendingSlots, ...filled];
 
   return (
     <MaterialsBox>
       <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#2c3e50', marginBottom: '0.6rem' }}>
         資料（MTG前に登録。お礼メッセージに自動で付きます）
       </div>
-      {materials.length > 0 && (
+      {orderedMaterials.length > 0 && (
         <MaterialsList>
-          {materials.map((m) => (
+          {orderedMaterials.map((m) => (
             <MaterialItem key={m.id}>
-              <MaterialTitle href={m.url} target="_blank" rel="noopener noreferrer">{m.title}</MaterialTitle>
-              {m.sentAt ? (
-                <MaterialSentBadge>送付済み（{formatTimestamp(m.sentAt)}）</MaterialSentBadge>
+              {m.meetingType && <MeetingTypeBadge $recurring={m.meetingType === '定例'}>{m.meetingType}</MeetingTypeBadge>}
+              {m.scheduledDate && <ScheduledDateLabel>{m.scheduledDate}</ScheduledDateLabel>}
+              {editingId === m.id ? (
+                <>
+                  <Input
+                    value={editTitle}
+                    onChange={e => setEditTitle(e.target.value)}
+                    placeholder="資料タイトル"
+                    style={{ flex: '1 1 140px', fontSize: '0.82rem', padding: '0.4rem' }}
+                  />
+                  <Input
+                    value={editUrl}
+                    onChange={e => setEditUrl(e.target.value)}
+                    placeholder="リンク（Google Slides/Driveなど）"
+                    style={{ flex: '2 1 200px', fontSize: '0.82rem', padding: '0.4rem' }}
+                  />
+                  <SmallButton $primary onClick={handleSaveEdit} disabled={!editTitle.trim() || !editUrl.trim()}>保存</SmallButton>
+                  <SmallButton onClick={() => setEditingId(null)}>取消</SmallButton>
+                </>
+              ) : isEmptySlot(m) ? (
+                <>
+                  <span style={{ flex: 1, color: '#95a5a6', fontSize: '0.82rem' }}>資料未登録</span>
+                  <SmallButton onClick={() => startEdit(m)}>登録する</SmallButton>
+                </>
               ) : (
-                <MaterialSentBadge style={{ color: '#95a5a6' }}>未送付</MaterialSentBadge>
+                <>
+                  <MaterialTitle href={m.url} target="_blank" rel="noopener noreferrer">{m.title}</MaterialTitle>
+                  {m.sentAt ? (
+                    <MaterialSentBadge>送付済み（{formatTimestamp(m.sentAt)}）</MaterialSentBadge>
+                  ) : (
+                    <MaterialSentBadge style={{ color: '#95a5a6' }}>未送付</MaterialSentBadge>
+                  )}
+                </>
               )}
               <DeleteButton onClick={() => handleDelete(m.id)} style={{ width: '24px', height: '24px' }}>
                 <FiTrash2 size={12} />
