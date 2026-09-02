@@ -130,10 +130,13 @@ function verifySlackSignature(req) {
 function createSlackInteractionRouter({ admin, db }) {
   const router = express.Router();
 
-  // Slackは application/x-www-form-urlencoded で送ってくる。署名検証に生バイト列が
-  // 必要なため、JSONパーサーを通さずこのルートだけ生のBufferで受け取る
-  router.post('/interactions', express.raw({ type: () => true }), async (req, res) => {
-    req.rawBody = req.body;
+  // Slackは application/x-www-form-urlencoded で送ってくる。署名検証には生バイト列が
+  // 必要だが、Firebase Cloud Functionsはリクエストボディを内部で先に読み込んでおり、
+  // その生バイト列を req.rawBody として自動的に用意してくれている。
+  // express.raw()等で改めてストリームを読もうとすると、Cloud Functions環境では
+  // 既にストリームが消費済みのため空になってしまう（署名不一致＝毎回401になる原因だった）。
+  // そのためここではExpressの追加ボディパーサーを一切使わず、Firebase提供のreq.rawBodyを使う
+  router.post('/interactions', async (req, res) => {
     if (!verifySlackSignature(req)) {
       return res.status(401).send('invalid signature');
     }
