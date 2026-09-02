@@ -151,6 +151,28 @@ const RadioLabel = styled.label`
   cursor: pointer;
 `;
 
+const CheckboxList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 160px;
+  overflow-y: auto;
+  border: 2px solid #ddd;
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+`;
+
+const CheckboxLabel = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: #2c3e50;
+  cursor: pointer;
+
+  input:disabled + span { color: #95a5a6; }
+`;
+
 const HintBox = styled.div`
   background: #eaf3fb;
   border-radius: 8px;
@@ -214,6 +236,7 @@ const getInitialFormData = (project) => ({
   startDateTime: '',
   durationMinutes: '30',
   recurring: 'true',
+  internalAttendeeNames: [],
   attendeeEmailsText: ''
 });
 
@@ -249,6 +272,15 @@ function MeetingScheduleModal({ isOpen, onClose, project, onScheduled }) {
 
   const organizer = staffList.find((s) => s.name === formData.organizerName);
 
+  const toggleInternalAttendee = (name) => {
+    setFormData((prev) => ({
+      ...prev,
+      internalAttendeeNames: prev.internalAttendeeNames.includes(name)
+        ? prev.internalAttendeeNames.filter((n) => n !== name)
+        : [...prev.internalAttendeeNames, name]
+    }));
+  };
+
   const validateForm = () => {
     const newErrors = {};
     if (!formData.organizerName) newErrors.organizerName = '担当者を選択してください';
@@ -268,10 +300,14 @@ function MeetingScheduleModal({ isOpen, onClose, project, onScheduled }) {
 
     setIsSubmitting(true);
     try {
-      const attendeeEmails = formData.attendeeEmailsText
+      const internalAttendeeEmails = staffList
+        .filter((s) => formData.internalAttendeeNames.includes(s.name) && s.email)
+        .map((s) => s.email);
+      const clientAttendeeEmails = formData.attendeeEmailsText
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean);
+      const attendeeEmails = [...internalAttendeeEmails, ...clientAttendeeEmails];
 
       const response = await fetch(MEETING_SCHEDULE_URL, {
         method: 'POST',
@@ -401,6 +437,26 @@ function MeetingScheduleModal({ isOpen, onClose, project, onScheduled }) {
                     : '「開始日時」で指定した曜日・時刻で、以降ずっと繰り返されます。'}
                 </HintBox>
               )}
+            </FormGroup>
+
+            <FormGroup>
+              <Label><FiUser />社内の参加者（任意）</Label>
+              <CheckboxList>
+                {staffList.filter((s) => s.name !== formData.organizerName).length === 0 && (
+                  <span style={{ color: '#95a5a6', fontSize: '0.85rem' }}>他の担当者が登録されていません</span>
+                )}
+                {staffList.filter((s) => s.name !== formData.organizerName).map((s) => (
+                  <CheckboxLabel key={s.id}>
+                    <input
+                      type="checkbox"
+                      checked={formData.internalAttendeeNames.includes(s.name)}
+                      onChange={() => toggleInternalAttendee(s.name)}
+                      disabled={isSubmitting || !s.email}
+                    />
+                    <span>{s.name}{!s.email && '（メール未設定）'}</span>
+                  </CheckboxLabel>
+                ))}
+              </CheckboxList>
             </FormGroup>
 
             <FormGroup>
