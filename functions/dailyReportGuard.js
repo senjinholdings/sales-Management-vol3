@@ -59,6 +59,18 @@ async function dmStaff(slack, email, text) {
   await slack.chat.postMessage({ channel: channelId, text });
 }
 
+// 一時的な動作確認用: 荒幡さんに実際にDMが届いているか本人だけでは確認しづらいため、
+// しばらくの間、同じ内容を増田さんにも同時に送る。届いていることが確認できたら削除する
+const TEMP_ALSO_NOTIFY_EMAIL = 'yoh.masuda@senjinholdings.com';
+
+/** 本来の宛先本人 + 一時的な確認用宛先（設定されていれば）の両方にDMを送る */
+async function notifyRepresentative(slack, email, text) {
+  await dmStaff(slack, email, text);
+  if (TEMP_ALSO_NOTIFY_EMAIL && TEMP_ALSO_NOTIFY_EMAIL !== email) {
+    await dmStaff(slack, TEMP_ALSO_NOTIFY_EMAIL, `[確認用: 荒幡さん宛と同内容]\n${text}`);
+  }
+}
+
 async function findStaffEmail(db, representative) {
   const staffSnap = await db.collection('staffMembers').where('name', '==', representative).limit(1).get();
   if (staffSnap.empty) return null;
@@ -106,7 +118,7 @@ function createOverrunChecker({ db }) {
         try {
           const email = await findStaffEmail(db, data.representative);
           if (email) {
-            await dmStaff(
+            await notifyRepresentative(
               slack,
               email,
               `タスク『${task.name}』が予定時間を大幅に超過しています（予定${task.plannedMinutes}分・経過${Math.round(elapsedMinutes)}分）。タイマーを止め忘れていませんか？`
@@ -122,7 +134,7 @@ function createOverrunChecker({ db }) {
         try {
           const email = await findStaffEmail(db, data.representative);
           if (email) {
-            await dmStaff(slack, email, '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？');
+            await notifyRepresentative(slack, email, '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？');
           }
         } catch (error) {
           console.error('未実行リマインド送信失敗（続行）:', error.message);
@@ -172,7 +184,7 @@ function createReviewReminder({ db }) {
         const text = isInitialSlot
           ? '23時になりました。今日の振り返りと明日の予定を24時までに入力してください。'
           : `まだ振り返り・明日の予定が入力されていません（現在24:${String(minute).padStart(2, '0')}）`;
-        await dmStaff(slack, email, text);
+        await notifyRepresentative(slack, email, text);
       } catch (error) {
         console.error('振り返りリマインド送信失敗（続行）:', error.message);
       }
