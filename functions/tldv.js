@@ -10,7 +10,6 @@
 
 const express = require('express');
 const fetch = require('node-fetch');
-const OpenAI = require('openai');
 const { sendApprovalRequest } = require('./slackApproval');
 
 const TLDV_API_BASE = 'https://pasta.tldv.io/v1alpha1';
@@ -105,11 +104,41 @@ async function fetchTranscriptText(meetingId, apiKey) {
 }
 
 /**
- * tl;dv自身のAI要約（トピックごとの要約）を取得する。
- * OpenAIとは独立した機能のため、OpenAI側の課金状態に関係なく要約を出せる。
- * こちらを要約の第一ソースとし、OpenAIはネクストアクション抽出専用に使う。
+ * markdown本文から見出しに「アクション」を含むセクションだけを抜き出す。
+ * tl;dv自身の要約フォーマットに「アクション可能なアイテム」という節が
+ * 常に含まれているため、OpenAIを使わずにこれをネクストアクションの下書きとして使う。
+ * 「該当項目なし」的な言い回しの場合は空文字を返す（NAを作らせないため）。
  */
-async function fetchMeetingNotesSummary(meetingId, apiKey) {
+function extractActionItemsFromMarkdown(markdownContent) {
+  if (!markdownContent) return '';
+  const lines = markdownContent.split('\n');
+  let capturing = false;
+  const captured = [];
+  for (const line of lines) {
+    const isHeading = /^#{1,4}\s/.test(line);
+    if (isHeading) {
+      if (capturing) break; // 次の見出しに来たらセクション終了
+      if (line.includes('アクション')) {
+        capturing = true;
+      }
+      continue;
+    }
+    if (capturing) captured.push(line);
+  }
+  const text = captured.join('\n').trim();
+  const noneMarkers = ['含まれていません', 'ありません', '見つかりません', '特にありません', '見当たりません'];
+  if (!text || noneMarkers.some((marker) => text.includes(marker))) return '';
+  return text;
+}
+
+/**
+ * tl;dv自身のAI要約（トピックごとの要約 or 全文markdown）と、そこに含まれる
+ * 「アクション可能なアイテム」セクションを取得する。
+ * OpenAIとは独立した機能のため、OpenAI側の課金状態に関係なく利用できる。
+ * こちらを要約・ネクストアクション両方の第一ソースとする
+ * （OpenAIは「指示して再生成」でのお礼メッセージ書き直し専用に取っておく）。
+ */
+async function fetchMeetingNotes(meetingId, apiKey) {
   try {
     const resp = await tldvFetch(`/meetings/${meetingId}/notes`, apiKey);
     const topics = Array.isArray(resp.topics) ? resp.topics : [];
@@ -119,55 +148,13 @@ async function fetchMeetingNotesSummary(meetingId, apiKey) {
       .map((t) => (t.summary ? `【${t.title || 'トピック'}】${t.summary}` : null))
       .filter(Boolean)
       .join('\n');
-    return fromTopics || resp.markdownContent || '';
+    const summary = fromTopics || resp.markdownContent || '';
+    const actionItemsText = extractActionItemsFromMarkdown(resp.markdownContent || fromTopics);
+    return { summary, actionItemsText };
   } catch (error) {
     console.error('tl;dv notes取得失敗（続行）:', error.message);
-    return '';
+    return { summary: '', actionItemsText: '' };
   }
-}
-
-/**
- * OpenAIでMTG議事録を分析し、要約・ネクストアクション等を抽出する。
- * 既存のfunctions/index.js（旧receiveTldv）と同じプロンプト形式を踏襲。
- */
-async function analyzeMeeting(apiKey, title, transcriptText) {
-  const fallback = { summary: '', nextActions: [], meetingType: 'その他', relatedService: null };
-  try {
-    const openai = new OpenAI({ apiKey });
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        {
-          role: 'system',
-          content: 'あなたは営業支援AIです。MTG議事録を分析して、ネクストアクションを抽出してください。回答はJSON形式のみで出力してください。'
-        },
-        {
-          role: 'user',
-          content: `以下のMTG議事録を分析して、JSON形式で出力してください。JSONのみを出力し、他のテキストは含めないでください：
-{
-  "summary": "3行以内の要約",
-  "nextActions": [
-    { "content": "具体的なアクション", "owner": "自分 or 先方", "deadline": "YYYY-MM-DD or null" }
-  ],
-  "meetingType": "サービス提案 or ヒアリング or 定例 or その他",
-  "relatedService": "第一想起取れるくん or 獲得とれるくん or インハウスクラウド or null"
-}
-
-MTGタイトル: ${title || '不明'}
-議事録:
-${transcriptText.substring(0, 6000)}`
-        }
-      ],
-      max_tokens: 1000,
-      temperature: 0.3
-    });
-    const content = completion.choices[0]?.message?.content || '';
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) return { ...fallback, ...JSON.parse(jsonMatch[0]) };
-  } catch (error) {
-    console.error('AI分析エラー（続行）:', error.message);
-  }
-  return fallback;
 }
 
 /**
@@ -324,17 +311,18 @@ function createTldvRouter({ admin, db }) {
 
       const meetUrl = normalizeMeetUrl(conferenceId) || existing?.meetUrl || null;
 
-      // 要約はtl;dv自身のAI機能（notes）を第一ソースにする（OpenAIの課金状態に依存しない）。
-      // OpenAIはネクストアクションの構造化抽出（担当・期日付き）専用に使う。
-      const tldvNotesSummary = await fetchMeetingNotesSummary(meetingId, apiKey);
+      // 要約・ネクストアクションともtl;dv自身のAI機能（notes）だけで賄う（OpenAI不使用＝コスト0）。
+      // tl;dvの要約フォーマットには必ず「アクション可能なアイテム」節が含まれているため、
+      // それをそのままネクストアクションの下書きとして使う。OpenAIは「指示して再生成」での
+      // お礼メッセージ書き直し専用に取っておく（functions/slackApproval.js）
+      const { summary: tldvNotesSummary, actionItemsText } = await fetchMeetingNotes(meetingId, apiKey);
 
-      const openaiKey = env('OPENAI_API_KEY');
-      const aiResult = (openaiKey && finalTranscript.length > 10)
-        ? await analyzeMeeting(openaiKey, title, finalTranscript)
-        : { summary: '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
-
-      // tl;dv notes > OpenAI要約 > 既存値 の優先順で採用
-      aiResult.summary = tldvNotesSummary || aiResult.summary || existing?.aiSummary || '';
+      const aiResult = {
+        summary: tldvNotesSummary || existing?.aiSummary || '',
+        nextActions: actionItemsText ? [{ content: actionItemsText, owner: '自分', deadline: null }] : (existing?.aiNextActions || []),
+        meetingType: existing?.aiMeetingType || 'その他',
+        relatedService: existing?.aiRelatedService || null
+      };
 
       // 案件紐付け：Meet URLは案件（商材）単位ではなく会社（クライアント）単位で登録される
       // （clientMeetingSettings.companyName）。一致した会社の「全ての」案件（商材）に紐付ける
