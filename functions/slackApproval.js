@@ -5,6 +5,10 @@
  *   staffMembers.emailからusers.lookupByEmailで本人を特定してDMするだけ
  * - ボタンが押されたらSlackがこのエンドポイントにPOSTしてくる。署名を検証してから
  *   実送信（functions/thanks.js）を呼び、元のDMを「送信済み」に更新する
+ *
+ * 必要なBot Token Scopes: chat:write, users:read, users:read.email, im:write
+ * （Appは「tldv-record」。スコープ追加時はワークスペースへの再インストールが必要で、
+ *   Bot User OAuth Tokenが再発行されるため、SLACK_BOT_TOKENも更新すること）
  */
 
 const crypto = require('crypto');
