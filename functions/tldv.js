@@ -408,7 +408,26 @@ function createTldvRouter({ admin, db }) {
         // （1つのMTGで複数商材が話される場合でも、送るお礼メッセージは1通のため）
         const material = await pickUnsentMaterial(db, dealIds[0]);
         thankYouMaterialId = material ? material.id : null;
-        thankYouDraft = aiResult.thankYouMessage + (material ? `\n\n資料はこちら: ${material.url}` : '');
+
+        // 相手の担当者へのメンション（Chatworkの[To:accountId]タグ）。
+        // 承認DMの時点で最終形の文面を見せたいので、送信直前ではなくここで組み立てる
+        let mentionPrefix = '';
+        try {
+          const settingsSnap = await db.collection('clientMeetingSettings')
+            .where('meetUrl', '==', meetUrl)
+            .limit(1)
+            .get();
+          if (!settingsSnap.empty) {
+            const settings = settingsSnap.docs[0].data();
+            if (settings.chatworkMentionAccountId) {
+              mentionPrefix = `[To:${settings.chatworkMentionAccountId}]${settings.chatworkMentionName || ''}さん\n`;
+            }
+          }
+        } catch (error) {
+          console.error('メンション先取得失敗（続行）:', error.message);
+        }
+
+        thankYouDraft = mentionPrefix + aiResult.thankYouMessage + (material ? `\n\n資料はこちら: ${material.url}` : '');
         thankYouStatus = 'draft';
       }
 

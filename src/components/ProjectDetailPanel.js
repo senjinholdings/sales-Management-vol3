@@ -14,7 +14,7 @@ import PhaseTooltip from './PhaseTooltip.js';
 import { linkifyText } from '../utils/linkify.js';
 import { db } from '../firebase.js';
 import { collection, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore';
-import { fetchAllStaff, fetchChatworkRooms } from '../services/staffService.js';
+import { fetchAllStaff, fetchChatworkRooms, fetchChatworkRoomMembers } from '../services/staffService.js';
 import {
   updateProject,
   fetchMonthlyData, saveMonthlyData,
@@ -916,16 +916,17 @@ const RoomOption = styled.div`
 `;
 
 /**
- * Chatworkルームを名前で検索して選べるプルダウン（部屋数が多い担当者向け）。
- * 入力欄に文字を打つと部屋名を部分一致でフィルタする。
+ * 名前で検索して選べるプルダウン（Chatworkのルーム・メンバー選択で共用）。
+ * 入力欄に文字を打つとitemsの名前を部分一致でフィルタする。
+ * items: [{id, name}]
  */
-const ChatworkRoomPicker = ({ chatworkRoomId, chatworkRooms, onSelect }) => {
+const SearchablePicker = ({ selectedId, items, onSelect, placeholder = '検索...', emptyLabel = '一致する候補がありません' }) => {
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
 
-  const selectedRoom = chatworkRooms.find(r => r.id === chatworkRoomId);
-  const displayValue = open ? query : (selectedRoom?.name || '');
-  const filtered = chatworkRooms.filter(r => r.name.toLowerCase().includes(query.toLowerCase()));
+  const selected = items.find(item => item.id === selectedId);
+  const displayValue = open ? query : (selected?.name || '');
+  const filtered = items.filter(item => item.name.toLowerCase().includes(query.toLowerCase()));
 
   return (
     <RoomPickerWrap>
@@ -934,21 +935,21 @@ const ChatworkRoomPicker = ({ chatworkRoomId, chatworkRooms, onSelect }) => {
         onChange={e => setQuery(e.target.value)}
         onFocus={() => { setQuery(''); setOpen(true); }}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder="ルーム名で検索..."
+        placeholder={placeholder}
         style={{ fontSize: '0.85rem', padding: '0.5rem' }}
       />
       {open && (
         <RoomDropdown>
           <RoomOption $muted onMouseDown={() => { onSelect(''); setOpen(false); }}>未設定</RoomOption>
           {filtered.length === 0 ? (
-            <RoomOption $muted style={{ cursor: 'default' }}>一致するルームがありません</RoomOption>
-          ) : filtered.map(r => (
+            <RoomOption $muted style={{ cursor: 'default' }}>{emptyLabel}</RoomOption>
+          ) : filtered.map(item => (
             <RoomOption
-              key={r.id}
-              $active={r.id === chatworkRoomId}
-              onMouseDown={() => { onSelect(r.id); setOpen(false); }}
+              key={item.id}
+              $active={item.id === selectedId}
+              onMouseDown={() => { onSelect(item.id); setOpen(false); }}
             >
-              {r.name}
+              {item.name}
             </RoomOption>
           ))}
         </RoomDropdown>
@@ -971,7 +972,11 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
   const [time, setTime] = useState('');
   const [chatworkRoomId, setChatworkRoomId] = useState('');
   const [slackChannelId, setSlackChannelId] = useState('');
+  const [chatworkMentionAccountId, setChatworkMentionAccountId] = useState('');
+  const [chatworkMentionName, setChatworkMentionName] = useState('');
+  const [repStaffId, setRepStaffId] = useState(null);
   const [chatworkRooms, setChatworkRooms] = useState(null); // null=未取得/未連携
+  const [chatworkMembers, setChatworkMembers] = useState(null); // null=未取得
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -985,6 +990,8 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       setTime(settings?.recurringTime || '');
       setChatworkRoomId(settings?.chatworkRoomId || '');
       setSlackChannelId(settings?.slackChannelId || '');
+      setChatworkMentionAccountId(settings?.chatworkMentionAccountId || '');
+      setChatworkMentionName(settings?.chatworkMentionName || '');
       setLoaded(true);
     });
     return () => { cancelled = true; };
@@ -996,16 +1003,30 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
   useEffect(() => {
     let cancelled = false;
     setChatworkRooms(null);
+    setRepStaffId(null);
     if (!project.representative) return;
     fetchAllStaff().then((staff) => {
       const rep = staff.find((s) => s.name === project.representative);
       if (!rep) return;
+      if (!cancelled) setRepStaffId(rep.id);
       return fetchChatworkRooms(rep.id).catch(() => null);
     }).then((rooms) => {
       if (!cancelled && rooms) setChatworkRooms(rooms);
     });
     return () => { cancelled = true; };
   }, [project.representative]);
+
+  // ルームが決まったら、そのルームのメンバー一覧を取得する
+  // （お礼メッセージで相手をメンションする相手を選ぶため）
+  useEffect(() => {
+    let cancelled = false;
+    setChatworkMembers(null);
+    if (!repStaffId || !chatworkRoomId) return;
+    fetchChatworkRoomMembers(repStaffId, chatworkRoomId).catch(() => null).then((members) => {
+      if (!cancelled && members) setChatworkMembers(members);
+    });
+    return () => { cancelled = true; };
+  }, [repStaffId, chatworkRoomId]);
 
   const saveSettings = async (overrides = {}) => {
     const next = {
@@ -1014,6 +1035,8 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       recurringTime: time || null,
       chatworkRoomId: chatworkRoomId || null,
       slackChannelId: slackChannelId || null,
+      chatworkMentionAccountId: chatworkMentionAccountId || null,
+      chatworkMentionName: chatworkMentionName || null,
       ...overrides
     };
     try {
@@ -1077,10 +1100,12 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
         <FormGroup $noMargin style={{ flex: '1 1 240px' }}>
           <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>Chatworkのルーム</Label>
           {chatworkRooms ? (
-            <ChatworkRoomPicker
-              chatworkRoomId={chatworkRoomId}
-              chatworkRooms={chatworkRooms}
+            <SearchablePicker
+              selectedId={chatworkRoomId}
+              items={chatworkRooms}
               onSelect={(id) => { setChatworkRoomId(id); saveSettings({ chatworkRoomId: id || null }); }}
+              placeholder="ルーム名で検索..."
+              emptyLabel="一致するルームがありません"
             />
           ) : (
             <Input
@@ -1088,6 +1113,31 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
               onChange={e => setChatworkRoomId(e.target.value)}
               onBlur={() => saveSettings({ chatworkRoomId: chatworkRoomId || null })}
               placeholder={project.representative ? `${project.representative}がChatwork未連携（担当者管理で連携すると一覧から選べます）` : 'ルームID（担当者未設定）'}
+              style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+            />
+          )}
+        </FormGroup>
+        <FormGroup $noMargin style={{ flex: '1 1 200px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>相手の担当者（メンション）</Label>
+          {chatworkMembers ? (
+            <SearchablePicker
+              selectedId={chatworkMentionAccountId}
+              items={chatworkMembers.map(m => ({ id: m.accountId, name: m.name }))}
+              onSelect={(id) => {
+                const member = chatworkMembers.find(m => m.accountId === id);
+                const name = member ? member.name : '';
+                setChatworkMentionAccountId(id);
+                setChatworkMentionName(name);
+                saveSettings({ chatworkMentionAccountId: id || null, chatworkMentionName: name || null });
+              }}
+              placeholder="名前で検索..."
+              emptyLabel="一致するメンバーがいません"
+            />
+          ) : (
+            <Input
+              value={chatworkMentionName}
+              disabled
+              placeholder={chatworkRoomId ? 'メンバー取得中...' : 'ルームを選ぶと選択できます'}
               style={{ fontSize: '0.85rem', padding: '0.5rem' }}
             />
           )}

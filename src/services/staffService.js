@@ -157,3 +157,19 @@ export const fetchChatworkRooms = async (staffId) => {
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data.rooms;
 };
+
+/**
+ * 指定したChatworkルームのメンバー一覧を取得する
+ * （お礼メッセージでメンションする相手を選ぶために使う）
+ * @param {string} staffId - ドキュメントID
+ * @param {string} roomId - ChatworkルームID
+ * @returns {Promise<Array<{accountId: string, name: string}>>}
+ */
+export const fetchChatworkRoomMembers = async (staffId, roomId) => {
+  const res = await fetch(`${APP_API_BASE}/staff/chatwork-room-members?staffId=${encodeURIComponent(staffId)}&roomId=${encodeURIComponent(roomId)}`, {
+    headers: appApiHeaders()
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.members;
+};

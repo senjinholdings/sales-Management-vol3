@@ -103,6 +103,35 @@ function createStaffRouter({ db }) {
     }
   });
 
+  /**
+   * GET /api/staff/chatwork-room-members?staffId=xxx&roomId=yyy
+   * 指定ルームのメンバー一覧を取得する（お礼メッセージでメンションする相手を選ぶため）
+   */
+  router.get('/chatwork-room-members', async (req, res) => {
+    if (!requireAppSecret(req, res)) return;
+    try {
+      const { staffId, roomId } = req.query;
+      if (!staffId || !roomId) return res.status(400).json({ error: 'staffId, roomId は必須です' });
+      const token = await getSecret(chatworkSecretName(staffId));
+      if (!token) {
+        return res.status(404).json({ error: 'この担当者はChatworkが未連携です' });
+      }
+      const membersRes = await fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/members`, {
+        headers: { 'X-ChatWorkToken': token }
+      });
+      if (!membersRes.ok) {
+        return res.status(502).json({ error: 'Chatwork APIの呼び出しに失敗しました' });
+      }
+      const members = await membersRes.json();
+      return res.status(200).json({
+        members: members.map((m) => ({ accountId: String(m.account_id), name: m.name }))
+      });
+    } catch (error) {
+      console.error('Chatworkルームメンバー取得エラー:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
   return router;
 }
 
