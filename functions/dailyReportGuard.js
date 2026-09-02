@@ -7,8 +7,11 @@
  * - 振り返り・翌日計画の未実施: 23時に1回、0時台は10分おきに本人へ催促DM。1時以降は
  *   今回のスコープでは何も送らない（上長エスカレーションは将来の拡張として見送り）
  *
- * Slack送信はfunctions/slackApproval.jsのresolveSlackUserId（staffMembers.email →
- * users.lookupByEmail → conversations.open）をそのまま再利用する。
+ * Slackへの送信は個人DMではなく、#営業_日報チャンネル（担当者・増田さんの両方が
+ * 参加済み）への投稿＋両者へのメンションで行う。ユーザー本人だけでは「自分に届いて
+ * いるか」の確認が取りづらいため、常に両方をメンションする形に決めた。
+ * ユーザーIDの特定はfunctions/slackApproval.jsのresolveSlackUserId
+ * （staffMembers.email → users.lookupByEmail）をそのまま再利用する。
  */
 
 const { WebClient } = require('@slack/web-api');
@@ -49,26 +52,21 @@ function hasReviewContent(review) {
   return REVIEW_FIELD_KEYS.some((k) => (review[k] || '').trim() !== '');
 }
 
-/** 担当者本人にSlack DMを送る（メールからユーザーを特定できない場合は何もしない） */
-async function dmStaff(slack, email, text) {
-  const userId = await resolveSlackUserId(slack, email);
-  if (!userId) return;
-  const dm = await slack.conversations.open({ users: userId });
-  const channelId = dm.channel?.id;
-  if (!channelId) return;
-  await slack.chat.postMessage({ channel: channelId, text });
-}
+// 通知先は個人DMではなく#営業_日報チャンネル。担当者本人＋増田さんの両方をメンションする
+const NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR';
+const MANAGER_EMAIL = 'yoh.masuda@senjinholdings.com';
 
-// 一時的な動作確認用: 荒幡さんに実際にDMが届いているか本人だけでは確認しづらいため、
-// しばらくの間、同じ内容を増田さんにも同時に送る。届いていることが確認できたら削除する
-const TEMP_ALSO_NOTIFY_EMAIL = 'yoh.masuda@senjinholdings.com';
-
-/** 本来の宛先本人 + 一時的な確認用宛先（設定されていれば）の両方にDMを送る */
-async function notifyRepresentative(slack, email, text) {
-  await dmStaff(slack, email, text);
-  if (TEMP_ALSO_NOTIFY_EMAIL && TEMP_ALSO_NOTIFY_EMAIL !== email) {
-    await dmStaff(slack, TEMP_ALSO_NOTIFY_EMAIL, `[確認用: 荒幡さん宛と同内容]\n${text}`);
-  }
+/** #営業_日報チャンネルに、担当者本人と増田さんの両方をメンションしてメッセージを投稿する */
+async function notifyRepresentative(slack, repEmail, text) {
+  const [repUserId, managerUserId] = await Promise.all([
+    repEmail ? resolveSlackUserId(slack, repEmail) : null,
+    resolveSlackUserId(slack, MANAGER_EMAIL)
+  ]);
+  const mentions = [repUserId, managerUserId].filter(Boolean).map((id) => `<@${id}>`).join(' ');
+  await slack.chat.postMessage({
+    channel: NOTIFY_CHANNEL_ID,
+    text: mentions ? `${mentions} ${text}` : text
+  });
 }
 
 async function findStaffEmail(db, representative) {
