@@ -4,17 +4,16 @@
  * - 議事録全文・AI要約・ネクストアクションを`meetings`コレクションに永続化
  * - 案件のMeet URL（progressDashboard.linkedMeetUrls）と照合して自動紐付け
  * - 紐付いた案件のNA（entries）を自動生成
- * - Slackに結果を通知（手動の案件選択UIは持たない）
+ * - お礼メッセージの下書きを作り、担当者のSlackに承認依頼DMを送る
+ *   （社内向けの紐付け結果通知は、tl;dv公式のSlack連携と重複するため廃止した）
  */
 
 const express = require('express');
 const fetch = require('node-fetch');
 const OpenAI = require('openai');
-const { WebClient } = require('@slack/web-api');
 const { sendApprovalRequest } = require('./slackApproval');
 
 const TLDV_API_BASE = 'https://pasta.tldv.io/v1alpha1';
-const SLACK_CHANNEL = '#営業_議事録';
 
 /**
  * Secret Managerの値を前後の空白/改行を除いて取得する。
@@ -242,27 +241,6 @@ async function applyToDeal({ admin, db, dealId, meetingId, aiResult }) {
 }
 
 /**
- * 案件に紐付いた時だけ通知する。紐付かなかったMTG（社内MTG・URL未登録など）は
- * 区別せず一律で何もしない（通知もステータス分岐も行わない）。
- */
-async function notifySlack({ dealIds, title }) {
-  const token = env('SLACK_BOT_TOKEN');
-  if (!token || !dealIds?.length) return;
-
-  const slack = new WebClient(token);
-  const links = dealIds
-    .map((id) => `https://sales-management-staging.web.app/product/${id}`)
-    .join('\n');
-  const text = `📹 議事録を登録しました: ${title}\n${dealIds.length}件の案件に自動で紐付けました。\n${links}`;
-
-  try {
-    await slack.chat.postMessage({ channel: SLACK_CHANNEL, text });
-  } catch (error) {
-    console.error('Slack通知失敗（続行）:', error.message);
-  }
-}
-
-/**
  * まだ送っていない資料のうち一番新しいものを1件だけ取得する。
  * お礼メッセージの下書きに自動で添付するために使う
  * （どの資料をどのMTGで使ったか、という細かい紐付けまではせず、
@@ -471,11 +449,6 @@ function createTldvRouter({ admin, db }) {
         await Promise.all(dealIds.map((dealId) =>
           applyToDeal({ admin, db, dealId, meetingId, aiResult })
         ));
-      }
-
-      // 初回のみSlack通知（同じMTGへの再送で毎回通知しない）
-      if (!existingSnap.exists || (isFirstTimeWithTranscript)) {
-        await notifySlack({ dealIds, title });
       }
 
       // お礼メッセージの下書きができたら、担当者のSlackに承認依頼DMを送る
