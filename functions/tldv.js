@@ -131,7 +131,7 @@ async function fetchMeetingNotesSummary(meetingId, apiKey) {
  * 既存のfunctions/index.js（旧receiveTldv）と同じプロンプト形式を踏襲。
  */
 async function analyzeMeeting(apiKey, title, transcriptText) {
-  const fallback = { summary: '', nextActions: [], meetingType: 'その他', relatedService: null, thankYouMessage: '' };
+  const fallback = { summary: '', nextActions: [], meetingType: 'その他', relatedService: null };
   try {
     const openai = new OpenAI({ apiKey });
     const completion = await openai.chat.completions.create({
@@ -139,7 +139,7 @@ async function analyzeMeeting(apiKey, title, transcriptText) {
       messages: [
         {
           role: 'system',
-          content: 'あなたは営業支援AIです。MTG議事録を分析して、ネクストアクションとお礼メッセージ文案を作成してください。回答はJSON形式のみで出力してください。'
+          content: 'あなたは営業支援AIです。MTG議事録を分析して、ネクストアクションを抽出してください。回答はJSON形式のみで出力してください。'
         },
         {
           role: 'user',
@@ -150,8 +150,7 @@ async function analyzeMeeting(apiKey, title, transcriptText) {
     { "content": "具体的なアクション", "owner": "自分 or 先方", "deadline": "YYYY-MM-DD or null" }
   ],
   "meetingType": "サービス提案 or ヒアリング or 定例 or その他",
-  "relatedService": "第一想起取れるくん or 獲得とれるくん or インハウスクラウド or null",
-  "thankYouMessage": "先方に送るお礼メッセージの文案（3〜5行程度）。本日の議題に具体的に触れつつ丁寧な文体で。宛名・署名は付けない（送信前に担当者が確認・編集する前提）"
+  "relatedService": "第一想起取れるくん or 獲得とれるくん or インハウスクラウド or null"
 }
 
 MTGタイトル: ${title || '不明'}
@@ -159,7 +158,7 @@ MTGタイトル: ${title || '不明'}
 ${transcriptText.substring(0, 6000)}`
         }
       ],
-      max_tokens: 1200,
+      max_tokens: 1000,
       temperature: 0.3
     });
     const content = completion.choices[0]?.message?.content || '';
@@ -329,15 +328,10 @@ function createTldvRouter({ admin, db }) {
       // OpenAIはネクストアクションの構造化抽出（担当・期日付き）専用に使う。
       const tldvNotesSummary = await fetchMeetingNotesSummary(meetingId, apiKey);
 
-      // テスト用: webhookペイロードにtestThankYouMessageがあれば、OpenAIを呼ばずに
-      // その文字列をそのまま使う（Slack承認→Chatwork送信の動作確認をクレジット消費なしで
-      // 行うためのフック。実際のtl;dvのペイロードにこのフィールドが入ることはない）
       const openaiKey = env('OPENAI_API_KEY');
-      const aiResult = data.testThankYouMessage
-        ? { summary: existing?.aiSummary || '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null, thankYouMessage: data.testThankYouMessage }
-        : (openaiKey && finalTranscript.length > 10)
-          ? await analyzeMeeting(openaiKey, title, finalTranscript)
-          : { summary: '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
+      const aiResult = (openaiKey && finalTranscript.length > 10)
+        ? await analyzeMeeting(openaiKey, title, finalTranscript)
+        : { summary: '', nextActions: existing?.aiNextActions || [], meetingType: existing?.aiMeetingType || 'その他', relatedService: existing?.aiRelatedService || null };
 
       // tl;dv notes > OpenAI要約 > 既存値 の優先順で採用
       aiResult.summary = tldvNotesSummary || aiResult.summary || existing?.aiSummary || '';
@@ -382,9 +376,12 @@ function createTldvRouter({ admin, db }) {
       let thankYouStatus = existing?.thankYouStatus || null;
       let thankYouMaterialId = existing?.thankYouMaterialId || null;
 
+      // お礼メッセージのデフォルトは固定テンプレート（OpenAIは呼ばない＝コスト0）。
+      // 担当者がSlackの「指示して再生成」からトークンを使う判断をした時だけ、
+      // 議事録全文＋指示を踏まえてAIに書き直させる（functions/slackApproval.js側で実施）
       const shouldDraftThankYou = dealIds.length > 0 && !allInternal && finalTranscript &&
         (isFirstTimeWithTranscript || event === 'TranscriptReady') &&
-        !thankYouStatus && aiResult.thankYouMessage;
+        !thankYouStatus;
 
       if (shouldDraftThankYou) {
         // 資料は複数案件に紐付いていても代表して1件目の案件のものを使う
@@ -413,7 +410,11 @@ function createTldvRouter({ admin, db }) {
           console.error('メンション先取得失敗（続行）:', error.message);
         }
 
-        thankYouDraft = mentionPrefix + aiResult.thankYouMessage + (material ? `\n\n資料はこちら: ${material.url}` : '');
+        const bodyTemplate = material
+          ? `本日はお時間をいただきありがとうございました。\n以下の資料をお送りいたしますのでご確認ください。\n${material.url}`
+          : '本日はお時間をいただきありがとうございました。今後ともよろしくお願いいたします。';
+
+        thankYouDraft = mentionPrefix + bodyTemplate;
         thankYouStatus = 'draft';
       }
 
