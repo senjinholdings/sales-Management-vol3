@@ -40,15 +40,20 @@ function createStaffRouter({ db }) {
 
       const token = sanitizeToken(apiToken);
       // トークンの有効性を先に確認してから保存する（無効なトークンを保存してしまうと
-      // あとで送信が失敗する原因が分かりにくいため）
+      // あとで送信が失敗する原因が分かりにくいため）。同時に自分のaccount_idを取得し、
+      // 社内メンバー判定（部屋メンバー一覧で「（社内）」表示する）に使う
       const meRes = await fetch(`${CHATWORK_API_BASE}/me`, {
         headers: { 'X-ChatWorkToken': token }
       });
       if (!meRes.ok) {
         return res.status(400).json({ error: 'Chatworkのトークンが無効です。コピーし直して再登録してください' });
       }
+      const me = await meRes.json();
 
       await setSecret(chatworkSecretName(staffId), token);
+      await db.collection('staffMembers').doc(staffId).update({
+        chatworkAccountId: String(me.account_id)
+      });
       return res.status(200).json({ success: true });
     } catch (error) {
       console.error('Chatworkトークン登録エラー:', error);
@@ -123,9 +128,24 @@ function createStaffRouter({ db }) {
         return res.status(502).json({ error: 'Chatwork APIの呼び出しに失敗しました' });
       }
       const members = await membersRes.json();
-      return res.status(200).json({
-        members: members.map((m) => ({ accountId: String(m.account_id), name: m.name }))
-      });
+
+      // Chatworkの部屋メンバー情報には社内/社外の区別が無いため、
+      // 担当者管理に登録済みの自社メンバーのaccount_idと突き合わせて判定する
+      const staffSnap = await db.collection('staffMembers').get();
+      const internalAccountIds = new Set(
+        staffSnap.docs.map((d) => d.data().chatworkAccountId).filter(Boolean)
+      );
+
+      const result = members
+        .map((m) => ({
+          accountId: String(m.account_id),
+          name: m.name,
+          isInternal: internalAccountIds.has(String(m.account_id))
+        }))
+        // 社外を先、社内を後ろに（クライアント宛のメンションを選ぶ画面なので社外を優先表示）
+        .sort((a, b) => (a.isInternal === b.isInternal ? 0 : a.isInternal ? 1 : -1));
+
+      return res.status(200).json({ members: result });
     } catch (error) {
       console.error('Chatworkルームメンバー取得エラー:', error);
       return res.status(500).json({ error: error.message });

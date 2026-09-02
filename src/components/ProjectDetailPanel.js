@@ -958,6 +958,98 @@ const SearchablePicker = ({ selectedId, items, onSelect, placeholder = '検索..
   );
 };
 
+const ChipList = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+`;
+
+const Chip = styled.span`
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.4rem 0.2rem 0.55rem;
+  background: #eaf3fb;
+  color: #205d88;
+  border-radius: 100px;
+  font-size: 0.78rem;
+  font-weight: 500;
+`;
+
+const ChipRemove = styled.button`
+  background: none;
+  border: none;
+  padding: 0;
+  color: #7fa7c4;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  &:hover { color: #205d88; }
+`;
+
+/**
+ * 名前で検索して複数選べるプルダウン（お礼メッセージのメンション先選択で使用）。
+ * 選んだ順にチップとして表示する（メッセージ内のメンション順になるため順序が意味を持つ）。
+ * items: [{id, name, isInternal?}]（isInternalがtrueの項目は一覧末尾表示＋「（社内）」表記）
+ */
+const MultiSearchablePicker = ({ selectedItems, items, onChange, placeholder = '検索...', emptyLabel = '一致する候補がありません' }) => {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const selectedIds = new Set(selectedItems.map(s => s.id));
+  const filtered = items.filter(item => item.name.toLowerCase().includes(query.toLowerCase()));
+
+  const addItem = (item) => {
+    if (selectedIds.has(item.id)) return;
+    onChange([...selectedItems, { id: item.id, name: item.name }]);
+    setQuery('');
+  };
+  const removeItem = (id) => {
+    onChange(selectedItems.filter(s => s.id !== id));
+  };
+
+  return (
+    <div>
+      {selectedItems.length > 0 && (
+        <ChipList>
+          {selectedItems.map((s, idx) => (
+            <Chip key={s.id}>
+              {idx + 1}. {s.name}
+              <ChipRemove onMouseDown={(e) => { e.preventDefault(); removeItem(s.id); }}>×</ChipRemove>
+            </Chip>
+          ))}
+        </ChipList>
+      )}
+      <RoomPickerWrap>
+        <Input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          placeholder={placeholder}
+          style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+        />
+        {open && (
+          <RoomDropdown>
+            {filtered.length === 0 ? (
+              <RoomOption $muted style={{ cursor: 'default' }}>{emptyLabel}</RoomOption>
+            ) : filtered.map(item => (
+              <RoomOption
+                key={item.id}
+                $active={selectedIds.has(item.id)}
+                onMouseDown={() => addItem(item)}
+              >
+                {selectedIds.has(item.id) ? '✓ ' : ''}{item.name}{item.isInternal ? '（社内）' : ''}
+              </RoomOption>
+            ))}
+          </RoomDropdown>
+        )}
+      </RoomPickerWrap>
+    </div>
+  );
+};
+
 /**
  * MTGのURL登録セクション（定例・臨時MTGの自動紐付け用）。
  * 新規/既存どちらの案件でも、フェーズやmodeに関係なく常に表示する
@@ -972,8 +1064,7 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
   const [time, setTime] = useState('');
   const [chatworkRoomId, setChatworkRoomId] = useState('');
   const [slackChannelId, setSlackChannelId] = useState('');
-  const [chatworkMentionAccountId, setChatworkMentionAccountId] = useState('');
-  const [chatworkMentionName, setChatworkMentionName] = useState('');
+  const [chatworkMentions, setChatworkMentions] = useState([]); // [{id, name}] 選択順
   const [repStaffId, setRepStaffId] = useState(null);
   const [chatworkRooms, setChatworkRooms] = useState(null); // null=未取得/未連携
   const [chatworkMembers, setChatworkMembers] = useState(null); // null=未取得
@@ -990,8 +1081,9 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       setTime(settings?.recurringTime || '');
       setChatworkRoomId(settings?.chatworkRoomId || '');
       setSlackChannelId(settings?.slackChannelId || '');
-      setChatworkMentionAccountId(settings?.chatworkMentionAccountId || '');
-      setChatworkMentionName(settings?.chatworkMentionName || '');
+      setChatworkMentions(
+        (settings?.chatworkMentions || []).map(m => ({ id: m.accountId, name: m.name }))
+      );
       setLoaded(true);
     });
     return () => { cancelled = true; };
@@ -1035,8 +1127,7 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       recurringTime: time || null,
       chatworkRoomId: chatworkRoomId || null,
       slackChannelId: slackChannelId || null,
-      chatworkMentionAccountId: chatworkMentionAccountId || null,
-      chatworkMentionName: chatworkMentionName || null,
+      chatworkMentions: chatworkMentions.map(m => ({ accountId: m.id, name: m.name })),
       ...overrides
     };
     try {
@@ -1117,25 +1208,19 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
             />
           )}
         </FormGroup>
-        <FormGroup $noMargin style={{ flex: '1 1 200px' }}>
-          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>相手の担当者（メンション）</Label>
+        <FormGroup $noMargin style={{ flex: '1 1 240px' }}>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>相手の担当者（メンション。複数可・選んだ順に並びます）</Label>
           {chatworkMembers ? (
-            <SearchablePicker
-              selectedId={chatworkMentionAccountId}
-              items={chatworkMembers.map(m => ({ id: m.accountId, name: m.name }))}
-              onSelect={(id) => {
-                const member = chatworkMembers.find(m => m.accountId === id);
-                const name = member ? member.name : '';
-                setChatworkMentionAccountId(id);
-                setChatworkMentionName(name);
-                saveSettings({ chatworkMentionAccountId: id || null, chatworkMentionName: name || null });
-              }}
+            <MultiSearchablePicker
+              selectedItems={chatworkMentions}
+              items={chatworkMembers.map(m => ({ id: m.accountId, name: m.name, isInternal: m.isInternal }))}
+              onChange={(items) => { setChatworkMentions(items); saveSettings({ chatworkMentions: items.map(m => ({ accountId: m.id, name: m.name })) }); }}
               placeholder="名前で検索..."
               emptyLabel="一致するメンバーがいません"
             />
           ) : (
             <Input
-              value={chatworkMentionName}
+              value={chatworkMentions.map(m => m.name).join(', ')}
               disabled
               placeholder={chatworkRoomId ? 'メンバー取得中...' : 'ルームを選ぶと選択できます'}
               style={{ fontSize: '0.85rem', padding: '0.5rem' }}

@@ -409,8 +409,9 @@ function createTldvRouter({ admin, db }) {
         const material = await pickUnsentMaterial(db, dealIds[0]);
         thankYouMaterialId = material ? material.id : null;
 
-        // 相手の担当者へのメンション（Chatworkの[To:accountId]タグ）。
-        // 承認DMの時点で最終形の文面を見せたいので、送信直前ではなくここで組み立てる
+        // 相手の担当者へのメンション（Chatworkの[To:accountId]タグ）。複数人選べるため
+        // 選んだ順に並べる。承認DMの時点で最終形の文面を見せたいので、送信直前ではなく
+        // ここで組み立てる
         let mentionPrefix = '';
         try {
           const settingsSnap = await db.collection('clientMeetingSettings')
@@ -419,9 +420,11 @@ function createTldvRouter({ admin, db }) {
             .get();
           if (!settingsSnap.empty) {
             const settings = settingsSnap.docs[0].data();
-            if (settings.chatworkMentionAccountId) {
-              mentionPrefix = `[To:${settings.chatworkMentionAccountId}]${settings.chatworkMentionName || ''}さん\n`;
-            }
+            const mentions = Array.isArray(settings.chatworkMentions) ? settings.chatworkMentions : [];
+            mentionPrefix = mentions
+              .map((m) => `[To:${m.accountId}]${m.name || ''}さん`)
+              .join('\n');
+            if (mentionPrefix) mentionPrefix += '\n';
           }
         } catch (error) {
           console.error('メンション先取得失敗（続行）:', error.message);
