@@ -140,11 +140,33 @@ async function findStaffEmail(db, representative) {
   return staffSnap.docs[0].data().email || null;
 }
 
+/** 全タスクのうち、閉じた作業区間のendedAtで最も新しいもの（ms）。一度も終了していなければnull */
+function latestSessionEndMs(tasks) {
+  let latestMs = null;
+  tasks.forEach((t) => {
+    (Array.isArray(t.sessions) ? t.sessions : []).forEach((s) => {
+      const endMs = s.endedAt?.toMillis?.();
+      if (endMs && (latestMs === null || endMs > latestMs)) latestMs = endMs;
+    });
+  });
+  return latestMs;
+}
+
+/** その日のJSTの指定時（0〜23）ちょうどのUTCミリ秒（JST=UTC+9のため） */
+function jstHourStartMs(now, hour) {
+  const [y, m, d] = toJstDateStr(now).split('-').map(Number);
+  return Date.UTC(y, m - 1, d, hour - 9, 0, 0, 0);
+}
+
 /**
  * タイマーの止め忘れ・つけ忘れチェック（10分おき）。
- * @param {{db: FirebaseFirestore.Firestore}} deps
+ * 「タイマー開始し忘れ」リマインドを送ったら、後でタイマーが押された時に
+ * そのメッセージへスレッド返信できるよう、送信したSlackメッセージのts・送信時刻・
+ * 実際にタイマーが止まっていた起点（直近の作業終了時刻。それも無ければ9時扱い）を
+ * pendingIdleAlertとしてドキュメントに記録しておく（返信はcreateIdleResumeNotifierが行う）
+ * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
-function createOverrunChecker({ db }) {
+function createOverrunChecker({ admin, db }) {
   return async () => {
     const token = env('SLACK_BOT_TOKEN');
     if (!token) {
@@ -187,12 +209,69 @@ function createOverrunChecker({ db }) {
         try {
           const email = await findStaffEmail(db, data.representative);
           if (email) {
-            await notifyRepresentative(slack, email, '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？');
+            const ts = await notifyRepresentative(slack, email, '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？');
+            const idleSinceMs = latestSessionEndMs(tasks) ?? jstHourStartMs(now, IDLE_CHECK_START_HOUR);
+            await docSnap.ref.set({
+              pendingIdleAlert: { ts, sentAt: admin.firestore.Timestamp.now(), idleSinceMs }
+            }, { merge: true });
           }
         } catch (error) {
           console.error('未実行リマインド送信失敗（続行）:', error.message);
         }
       }
+    }
+  };
+}
+
+/**
+ * タイマー再開の通知（Firestoreトリガー、dailyTimersのonUpdate）。
+ * 「タイマー開始し忘れ」リマインド（pendingIdleAlert）が残っている状態で、
+ * 実行中タスクが0→1に変わった（＝タイマーが押された）瞬間だけ発火し、
+ * リマインドのメッセージへスレッド返信で「リマインドから何分後だったか」
+ * 「実際にタイマーが止まっていた合計時間」を知らせる。送信後はpendingIdleAlertを消す
+ * （複数回リマインドが飛んでいてもcreateOverrunCheckerが都度上書きするため、
+ * 常に直近1通への返信になる）
+ * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
+ */
+function createIdleResumeNotifier({ admin, db }) {
+  return async (change) => {
+    const before = change.before.data() || {};
+    const after = change.after.data() || {};
+    const alert = before.pendingIdleAlert;
+    if (!alert) return;
+
+    const beforeTasks = Array.isArray(before.tasks) ? before.tasks : [];
+    if (beforeTasks.some(isRunningTask)) return; // 元々何か動いていた更新は対象外
+
+    const afterTasks = Array.isArray(after.tasks) ? after.tasks : [];
+    const runningTask = afterTasks.find(isRunningTask);
+    if (!runningTask) return; // 今回の更新でタイマーが押されたわけではない
+
+    const token = env('SLACK_BOT_TOKEN');
+    if (!token) return;
+    const slack = new WebClient(token);
+
+    const sessions = Array.isArray(runningTask.sessions) ? runningTask.sessions : [];
+    const startedAtMs = sessions[sessions.length - 1]?.startedAt?.toMillis?.() ?? Date.now();
+    const sentAtMs = alert.sentAt?.toMillis?.();
+    const reminderToStartMinutes = sentAtMs != null ? Math.max(0, Math.round((startedAtMs - sentAtMs) / 60000)) : null;
+    const totalIdleMinutes = alert.idleSinceMs != null ? Math.max(0, Math.round((startedAtMs - alert.idleSinceMs) / 60000)) : null;
+
+    const details = [];
+    if (reminderToStartMinutes != null) details.push(`リマインドから${reminderToStartMinutes}分後`);
+    if (totalIdleMinutes != null) details.push(`タイマーが止まっていた時間 合計${totalIdleMinutes}分`);
+    const text = `▶️ タイマーが再開されました${details.length ? `（${details.join(' / ')}）` : ''}`;
+
+    try {
+      await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.ts, text });
+    } catch (error) {
+      console.error('タイマー再開リプライ送信失敗（続行）:', error.message);
+    }
+
+    try {
+      await change.after.ref.set({ pendingIdleAlert: admin.firestore.FieldValue.delete() }, { merge: true });
+    } catch (error) {
+      console.error('pendingIdleAlertのクリア失敗（続行）:', error.message);
     }
   };
 }
@@ -313,4 +392,4 @@ function createReviewReminder({ admin, db }) {
   };
 }
 
-module.exports = { createOverrunChecker, createReviewReminder };
+module.exports = { createOverrunChecker, createIdleResumeNotifier, createReviewReminder };

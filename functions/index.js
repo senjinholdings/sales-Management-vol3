@@ -28,7 +28,7 @@ const createStaffRouter = require('./staff');
 // Slackの承認ボタン（お礼メッセージ送信）インタラクションルーター
 const { createSlackInteractionRouter } = require('./slackApproval');
 // 日報の記入漏れ防止（タイマー超過アラート・振り返り未実施リマインド）
-const { createOverrunChecker, createReviewReminder } = require('./dailyReportGuard');
+const { createOverrunChecker, createIdleResumeNotifier, createReviewReminder } = require('./dailyReportGuard');
 // 朝のチェックの自動化（Slackダイジェスト）
 const { createMorningDigest } = require('./morningDigest');
 // モール別売上データの更新確認とSlack督促
@@ -439,7 +439,12 @@ exports.api = functions.runWith({
 // 日報: タイマーの止め忘れ・つけ忘れチェック（10分おき）
 exports.checkDailyTimerOverruns = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
   .pubsub.schedule('every 10 minutes').timeZone('Asia/Tokyo')
-  .onRun(createOverrunChecker({ db }));
+  .onRun(createOverrunChecker({ admin, db }));
+
+// 日報: 「タイマー開始し忘れ」リマインド後、実際に押されたらそのメッセージへスレッド返信する
+exports.notifyTimerResumeAfterIdle = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
+  .firestore.document('dailyTimers/{docId}')
+  .onUpdate(createIdleResumeNotifier({ admin, db }));
 
 // 日報: 振り返り・翌日計画の未実施リマインド（10分おきに実行し、内部でJST時刻に応じて分岐）
 exports.dailyReviewReminder = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
