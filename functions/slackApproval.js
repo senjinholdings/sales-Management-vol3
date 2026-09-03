@@ -319,6 +319,7 @@ function createSlackInteractionRouter({ admin, db }) {
 
         const slack = new WebClient(token);
         const sentAtLabel = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+        const value = JSON.stringify({ checkId });
         await slack.chat.update({
           channel: payload.channel.id,
           ts: payload.message.ts,
@@ -328,13 +329,34 @@ function createSlackInteractionRouter({ admin, db }) {
             {
               type: 'actions',
               elements: [
-                {
-                  type: 'button',
-                  text: { type: 'plain_text', text: 'もう一度確認送付する' },
-                  action_id: 'mall_resend_confirmation',
-                  value: JSON.stringify({ checkId })
-                }
+                { type: 'button', text: { type: 'plain_text', text: 'もう一度確認送付する' }, action_id: 'mall_resend_confirmation', value },
+                { type: 'button', text: { type: 'plain_text', text: '案件終了済み' }, action_id: 'mall_mark_finished', value }
               ]
+            }
+          ]
+        });
+        return;
+      }
+
+      if (action?.action_id === 'mall_mark_finished') {
+        const { checkId } = JSON.parse(action.value);
+        await db.collection('mallUpdateChecks').doc(checkId).set({
+          state: 'finished',
+          finishedAt: admin.firestore.Timestamp.now(),
+          confirmationRequestedAt: null,
+          lastEscalatedAt: null,
+          updatedAt: admin.firestore.Timestamp.now()
+        }, { merge: true });
+
+        const slack = new WebClient(token);
+        await slack.chat.update({
+          channel: payload.channel.id,
+          ts: payload.message.ts,
+          text: '案件終了として記録しました',
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: '🏁 案件終了として記録しました。今後の督促は止めます（次に新しいデータが入ったら自動的に監視を再開します）' }
             }
           ]
         });

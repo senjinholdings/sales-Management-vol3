@@ -18,6 +18,10 @@
  *   データが追いつかなければ30分おきに再督促（「もう一度確認送付する」ボタン）。
  *   人がボタンを押すのは送付系の2つだけで、反映確認はこの関数が自動で行う
  *   （次回チェック時にstaleDays < 7になっていれば自動でwatchingに戻し、完了報告を送る）
+ * - finished: 予算消化により案件が終了した場合に「案件終了済み」ボタンで入る状態。
+ *   ボタンを押した日以降の日付の売上データが新たに現れるまでは一切アラートしない。
+ *   再開の検知も人がボタンを押すのではなく自動判定（追加予算が付いてCSVが
+ *   新しい日付まで入稿された＝配信再開、とみなしwatchingへ自動的に戻す）
  */
 
 const fetch = require('node-fetch');
@@ -122,6 +126,7 @@ async function postMallAlert(slack, { product, channel, latestSalesDate, checkId
 
   const buttonText = mode === 'reminder' ? 'もう一度確認送付する' : 'クライアントに確認送付';
   const actionId = mode === 'reminder' ? 'mall_resend_confirmation' : 'mall_send_confirmation';
+  const value = JSON.stringify({ checkId });
 
   await slack.chat.postMessage({
     channel: NOTIFY_CHANNEL_ID,
@@ -131,7 +136,8 @@ async function postMallAlert(slack, { product, channel, latestSalesDate, checkId
       {
         type: 'actions',
         elements: [
-          { type: 'button', text: { type: 'plain_text', text: buttonText }, action_id: actionId, value: JSON.stringify({ checkId }) }
+          { type: 'button', text: { type: 'plain_text', text: buttonText }, action_id: actionId, value },
+          { type: 'button', text: { type: 'plain_text', text: '案件終了済み' }, action_id: 'mall_mark_finished', value }
         ]
       }
     ]
@@ -199,6 +205,33 @@ function createMallUpdateChecker({ admin, db }) {
         const canEscalate = Date.now() - (check.lastEscalatedAt?.toMillis?.() || 0) >= ESCALATION_THROTTLE_MS;
 
         try {
+          if (check.state === 'finished') {
+            // 終了ボタンを押した日より後の日付のデータが現れたら、配信再開とみなし自動で監視に戻す
+            const finishedDateStr = check.finishedAt?.toDate
+              ? check.finishedAt.toDate().toISOString().slice(0, 10)
+              : null;
+            const resumed = latestSalesDate && finishedDateStr && latestSalesDate > finishedDateStr;
+            if (resumed) {
+              await checkRef.set({
+                productId: product.id,
+                channel,
+                productName: product.productName || '',
+                latestSalesDate,
+                state: 'watching',
+                confirmationRequestedAt: null,
+                finishedAt: null,
+                lastEscalatedAt: null,
+                updatedAt: now
+              });
+              const mentions = await buildMentions(slack);
+              await slack.chat.postMessage({
+                channel: NOTIFY_CHANNEL_ID,
+                text: `${mentions} 🔄 ${product.productName || '(商品名不明)'}（${channel}）の配信が再開されたようです。監視を再開します`
+              });
+            }
+            continue;
+          }
+
           if (check.state === 'confirmation_sent') {
             if (staleDays < STALE_DAYS) {
               // データが追いついた＝反映確認。人が押すのではなくここで自動判定して完了報告する
