@@ -29,6 +29,10 @@ const createStaffRouter = require('./staff');
 const { createSlackInteractionRouter } = require('./slackApproval');
 // 日報の記入漏れ防止（タイマー超過アラート・振り返り未実施リマインド）
 const { createOverrunChecker, createReviewReminder } = require('./dailyReportGuard');
+// 朝のチェックの自動化（Slackダイジェスト）
+const { createMorningDigest } = require('./morningDigest');
+// モール別売上データの更新確認とSlack督促
+const { createMallUpdateChecker } = require('./mallUpdateGuard');
 
 // CORS を設定
 app.use(cors({
@@ -441,3 +445,13 @@ exports.checkDailyTimerOverruns = functions.runWith({ secrets: ['SLACK_BOT_TOKEN
 exports.dailyReviewReminder = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
   .pubsub.schedule('every 10 minutes').timeZone('Asia/Tokyo')
   .onRun(createReviewReminder({ db }));
+
+// 朝のチェックの自動化（毎朝8:00にSlackダイジェストを投稿）
+exports.morningDigest = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], timeoutSeconds: 300 })
+  .pubsub.schedule('0 8 * * *').timeZone('Asia/Tokyo')
+  .onRun(createMorningDigest({ db }));
+
+// モール別売上データの更新確認とSlack督促（30分おき）
+exports.checkMallUpdates = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], timeoutSeconds: 300 })
+  .pubsub.schedule('every 30 minutes').timeZone('Asia/Tokyo')
+  .onRun(createMallUpdateChecker({ admin, db }));

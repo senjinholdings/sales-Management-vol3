@@ -308,6 +308,39 @@ function createSlackInteractionRouter({ admin, db }) {
     const action = payload.actions?.[0];
 
     try {
+      if (action?.action_id === 'mall_send_confirmation' || action?.action_id === 'mall_resend_confirmation') {
+        const { checkId } = JSON.parse(action.value);
+        await db.collection('mallUpdateChecks').doc(checkId).set({
+          state: 'confirmation_sent',
+          confirmationRequestedAt: admin.firestore.Timestamp.now(),
+          lastEscalatedAt: null,
+          updatedAt: admin.firestore.Timestamp.now()
+        }, { merge: true });
+
+        const slack = new WebClient(token);
+        const sentAtLabel = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+        await slack.chat.update({
+          channel: payload.channel.id,
+          ts: payload.message.ts,
+          text: '確認送付済みです',
+          blocks: [
+            { type: 'section', text: { type: 'mrkdwn', text: `📨 確認送付済みです（${sentAtLabel}）` } },
+            {
+              type: 'actions',
+              elements: [
+                {
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'もう一度確認送付する' },
+                  action_id: 'mall_resend_confirmation',
+                  value: JSON.stringify({ checkId })
+                }
+              ]
+            }
+          ]
+        });
+        return;
+      }
+
       if (action?.action_id === 'regenerate_thank_you') {
         const { meetingId, dealId } = JSON.parse(action.value);
         const slack = new WebClient(token);
