@@ -66,6 +66,24 @@ function isWeekendDateStr(dateStr) {
   return day === 0 || day === 6;
 }
 
+/**
+ * 23:40〜1:00の督促が何回目かを、時刻から機械的に算出する（カウンタをDBに持たず、
+ * 時刻さえ分かれば一意に決まるようにするため。23:40が1回目、1:00が9回目）
+ */
+function followUpReminderCount(hour, minute) {
+  const minutesSince2330 = hour === 23 ? minute - 30 : hour === 0 ? 30 + minute : 90 + minute;
+  return minutesSince2330 / 10;
+}
+
+/** 督促回数に応じて語調を強める前置き文（回数が伸びるほど強くする） */
+function escalationTone(count) {
+  if (count <= 2) return '';
+  if (count <= 4) return 'まだ完了していません。';
+  if (count <= 6) return 'かなり時間が経っています。';
+  if (count <= 8) return '何度も催促していますが、まだ完了していません。今すぐお願いします。';
+  return '本日最後の連絡です。今すぐ対応してください。';
+}
+
 function isRunningTask(task) {
   const sessions = Array.isArray(task.sessions) ? task.sessions : [];
   return sessions.length > 0 && !sessions[sessions.length - 1].endedAt;
@@ -280,9 +298,12 @@ function createReviewReminder({ admin, db }) {
     if (!data || data.reviewCompletedAt) return; // セットアップ未実施 or 完了済みなら何もしない
 
     const reviewTask = tasks.find((t) => t.isReviewTask);
-    const text = reviewTask && isRunningTask(reviewTask)
+    const actionText = reviewTask && isRunningTask(reviewTask)
       ? '振り返りが終わったらDBで完了ボタンを押してください'
       : '作業を中断して振り返りを開始してください';
+    const count = followUpReminderCount(hour, minute);
+    const tone = escalationTone(count);
+    const text = `【${count}回目の督促】${tone}${tone ? ' ' : ''}${actionText}`;
 
     try {
       await notifyRepresentative(slack, REP_EMAIL, text, data.nightThreadTs || undefined);
