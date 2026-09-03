@@ -160,10 +160,12 @@ function jstHourStartMs(now, hour) {
 
 /**
  * タイマーの止め忘れ・つけ忘れチェック（10分おき）。
- * 「タイマー開始し忘れ」リマインドを送ったら、後でタイマーが押された時に
- * そのメッセージへスレッド返信できるよう、送信したSlackメッセージのts・送信時刻・
- * 実際にタイマーが止まっていた起点（直近の作業終了時刻。それも無ければ9時扱い）を
- * pendingIdleAlertとしてドキュメントに記録しておく（返信はcreateIdleResumeNotifierが行う）
+ * 同じ超過・同じ放置が続く間の再送はチャンネルを埋めないよう、初回だけ新規投稿し、
+ * 以後はその1通へのスレッド返信にする（超過タスクごとにpendingOverrunAlerts.{taskId}、
+ * 実行中タスクなしの放置にはpendingIdleAlertとしてスレッドの起点tsを記録）。
+ * 「タイマー開始し忘れ」の方は、後でタイマーが実際に押された時にそのスレッドへ
+ * 「何分後だったか」を返信できるよう、送信時刻・実際に止まっていた起点（直近の
+ * 作業終了時刻。それも無ければ9時扱い）も併せて記録する（返信はcreateIdleResumeNotifierが行う）
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createOverrunChecker({ admin, db }) {
@@ -183,41 +185,67 @@ function createOverrunChecker({ admin, db }) {
     for (const docSnap of snap.docs) {
       const data = docSnap.data();
       const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+      const existingOverrunAlerts = data.pendingOverrunAlerts || {};
+      const docUpdates = {};
 
       let anyRunning = false;
+      const stillOverrunTaskIds = new Set();
       for (const task of tasks) {
         if (!isRunningTask(task)) continue;
         anyRunning = true;
         if (!isOverrun(task)) continue;
+        stillOverrunTaskIds.add(task.id);
 
         try {
           const email = await findStaffEmail(db, data.representative);
           if (email) {
-            await notifyRepresentative(
+            const existingThreadTs = existingOverrunAlerts[task.id]?.threadTs;
+            const ts = await notifyRepresentative(
               slack,
               email,
-              `タスク『${task.name}』が予定時間を大幅に超過しています（予定${task.plannedMinutes}分・実績${Math.round(computeActualMinutes(task))}分）。タイマーを止め忘れていませんか？`
+              `タスク『${task.name}』が予定時間を大幅に超過しています（予定${task.plannedMinutes}分・実績${Math.round(computeActualMinutes(task))}分）。タイマーを止め忘れていませんか？`,
+              existingThreadTs || undefined
             );
+            if (!existingThreadTs) {
+              docUpdates[`pendingOverrunAlerts.${task.id}`] = { threadTs: ts };
+            }
           }
         } catch (error) {
           console.error('タイマー超過アラート送信失敗（続行）:', error.message);
         }
       }
 
+      // 超過が解消された（終了した）タスクのスレッド記録は消す。次に超過したら新しいスレッドで始める
+      Object.keys(existingOverrunAlerts).forEach((taskId) => {
+        if (!stillOverrunTaskIds.has(taskId)) {
+          docUpdates[`pendingOverrunAlerts.${taskId}`] = admin.firestore.FieldValue.delete();
+        }
+      });
+
       // 日中（9時〜22時未満）なのに実行中のタスクが1つもない＝タイマーの開始忘れの可能性
       if (!anyRunning && isDaytime) {
         try {
           const email = await findStaffEmail(db, data.representative);
           if (email) {
-            const ts = await notifyRepresentative(slack, email, '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？');
-            const idleSinceMs = latestSessionEndMs(tasks) ?? jstHourStartMs(now, IDLE_CHECK_START_HOUR);
-            await docSnap.ref.set({
-              pendingIdleAlert: { ts, sentAt: admin.firestore.Timestamp.now(), idleSinceMs }
-            }, { merge: true });
+            const existingAlert = data.pendingIdleAlert;
+            const ts = await notifyRepresentative(
+              slack,
+              email,
+              '現在実行中のタスクがありません。タイマーを開始し忘れていませんか？',
+              existingAlert?.threadTs || undefined
+            );
+            if (!existingAlert) {
+              const idleSinceMs = latestSessionEndMs(tasks) ?? jstHourStartMs(now, IDLE_CHECK_START_HOUR);
+              docUpdates.pendingIdleAlert = { threadTs: ts, sentAt: admin.firestore.Timestamp.now(), idleSinceMs };
+            }
           }
         } catch (error) {
           console.error('未実行リマインド送信失敗（続行）:', error.message);
         }
+      }
+
+      if (Object.keys(docUpdates).length > 0) {
+        await docSnap.ref.update(docUpdates);
       }
     }
   };
@@ -263,7 +291,7 @@ function createIdleResumeNotifier({ admin, db }) {
     const text = `▶️ タイマーが再開されました${details.length ? `（${details.join(' / ')}）` : ''}`;
 
     try {
-      await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.ts, text });
+      await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.threadTs, text });
     } catch (error) {
       console.error('タイマー再開リプライ送信失敗（続行）:', error.message);
     }

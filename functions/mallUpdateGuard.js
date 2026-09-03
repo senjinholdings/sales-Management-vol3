@@ -114,8 +114,28 @@ async function buildMentions(slack) {
   return [repId, managerId].filter(Boolean).map((id) => `<@${id}>`).join(' ');
 }
 
+/**
+ * 同じ案件（checkId）の督促・報告は1本のスレッドにまとめる。
+ * threadTsが無ければ新規投稿してそれをスレッドの起点として保存し、
+ * あれば返信する。反映確認・案件終了→再開などの「一区切り」イベントは
+ * 呼び出し側でスレッドを返信した後にthreadTsをクリアし、次の放置は新しいスレッドで始める
+ */
+async function postMallMessage(checkRef, check, slack, { text, blocks }) {
+  const threadTs = check.threadTs || null;
+  const result = await slack.chat.postMessage({
+    channel: NOTIFY_CHANNEL_ID,
+    text,
+    ...(blocks ? { blocks } : {}),
+    ...(threadTs ? { thread_ts: threadTs } : {})
+  });
+  if (!threadTs) {
+    await checkRef.set({ threadTs: result.ts }, { merge: true });
+  }
+  return result.ts;
+}
+
 /** 督促メッセージを投稿する（mode: 'initial'=初回放置検知 / 'reminder'=確認送付後1日超過） */
-async function postMallAlert(slack, { product, channel, latestSalesDate, checkId, mode }) {
+async function postMallAlert(slack, checkRef, check, { product, channel, latestSalesDate, checkId, mode }) {
   const mentions = await buildMentions(slack);
   const dateLabel = latestSalesDate ? `${latestSalesDate}までしかありません` : 'データが見つかりません';
   const productLabel = `${product.productName || '(商品名不明)'}（${channel}）`;
@@ -128,8 +148,7 @@ async function postMallAlert(slack, { product, channel, latestSalesDate, checkId
   const actionId = mode === 'reminder' ? 'mall_resend_confirmation' : 'mall_send_confirmation';
   const value = JSON.stringify({ checkId });
 
-  await slack.chat.postMessage({
-    channel: NOTIFY_CHANNEL_ID,
+  await postMallMessage(checkRef, check, slack, {
     text,
     blocks: [
       { type: 'section', text: { type: 'mrkdwn', text } },
@@ -212,6 +231,12 @@ function createMallUpdateChecker({ admin, db }) {
               : null;
             const resumed = latestSalesDate && finishedDateStr && latestSalesDate > finishedDateStr;
             if (resumed) {
+              // このスレッドはここで一区切り。次に放置が起きたら新しいスレッドで始める
+              // （直後のcheckRef.set()はthreadTsを含まないフルセットなので自動的にクリアされる）
+              const mentions = await buildMentions(slack);
+              await postMallMessage(checkRef, check, slack, {
+                text: `${mentions} 🔄 ${product.productName || '(商品名不明)'}（${channel}）の配信が再開されたようです。監視を再開します`
+              });
               await checkRef.set({
                 productId: product.id,
                 channel,
@@ -223,18 +248,18 @@ function createMallUpdateChecker({ admin, db }) {
                 lastEscalatedAt: null,
                 updatedAt: now
               });
-              const mentions = await buildMentions(slack);
-              await slack.chat.postMessage({
-                channel: NOTIFY_CHANNEL_ID,
-                text: `${mentions} 🔄 ${product.productName || '(商品名不明)'}（${channel}）の配信が再開されたようです。監視を再開します`
-              });
             }
             continue;
           }
 
           if (check.state === 'confirmation_sent') {
             if (staleDays < STALE_DAYS) {
-              // データが追いついた＝反映確認。人が押すのではなくここで自動判定して完了報告する
+              // データが追いついた＝反映確認。人が押すのではなくここで自動判定して完了報告する。
+              // ここでスレッドは一区切り（直後のcheckRef.set()がthreadTsを自動的にクリアする）
+              const mentions = await buildMentions(slack);
+              await postMallMessage(checkRef, check, slack, {
+                text: `${mentions} ✅ ${product.productName || '(商品名不明)'}（${channel}）の反映を確認しました`
+              });
               await checkRef.set({
                 productId: product.id,
                 channel,
@@ -245,17 +270,12 @@ function createMallUpdateChecker({ admin, db }) {
                 lastEscalatedAt: null,
                 updatedAt: now
               });
-              const mentions = await buildMentions(slack);
-              await slack.chat.postMessage({
-                channel: NOTIFY_CHANNEL_ID,
-                text: `${mentions} ✅ ${product.productName || '(商品名不明)'}（${channel}）の反映を確認しました`
-              });
               continue;
             }
 
             const requestedMs = check.confirmationRequestedAt?.toMillis?.() || 0;
             if (Date.now() - requestedMs >= CONFIRMATION_ESCALATE_AFTER_MS && canEscalate) {
-              await postMallAlert(slack, { product, channel, latestSalesDate, checkId, mode: 'reminder' });
+              await postMallAlert(slack, checkRef, check, { product, channel, latestSalesDate, checkId, mode: 'reminder' });
               await checkRef.set({ ...check, latestSalesDate, lastEscalatedAt: now, updatedAt: now }, { merge: true });
             }
             continue;
@@ -263,7 +283,7 @@ function createMallUpdateChecker({ admin, db }) {
 
           // state === 'watching'
           if (staleDays >= STALE_DAYS && canEscalate) {
-            await postMallAlert(slack, { product, channel, latestSalesDate, checkId, mode: 'initial' });
+            await postMallAlert(slack, checkRef, check, { product, channel, latestSalesDate, checkId, mode: 'initial' });
             await checkRef.set({
               productId: product.id,
               channel,

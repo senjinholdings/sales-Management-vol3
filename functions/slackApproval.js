@@ -325,7 +325,7 @@ function createSlackInteractionRouter({ admin, db }) {
           ts: payload.message.ts,
           text: '確認送付済みです',
           blocks: [
-            { type: 'section', text: { type: 'mrkdwn', text: `📨 確認送付済みです（${sentAtLabel}）` } },
+            { type: 'section', text: { type: 'mrkdwn', text: `📨 確認送付済みです（${sentAtLabel}・<@${payload.user.id}>が実行）` } },
             {
               type: 'actions',
               elements: [
@@ -356,7 +356,7 @@ function createSlackInteractionRouter({ admin, db }) {
           blocks: [
             {
               type: 'section',
-              text: { type: 'mrkdwn', text: '🏁 案件終了として記録しました。今後の督促は止めます（次に新しいデータが入ったら自動的に監視を再開します）' }
+              text: { type: 'mrkdwn', text: `🏁 案件終了として記録しました（<@${payload.user.id}>が実行）。今後の督促は止めます（次に新しいデータが入ったら自動的に監視を再開します）` }
             }
           ]
         });
@@ -414,7 +414,9 @@ function createSlackInteractionRouter({ admin, db }) {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: result.alreadySent ? 'すでに送信済みです' : `✅ 送信しました（${result.channel === 'chatwork' ? 'Chatwork' : 'Slack'}）`
+              text: result.alreadySent
+                ? 'すでに送信済みです'
+                : `✅ 送信しました（${result.channel === 'chatwork' ? 'Chatwork' : 'Slack'}・<@${payload.user.id}>が実行）`
             }
           }
         ]
