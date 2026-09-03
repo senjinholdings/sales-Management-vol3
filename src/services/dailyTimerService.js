@@ -377,7 +377,7 @@ export const reorderTasks = async (representative, date, orderedTaskIds) => {
  * 1日1件の振り返りを保存する（tasksには一切触れない）
  * @param {string} representative - 担当者名
  * @param {string} date - "YYYY-MM-DD"
- * @param {{notAchieved: string, timeImprovement: string, reflection: string, nextAction: string}} review
+ * @param {{notAchieved: string, timeImprovement: string, reflection: string, nextAction: string, scheduleGapReason: string}} review
  */
 export const saveReview = async (representative, date, review) => {
   try {
@@ -389,7 +389,8 @@ export const saveReview = async (representative, date, review) => {
         notAchieved: review.notAchieved || '',
         timeImprovement: review.timeImprovement || '',
         reflection: review.reflection || '',
-        nextAction: review.nextAction || ''
+        nextAction: review.nextAction || '',
+        scheduleGapReason: review.scheduleGapReason || ''
       },
       updatedAt: Timestamp.now()
     }, { merge: true });
@@ -445,4 +446,31 @@ export const fetchDatesWithData = async (startDate, endDate) => {
     console.error('Failed to fetch dates with data:', error);
     throw error;
   }
+};
+
+// ============================================
+// 夜の振り返り完了（Cloud Functions経由。Slack通知を伴うためFirestore直書きではなくAPI経由にする）
+// ============================================
+
+const APP_API_BASE = 'https://sales-management-staging.web.app/api';
+const APP_SECRET = process.env.REACT_APP_MEETING_SCHEDULE_SECRET || '';
+
+/**
+ * 夜の振り返りの完了を記録し、Slackへ完了報告を送る（functions/staff.jsのnight-review-complete）。
+ * 「終わったかどうか」の唯一の判定基準はこの記録で、振り返り欄の文字入力では判定しない
+ * @param {string} representative - 担当者名
+ * @param {string} date - "YYYY-MM-DD"
+ */
+export const completeNightReview = async (representative, date) => {
+  const res = await fetch(`${APP_API_BASE}/staff/night-review-complete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(APP_SECRET ? { 'x-app-secret': APP_SECRET } : {})
+    },
+    body: JSON.stringify({ representative, date })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
 };

@@ -8,17 +8,21 @@
 
 const express = require('express');
 const fetch = require('node-fetch');
+const { WebClient } = require('@slack/web-api');
 const { getSecret, setSecret, hasSecret, chatworkSecretName } = require('./secrets');
-const { requireAppSecret } = require('./authHelpers');
+const { requireAppSecret, env } = require('./authHelpers');
+const { resolveSlackUserId } = require('./slackApproval');
 
 const CHATWORK_API_BASE = 'https://api.chatwork.com/v2';
+const NIGHT_REVIEW_NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR'; // #営業_日報
+const MANAGER_EMAIL = 'yoh.masuda@senjinholdings.com';
 
 /** ChatworkのAPIトークンをASCII化してから使う（全角混入によるヘッダーエラー事故対策） */
 function sanitizeToken(token) {
   return String(token).trim().replace(/[^\x20-\x7e]/g, '');
 }
 
-function createStaffRouter({ db }) {
+function createStaffRouter({ admin, db }) {
   const router = express.Router();
 
   /**
@@ -148,6 +152,56 @@ function createStaffRouter({ db }) {
       return res.status(200).json({ members: result });
     } catch (error) {
       console.error('Chatworkルームメンバー取得エラー:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  /**
+   * POST /api/staff/night-review-complete
+   * body: { representative: string, date: string ("YYYY-MM-DD") }
+   * 日報画面の「完了」ボタンから呼ばれる。夜の振り返りが終わったことを記録し、
+   * その日の夜チェックスレッド（無ければ通常投稿）に増田さん宛の完了報告を送る。
+   * 「終わったかどうか」の唯一の判定基準はこのreviewCompletedAtで、
+   * 振り返り欄に文字が入っているかどうかでは判定しない（functions/dailyReportGuard.js参照）
+   */
+  router.post('/night-review-complete', async (req, res) => {
+    if (!requireAppSecret(req, res)) return;
+    try {
+      const { representative, date } = req.body || {};
+      if (!representative || !date) {
+        return res.status(400).json({ error: 'representative, date は必須です' });
+      }
+
+      const docRef = db.collection('dailyTimers').doc(`${representative}_${date}`);
+      const snap = await docRef.get();
+      if (!snap.exists) {
+        return res.status(404).json({ error: '対象の日報データが見つかりません' });
+      }
+      const data = snap.data();
+
+      await docRef.update({
+        reviewCompletedAt: admin.firestore.Timestamp.now()
+      });
+
+      const token = env('SLACK_BOT_TOKEN');
+      if (token) {
+        try {
+          const slack = new WebClient(token);
+          const managerId = await resolveSlackUserId(slack, MANAGER_EMAIL);
+          const mention = managerId ? `<@${managerId}> ` : '';
+          await slack.chat.postMessage({
+            channel: NIGHT_REVIEW_NOTIFY_CHANNEL_ID,
+            text: `${mention}✅ ${representative}さんが夜の振り返りを完了しました`,
+            ...(data.nightThreadTs ? { thread_ts: data.nightThreadTs } : {})
+          });
+        } catch (slackError) {
+          console.error('完了通知のSlack送信失敗（続行）:', slackError.message);
+        }
+      }
+
+      return res.status(200).json({ success: true });
+    } catch (error) {
+      console.error('夜の振り返り完了記録エラー:', error);
       return res.status(500).json({ error: error.message });
     }
   });

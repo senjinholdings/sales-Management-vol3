@@ -15,7 +15,8 @@ import {
   FiEdit3,
   FiSave,
   FiLink,
-  FiMenu
+  FiMenu,
+  FiCheck
 } from 'react-icons/fi';
 import { fetchStaffByRole } from '../services/staffService.js';
 import {
@@ -30,7 +31,8 @@ import {
   getTaskSessions,
   updateTaskDetails,
   reorderTasks,
-  planNextDayTasks
+  planNextDayTasks,
+  completeNightReview
 } from '../services/dailyTimerService.js';
 
 // ============================================
@@ -854,18 +856,26 @@ const REVIEW_FIELDS = [
   { key: 'nextAction', label: 'NA（明日のネクストアクション）' }
 ];
 
+// 未完了タスクの予定時間合計が2時間以上の日だけ表示する追加欄
+const CONDITIONAL_REVIEW_FIELDS = [
+  { key: 'scheduleGapReason', label: 'なぜこんなに予定とズレたのか' }
+];
+
+const ALL_REVIEW_FIELDS = [...REVIEW_FIELDS, ...CONDITIONAL_REVIEW_FIELDS];
+
 const normalizeReview = (review = {}) => ({
   notAchieved: review.notAchieved || '',
   timeImprovement: review.timeImprovement || '',
   reflection: review.reflection || '',
-  nextAction: review.nextAction || ''
+  nextAction: review.nextAction || '',
+  scheduleGapReason: review.scheduleGapReason || ''
 });
 
 const hasReviewContent = (review) =>
-  REVIEW_FIELDS.some((f) => (review[f.key] || '').trim() !== '');
+  ALL_REVIEW_FIELDS.some((f) => (review[f.key] || '').trim() !== '');
 
 const isSameReview = (a, b) =>
-  REVIEW_FIELDS.every((f) => a[f.key] === b[f.key]);
+  ALL_REVIEW_FIELDS.every((f) => a[f.key] === b[f.key]);
 
 /** カレンダーのセル（月初までの空セルはnull） */
 const buildCalendarCells = ({ year, month }) => {
@@ -1023,15 +1033,30 @@ const DailyTimerPage = () => {
     if (nextDayPlanKeyRef.current === key) return;
     nextDayPlanKeyRef.current = key;
     setNextDayPlan(
-      unfinishedTasks.map(({ task }) => ({
-        localId: `carry_${task.id}`,
-        name: task.name,
-        plannedMinutes: task.plannedMinutes,
-        plannedStartTime: null,
-        fromCarryover: true
-      }))
+      unfinishedTasks
+        .filter(({ task }) => !task.isReviewTask) // 「振り返り」枠は毎日自動で作られるため繰越候補には出さない
+        .map(({ task }) => ({
+          localId: `carry_${task.id}`,
+          name: task.name,
+          plannedMinutes: task.plannedMinutes,
+          plannedStartTime: null,
+          fromCarryover: true
+        }))
     );
   }, [unfinishedTasks, loadedDate, representative]);
+
+  // 未完了タスク（振り返り枠を除く）の予定時間合計。2時間以上ズレていたら
+  // 振り返り欄に「なぜズレたのか」の入力欄を追加で出す
+  const unfinishedPlannedMinutesTotal = useMemo(() => (
+    unfinishedTasks
+      .filter(({ task }) => !task.isReviewTask)
+      .reduce((sum, { task }) => sum + (task.plannedMinutes || 0), 0)
+  ), [unfinishedTasks]);
+  const showScheduleGapField = unfinishedPlannedMinutesTotal >= 120;
+
+  // 夜の振り返りが完了したかどうかは、この記録の有無だけで判定する
+  // （振り返り欄に文字が入っているかどうかでは判定しない）
+  const reviewCompleted = !!dayDocs.find((d) => d.representative === representative)?.reviewCompletedAt;
 
   const addNextDayTask = () => {
     if (!nextDayTaskName.trim()) return;
@@ -1312,6 +1337,17 @@ const DailyTimerPage = () => {
         plannedMinutes: t.plannedMinutes,
         plannedStartTime: t.plannedStartTime
       })));
+    });
+  };
+
+  const handleCompleteReview = () => {
+    if (!representative) {
+      window.alert('担当者を選択してください');
+      return;
+    }
+    if (!window.confirm('夜の振り返りを完了として記録します。よろしいですか？')) return;
+    runMutation(async () => {
+      await completeNightReview(representative, selectedDate);
     });
   };
 
@@ -1770,7 +1806,8 @@ const DailyTimerPage = () => {
             <FiEdit3 /> 振り返り{representative ? `（${representative}）` : ''}
           </ReviewHeaderLeft>
           <ReviewHeaderRight>
-            {hasReviewContent(savedReview) && <ReviewSavedBadge>記入済み</ReviewSavedBadge>}
+            {reviewCompleted && <ReviewSavedBadge>✅ 完了済み</ReviewSavedBadge>}
+            {!reviewCompleted && hasReviewContent(savedReview) && <ReviewSavedBadge>記入済み</ReviewSavedBadge>}
             {reviewOpen ? <FiChevronUp size={18} /> : <FiChevronDown size={18} />}
           </ReviewHeaderRight>
         </ReviewHeaderButton>
@@ -1868,6 +1905,20 @@ const DailyTimerPage = () => {
                 />
               </ReviewField>
             ))}
+            {showScheduleGapField && CONDITIONAL_REVIEW_FIELDS.map((field) => (
+              <ReviewField key={field.key}>
+                <ReviewLabel htmlFor={`review-${field.key}`}>
+                  {field.label}（未完了タスクの予定時間合計が{unfinishedPlannedMinutesTotal}分あります）
+                </ReviewLabel>
+                <ReviewTextarea
+                  id={`review-${field.key}`}
+                  value={reviewDraft[field.key]}
+                  onChange={(e) =>
+                    setReviewDraft((prev) => ({ ...prev, [field.key]: e.target.value }))
+                  }
+                />
+              </ReviewField>
+            ))}
             <ReviewFooter>
               {reviewDirty && <UnsavedText>未保存の変更があります</UnsavedText>}
               <AddButton
@@ -1875,6 +1926,12 @@ const DailyTimerPage = () => {
                 disabled={saving || !representative || !reviewDirty}
               >
                 <FiSave size={14} /> 保存
+              </AddButton>
+              <AddButton
+                onClick={handleCompleteReview}
+                disabled={saving || !representative || reviewCompleted}
+              >
+                <FiCheck size={14} /> {reviewCompleted ? '完了済み' : '完了'}
               </AddButton>
             </ReviewFooter>
           </ReviewBody>

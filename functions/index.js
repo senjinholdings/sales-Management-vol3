@@ -444,7 +444,7 @@ exports.checkDailyTimerOverruns = functions.runWith({ secrets: ['SLACK_BOT_TOKEN
 // 日報: 振り返り・翌日計画の未実施リマインド（10分おきに実行し、内部でJST時刻に応じて分岐）
 exports.dailyReviewReminder = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
   .pubsub.schedule('every 10 minutes').timeZone('Asia/Tokyo')
-  .onRun(createReviewReminder({ db }));
+  .onRun(createReviewReminder({ admin, db }));
 
 // 朝のチェックの自動化（毎朝8:00にSlackダイジェストを投稿）
 exports.morningDigest = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], timeoutSeconds: 300 })
