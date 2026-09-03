@@ -4,8 +4,9 @@
  *   動いたままのタスク、(b) 日中（9時〜22時未満）なのに誰も実行中のタスクがない状態、
  *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
  *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）
- * - 夜の振り返りフロー: 平日は日付が変わり次第「振り返り」タスク枠（23:30〜24:00）を
- *   前もって自動で用意しておく（固定枠。23:30を待たない）。23:30になったらSlackスレッドを
+ * - 夜の振り返りフロー: 平日分は今日から先2週間ぶん「振り返り」タスク枠（23:30〜24:00）を
+ *   前もって自動で用意しておく（固定枠。カレンダーで先の日付を開いても既に入っている）。
+ *   23:30になったらSlackスレッドを
  *   1本立てて開始連絡をし、以後23:40〜1:00は10分おきに、そのスレッドへ催促を返信し続ける。
  *   止まるのは「完了」ボタン（functions/staff.jsのnight-review-completeエンドポイント）が
  *   押された時だけで、文字が入力されたかどうかでは判定しない。土日は枠の用意・催促とも行わない
@@ -36,6 +37,8 @@ const REP_EMAIL = 'hikaru.arahata@senjinholdings.com';
 const REVIEW_TASK_NAME = '振り返り';
 const REVIEW_TASK_START_TIME = '23:30';
 const REVIEW_TASK_MINUTES = 30;
+// 「振り返り」枠を先々の日付までどれだけ前もって用意しておくか（今日を含め何日分か）
+const REVIEW_TASK_PREP_DAYS_AHEAD = 14;
 
 // 通知先は個人DMではなく#営業_日報チャンネル。担当者本人＋増田さんの両方をメンションする
 const NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR';
@@ -190,30 +193,34 @@ function createReviewReminder({ admin, db }) {
     const { hour, minute } = jstHourMinute(now);
     const todayStr = toJstDateStr(now);
 
-    // 「振り返り」枠は当日分を毎回（時刻を問わず）用意しておく。土日は作らない
-    if (!isWeekendDateStr(todayStr)) {
-      const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${todayStr}`);
+    // 「振り返り」枠は今日から先の数日分（土日を除く）を毎回（時刻を問わず）前もって用意しておく。
+    // 未来日の分もあらかじめ入っているので、カレンダーで先の日付を開いても既に見える
+    for (let offset = 0; offset < REVIEW_TASK_PREP_DAYS_AHEAD; offset++) {
+      const dateStr = toJstDateStr(new Date(now.getTime() + offset * 24 * 60 * 60 * 1000));
+      if (isWeekendDateStr(dateStr)) continue;
+
+      const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${dateStr}`);
       const snap = await docRef.get();
       const tasks = Array.isArray(snap.data()?.tasks) ? snap.data().tasks : [];
-      if (!tasks.some((t) => t.isReviewTask)) {
-        await docRef.set({
-          representative: REP_NAME,
-          date: todayStr,
-          tasks: [
-            ...tasks,
-            {
-              id: `task_${Date.now()}_review`,
-              name: REVIEW_TASK_NAME,
-              plannedMinutes: REVIEW_TASK_MINUTES,
-              plannedStartTime: REVIEW_TASK_START_TIME,
-              sessions: [],
-              source: 'system',
-              isReviewTask: true
-            }
-          ],
-          updatedAt: admin.firestore.Timestamp.now()
-        }, { merge: true });
-      }
+      if (tasks.some((t) => t.isReviewTask)) continue;
+
+      await docRef.set({
+        representative: REP_NAME,
+        date: dateStr,
+        tasks: [
+          ...tasks,
+          {
+            id: `task_${Date.now()}_review_${offset}`,
+            name: REVIEW_TASK_NAME,
+            plannedMinutes: REVIEW_TASK_MINUTES,
+            plannedStartTime: REVIEW_TASK_START_TIME,
+            sessions: [],
+            source: 'system',
+            isReviewTask: true
+          }
+        ],
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
     }
 
     const isSetupSlot = hour === 23 && minute === 30;
