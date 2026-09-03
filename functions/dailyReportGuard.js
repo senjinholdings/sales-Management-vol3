@@ -4,11 +4,11 @@
  *   動いたままのタスク、(b) 日中（9時〜22時未満）なのに誰も実行中のタスクがない状態、
  *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
  *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）
- * - 夜の振り返りフロー: 23:30に「振り返り」タスク枠（23:30〜24:00）を自動で用意し、
- *   同時にSlackスレッドを1本立てる。以後23:40〜1:00は10分おきに、そのスレッドへ
- *   催促を返信し続ける。止まるのは「完了」ボタン（functions/staff.jsの
- *   night-review-completeエンドポイント）が押された時だけで、文字が入力された
- *   かどうかでは判定しない
+ * - 夜の振り返りフロー: 平日は日付が変わり次第「振り返り」タスク枠（23:30〜24:00）を
+ *   前もって自動で用意しておく（固定枠。23:30を待たない）。23:30になったらSlackスレッドを
+ *   1本立てて開始連絡をし、以後23:40〜1:00は10分おきに、そのスレッドへ催促を返信し続ける。
+ *   止まるのは「完了」ボタン（functions/staff.jsのnight-review-completeエンドポイント）が
+ *   押された時だけで、文字が入力されたかどうかでは判定しない。土日は枠の用意・催促とも行わない
  *
  * Slackへの送信は個人DMではなく、#営業_日報チャンネル（担当者・増田さんの両方が
  * 参加済み）への投稿＋両者へのメンションで行う。ユーザー本人だけでは「自分に届いて
@@ -54,6 +54,13 @@ function toJstDateStr(date) {
 function jstHourMinute(date) {
   const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
   return { hour: jst.getUTCHours(), minute: jst.getUTCMinutes() };
+}
+
+/** "YYYY-MM-DD" が土曜・日曜かどうか（カレンダー日付そのものの曜日なので実行環境のタイムゾーンに依存しない） */
+function isWeekendDateStr(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const day = new Date(y, m - 1, d).getDay();
+  return day === 0 || day === 6;
 }
 
 function isRunningTask(task) {
@@ -170,8 +177,10 @@ function createOverrunChecker({ db }) {
 }
 
 /**
- * 夜の振り返りフロー（10分おきに実行し、JST時刻で内部分岐）。
- * - 23:30: 「振り返り」タスク枠を用意し、Slackスレッドを1本立てる
+ * 夜の振り返りフロー（10分おきに実行し、JST時刻で内部分岐）。土日は完全にスキップする。
+ * - 常時: 「振り返り」タスク枠（23:30〜24:00）を平日分は前もって用意しておく
+ *   （23:30を待たず、日付が変わり次第すぐ日報に見える固定枠にする）
+ * - 23:30: Slackスレッドを1本立てて開始連絡をする
  * - 23:40〜1:00（10分おき）: reviewCompletedAtが立つまでスレッドへ督促を返信し続ける
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
@@ -179,9 +188,41 @@ function createReviewReminder({ admin, db }) {
   return async () => {
     const now = new Date();
     const { hour, minute } = jstHourMinute(now);
+    const todayStr = toJstDateStr(now);
+
+    // 「振り返り」枠は当日分を毎回（時刻を問わず）用意しておく。土日は作らない
+    if (!isWeekendDateStr(todayStr)) {
+      const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${todayStr}`);
+      const snap = await docRef.get();
+      const tasks = Array.isArray(snap.data()?.tasks) ? snap.data().tasks : [];
+      if (!tasks.some((t) => t.isReviewTask)) {
+        await docRef.set({
+          representative: REP_NAME,
+          date: todayStr,
+          tasks: [
+            ...tasks,
+            {
+              id: `task_${Date.now()}_review`,
+              name: REVIEW_TASK_NAME,
+              plannedMinutes: REVIEW_TASK_MINUTES,
+              plannedStartTime: REVIEW_TASK_START_TIME,
+              sessions: [],
+              source: 'system',
+              isReviewTask: true
+            }
+          ],
+          updatedAt: admin.firestore.Timestamp.now()
+        }, { merge: true });
+      }
+    }
+
     const isSetupSlot = hour === 23 && minute === 30;
     const isFollowUpSlot = (hour === 23 && minute >= 40) || hour === 0 || (hour === 1 && minute === 0);
     if (!isSetupSlot && !isFollowUpSlot) return;
+
+    // 0時・1時台は日付が変わっているため、督促対象は前日（23:30に始まった振り返り）を指す
+    const reviewDateStr = hour === 23 ? todayStr : toJstDateStr(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+    if (isWeekendDateStr(reviewDateStr)) return; // 土日は振り返りなし＝催促もなし
 
     const token = env('SLACK_BOT_TOKEN');
     if (!token) {
@@ -190,65 +231,47 @@ function createReviewReminder({ admin, db }) {
     }
     const slack = new WebClient(token);
 
-    const todayStr = toJstDateStr(now);
-    const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${todayStr}`);
+    const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${reviewDateStr}`);
     const snap = await docRef.get();
     const data = snap.exists ? snap.data() : null;
+    const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
 
     if (isSetupSlot) {
-      const tasks = Array.isArray(data?.tasks) ? [...data.tasks] : [];
-      const hasReviewTask = tasks.some((t) => t.isReviewTask);
-      if (!hasReviewTask) {
-        tasks.push({
-          id: `task_${Date.now()}_review`,
-          name: REVIEW_TASK_NAME,
-          plannedMinutes: REVIEW_TASK_MINUTES,
-          plannedStartTime: REVIEW_TASK_START_TIME,
-          sessions: [],
-          source: 'system',
-          isReviewTask: true
-        });
+      if (data?.nightThreadTs) return; // 既に開始連絡済み
+
+      // その日超過したタスク・未完了予定時間の合計を添えて最初の投稿をする
+      const overrunLines = tasks
+        .filter((t) => !t.isReviewTask && isOverrun(t))
+        .map((t) => `・${t.name}（予定${t.plannedMinutes}分 / 実績${Math.round(computeActualMinutes(t))}分）`);
+      const unfinishedTotal = tasks
+        .filter((t) => !t.isReviewTask && isTaskUnfinished(t))
+        .reduce((sum, t) => sum + (t.plannedMinutes || 0), 0);
+
+      let text = `📋 ${reviewDateStr} 夜チェック\n23時30分になりました。作業をやめて夜の振り返りに移行してください。`;
+      if (overrunLines.length > 0) {
+        text += `\n\n本日、予定を大幅に超過したタスク:\n${overrunLines.join('\n')}`;
+      }
+      if (unfinishedTotal >= 120) {
+        text += `\n\n⚠️ 未完了タスクの予定時間合計が${unfinishedTotal}分あります。振り返りで理由も書いてください`;
       }
 
-      const updates = {
-        representative: REP_NAME,
-        date: todayStr,
-        tasks,
-        updatedAt: admin.firestore.Timestamp.now()
-      };
-
-      if (!data?.nightThreadTs) {
-        // その日超過したタスク・未完了予定時間の合計を添えて最初の投稿をする
-        const overrunLines = tasks
-          .filter((t) => !t.isReviewTask && isOverrun(t))
-          .map((t) => `・${t.name}（予定${t.plannedMinutes}分 / 実績${Math.round(computeActualMinutes(t))}分）`);
-        const unfinishedTotal = tasks
-          .filter((t) => !t.isReviewTask && isTaskUnfinished(t))
-          .reduce((sum, t) => sum + (t.plannedMinutes || 0), 0);
-
-        let text = `📋 ${todayStr} 夜チェック\n23時30分になりました。作業をやめて夜の振り返りに移行してください。`;
-        if (overrunLines.length > 0) {
-          text += `\n\n本日、予定を大幅に超過したタスク:\n${overrunLines.join('\n')}`;
-        }
-        if (unfinishedTotal >= 120) {
-          text += `\n\n⚠️ 未完了タスクの予定時間合計が${unfinishedTotal}分あります。振り返りで理由も書いてください`;
-        }
-
-        try {
-          updates.nightThreadTs = await notifyRepresentative(slack, REP_EMAIL, text);
-        } catch (error) {
-          console.error('夜チェックスレッド作成失敗（続行）:', error.message);
-        }
+      try {
+        const threadTs = await notifyRepresentative(slack, REP_EMAIL, text);
+        await docRef.set({
+          representative: REP_NAME,
+          date: reviewDateStr,
+          nightThreadTs: threadTs,
+          updatedAt: admin.firestore.Timestamp.now()
+        }, { merge: true });
+      } catch (error) {
+        console.error('夜チェックスレッド作成失敗（続行）:', error.message);
       }
-
-      await docRef.set(updates, { merge: true });
       return;
     }
 
     // フォローアップ（23:40〜1:00、10分おき）
     if (!data || data.reviewCompletedAt) return; // セットアップ未実施 or 完了済みなら何もしない
 
-    const tasks = Array.isArray(data.tasks) ? data.tasks : [];
     const reviewTask = tasks.find((t) => t.isReviewTask);
     const text = reviewTask && isRunningTask(reviewTask)
       ? '振り返りが終わったらDBで完了ボタンを押してください'

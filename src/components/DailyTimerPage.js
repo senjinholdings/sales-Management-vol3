@@ -355,6 +355,16 @@ const PlannedBadge = styled.span`
   white-space: nowrap;
 `;
 
+const FixedBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6c5ce7;
+  background: #ecebfd;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
 const ElapsedText = styled.span`
   font-size: 0.9rem;
   font-weight: 600;
@@ -1490,6 +1500,7 @@ const DailyTimerPage = () => {
       return (
         <TaskRow key={task.id}>
           <TaskName>{task.name}</TaskName>
+          {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {scheduleLabel && <PlannedBadge>{scheduleLabel}</PlannedBadge>}
           <ActionButton onClick={() => handleStart(rep, task.id)} disabled={saving}>
             <FiPlay size={12} /> 開始
@@ -1497,10 +1508,12 @@ const DailyTimerPage = () => {
           {editIcon}
           {insertIcon}
           {linkIcon}
-          {/* 開始済みの行は記録の信頼性を守るため削除ボタン自体を出さない */}
-          <DeleteButton onClick={() => handleDelete(rep, task.id)} disabled={saving}>
-            <FiTrash2 size={14} />
-          </DeleteButton>
+          {/* 開始済みの行・毎日自動で用意される固定枠は削除ボタン自体を出さない */}
+          {!task.isReviewTask && (
+            <DeleteButton onClick={() => handleDelete(rep, task.id)} disabled={saving}>
+              <FiTrash2 size={14} />
+            </DeleteButton>
+          )}
         </TaskRow>
       );
     }
@@ -1513,6 +1526,7 @@ const DailyTimerPage = () => {
       return (
         <TaskRow key={task.id} $running $overdue={overdue}>
           <TaskName>{task.name}</TaskName>
+          {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           {hasPlanned && <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>}
           <ElapsedText $overdue={overdue}>経過 {formatElapsed(elapsedMs)}</ElapsedText>
@@ -1542,6 +1556,7 @@ const DailyTimerPage = () => {
       return (
         <TaskRow key={task.id}>
           <TaskName>{task.name}</TaskName>
+          {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
           {resumeButton}
@@ -1556,6 +1571,7 @@ const DailyTimerPage = () => {
     return (
       <TaskRow key={task.id} $overdue={overdue}>
         <TaskName>{task.name}</TaskName>
+        {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
         {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
         <ResultText $overdue={overdue}>
           予定{task.plannedMinutes}分 / 実績{formatActual(actualMs)}
