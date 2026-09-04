@@ -1092,6 +1092,10 @@ const DailyTimerPage = () => {
   // （振り返り欄に文字が入っているかどうかでは判定しない）
   const reviewCompleted = !!dayDocs.find((d) => d.representative === representative)?.reviewCompletedAt;
 
+  // タイマー止め忘れ・つけ忘れによる「不正確な時間」の合計とリマインド回数
+  // （超過分＋タイマー未開始で空いていた時間。functions/dailyReportGuard.jsが日々積み上げて記録する）
+  const timeAccuracy = dayDocs.find((d) => d.representative === representative)?.timeAccuracy;
+
   const addNextDayTask = () => {
     if (!nextDayTaskName.trim()) return;
     setNextDayPlan((prev) => [...prev, {
@@ -1923,6 +1927,17 @@ const DailyTimerPage = () => {
                     </TaskRow>
                   ))}
                 </TaskList>
+              )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
+              <ReviewSummaryTitle>本日の記入漏れ状況</ReviewSummaryTitle>
+              {!timeAccuracy || (!timeAccuracy.inaccurateMinutes && !timeAccuracy.reminderCount) ? (
+                <ReviewSummaryEmpty>タイマーの止め忘れ・つけ忘れはありませんでした</ReviewSummaryEmpty>
+              ) : (
+                <ReviewSummaryEmpty>
+                  不正確な時間 合計{timeAccuracy.inaccurateMinutes || 0}分（超過分＋タイマー未開始で空いていた時間） /
+                  リマインド{timeAccuracy.reminderCount || 0}回
+                </ReviewSummaryEmpty>
               )}
             </ReviewSummaryBlock>
             <ReviewSummaryBlock>

@@ -6,7 +6,11 @@
  *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）。
  *   (b)は10分おきの検知を待たず、日中に実行中のタスクが0件になった瞬間（Firestore
  *   トリガー）にも即座に一報を送る。その際、直前まで動いていたタスク名と実績時間も添える
- *   （createIdleResumeNotifier。タイマーが再開された時のスレッド返信も同じ関数が担当）
+ *   （createIdleResumeNotifier。タイマーが再開された時のスレッド返信、超過タスクが終了した
+ *   時の即時報告、後からの時刻修正による実績のズレ検知も同じ関数が担当）。
+ *   これら記入漏れ由来の「不正確な時間」の合計（超過分＋タイマー未開始で空いていた時間）と
+ *   リマインドが送られた回数は、dailyTimersドキュメントのtimeAccuracy.inaccurateMinutes /
+ *   timeAccuracy.reminderCountとして日ごとに積み上げて記録する（振り返り画面で表示する）
  * - 夜の振り返りフロー: 平日分は今日から先2週間ぶん、振り返りの4区切り（各10分・
  *   23:20/23:30/23:40/23:50スタート）を前もって自動で用意しておく（固定枠。
  *   カレンダーで先の日付を開いても既に入っている）。23:20になったらSlackスレッドを
@@ -208,6 +212,7 @@ function createOverrunChecker({ admin, db }) {
       const tasks = Array.isArray(data.tasks) ? data.tasks : [];
       const existingOverrunAlerts = data.pendingOverrunAlerts || {};
       const docUpdates = {};
+      let remindersSent = 0;
 
       let anyRunning = false;
       const stillOverrunTaskIds = new Set();
@@ -230,6 +235,7 @@ function createOverrunChecker({ admin, db }) {
             if (!existingThreadTs) {
               docUpdates[`pendingOverrunAlerts.${task.id}`] = { threadTs: ts };
             }
+            remindersSent += 1;
           }
         } catch (error) {
           console.error('タイマー超過アラート送信失敗（続行）:', error.message);
@@ -259,10 +265,15 @@ function createOverrunChecker({ admin, db }) {
               const idleSinceMs = latestSessionEndMs(tasks) ?? jstHourStartMs(now, IDLE_CHECK_START_HOUR);
               docUpdates.pendingIdleAlert = { threadTs: ts, sentAt: admin.firestore.Timestamp.now(), idleSinceMs };
             }
+            remindersSent += 1;
           }
         } catch (error) {
           console.error('未実行リマインド送信失敗（続行）:', error.message);
         }
+      }
+
+      if (remindersSent > 0) {
+        docUpdates['timeAccuracy.reminderCount'] = admin.firestore.FieldValue.increment(remindersSent);
       }
 
       if (Object.keys(docUpdates).length > 0) {
@@ -273,14 +284,20 @@ function createOverrunChecker({ admin, db }) {
 }
 
 /**
- * タイマーの停止・再開の通知（Firestoreトリガー、dailyTimersのonUpdate）。2つの向きを扱う:
- * - 実行中タスクが1→0に変わった瞬間（日中9時〜22時未満のみ）: 直前まで動いていたタスク名・
- *   実績時間つきで、その場で「現在実行中のタスクがありません」の一報を送る（10分おきの
- *   定期チェックを待たない）。このメッセージ自体がpendingIdleAlertの起点になる
- * - 「タイマー開始し忘れ」リマインド（pendingIdleAlert、上記の一報 or 定期チェックのどちらかで
- *   セットされる）が残っている状態で、実行中タスクが0→1に変わった（＝タイマーが押された）
- *   瞬間: 同じスレッドへ「リマインドから何分後だったか」「実際に止まっていた合計時間」を
- *   返信し、pendingIdleAlertを消す
+ * タイマーの停止・再開・修正の通知（Firestoreトリガー、dailyTimersのonUpdate）。4つのケースを扱う:
+ * (1) 超過していたタスクが終了した瞬間: 実績時間つきで即座に知らせ、超過分（実績-予定）を
+ *     dailyTimers.timeAccuracy.inaccurateMinutesに加算する。既に督促スレッドがあれば返信する
+ * (2) 実行中タスクが1→0に変わった瞬間（日中9時〜22時未満のみ）: 直前まで動いていたタスク名・
+ *     実績時間つきで、その場で「現在実行中のタスクがありません」の一報を送る（10分おきの
+ *     定期チェックを待たない）。このメッセージ自体がpendingIdleAlertの起点になり、
+ *     timeAccuracy.reminderCountを1つ増やす
+ * (3) 「タイマー開始し忘れ」リマインド（pendingIdleAlert、(2)or定期チェックのどちらかで
+ *     セットされる）が残っている状態で、実行中タスクが0→1に変わった（＝タイマーが押された）
+ *     瞬間: 同じスレッドへ「リマインドから何分後だったか」「実際に止まっていた合計時間」を
+ *     返信し、pendingIdleAlertを消す。止まっていた時間もinaccurateMinutesに加算する
+ * (4) (1)or(2)で一度「実績◯分」と報告済み（lastReportedMinutes）のタスクが、後から時刻修正で
+ *     実績が変わった場合: そのズレをSlackで知らせる（合計時間への加算はしない。修正後の値で
+ *     lastReportedMinutesを更新し、次の修正との差分検知に使う）
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createIdleResumeNotifier({ admin, db }) {
@@ -292,71 +309,121 @@ function createIdleResumeNotifier({ admin, db }) {
     const wasAnyRunning = beforeTasksAll.some(isRunningTask);
     const isAnyRunningNow = afterTasksAll.some(isRunningTask);
 
-    // 実行中→実行中タスクなし（＝タイマーを止めた）になった瞬間、日中（9時〜22時未満）なら
-    // 定期チェックの次回を待たずすぐに知らせる。何のタスクが何分だったかも添える
-    if (wasAnyRunning && !isAnyRunningNow) {
-      const { hour } = jstHourMinute(new Date());
-      if (hour < IDLE_CHECK_START_HOUR || hour >= IDLE_CHECK_END_HOUR) return;
-      if (after.pendingIdleAlert) return; // 既に別経路で通知済み（同時書き込み等）なら二重送信しない
-
-      const stoppedBefore = beforeTasksAll.find(isRunningTask);
-      if (!stoppedBefore) return;
-      const stoppedAfter = afterTasksAll.find((t) => t.id === stoppedBefore.id) || stoppedBefore;
-
-      const token = env('SLACK_BOT_TOKEN');
-      if (!token) return;
-      const slack = new WebClient(token);
-
-      try {
-        const email = await findStaffEmail(db, after.representative);
-        if (!email) return;
-        const elapsedMinutes = Math.round(computeActualMinutes(stoppedAfter));
-        const text = `⏸『${stoppedAfter.name}』を終了しました（実績${elapsedMinutes}分）。現在実行中のタスクがありません。タイマーを開始し忘れていませんか？`;
-        const threadTs = await notifyRepresentative(slack, email, text);
-
-        const sessions = Array.isArray(stoppedAfter.sessions) ? stoppedAfter.sessions : [];
-        const idleSinceMs = sessions[sessions.length - 1]?.endedAt?.toMillis?.() ?? Date.now();
-        await change.after.ref.set({
-          pendingIdleAlert: { threadTs, sentAt: admin.firestore.Timestamp.now(), idleSinceMs }
-        }, { merge: true });
-      } catch (error) {
-        console.error('タイマー停止の即時通知失敗（続行）:', error.message);
-      }
-      return;
-    }
-
-    const alert = before.pendingIdleAlert;
-    if (!alert) return;
-    if (wasAnyRunning) return; // 元々何か動いていた更新は対象外（上のケースで処理済み）
-
-    const runningTask = afterTasksAll.find(isRunningTask);
-    if (!runningTask) return; // 今回の更新でタイマーが押されたわけではない
-
     const token = env('SLACK_BOT_TOKEN');
     if (!token) return;
     const slack = new WebClient(token);
 
-    const sessions = Array.isArray(runningTask.sessions) ? runningTask.sessions : [];
-    const startedAtMs = sessions[sessions.length - 1]?.startedAt?.toMillis?.() ?? Date.now();
-    const sentAtMs = alert.sentAt?.toMillis?.();
-    const reminderToStartMinutes = sentAtMs != null ? Math.max(0, Math.round((startedAtMs - sentAtMs) / 60000)) : null;
-    const totalIdleMinutes = alert.idleSinceMs != null ? Math.max(0, Math.round((startedAtMs - alert.idleSinceMs) / 60000)) : null;
+    // (1) 超過していたタスクが終了した瞬間
+    let workingTasks = afterTasksAll;
+    for (const beforeTask of beforeTasksAll) {
+      if (!isRunningTask(beforeTask) || !isOverrun(beforeTask)) continue;
+      const afterTask = workingTasks.find((t) => t.id === beforeTask.id);
+      if (!afterTask || isRunningTask(afterTask)) continue; // まだ動いている、または削除された
 
-    const details = [];
-    if (reminderToStartMinutes != null) details.push(`リマインドから${reminderToStartMinutes}分後`);
-    if (totalIdleMinutes != null) details.push(`タイマーが止まっていた時間 合計${totalIdleMinutes}分`);
-    const text = `▶️ タイマーが再開されました${details.length ? `（${details.join(' / ')}）` : ''}`;
+      try {
+        const email = await findStaffEmail(db, after.representative);
+        if (!email) continue;
+        const elapsedMinutes = Math.round(computeActualMinutes(afterTask));
+        const overageMinutes = Math.max(0, elapsedMinutes - (afterTask.plannedMinutes || 0));
+        const existingThreadTs = before.pendingOverrunAlerts?.[afterTask.id]?.threadTs;
+        const text = `⏱『${afterTask.name}』が終了しました（予定${afterTask.plannedMinutes}分・実績${elapsedMinutes}分、${overageMinutes}分超過）`;
+        await notifyRepresentative(slack, email, text, existingThreadTs || undefined);
 
-    try {
-      await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.threadTs, text });
-    } catch (error) {
-      console.error('タイマー再開リプライ送信失敗（続行）:', error.message);
+        workingTasks = workingTasks.map((t) =>
+          t.id === afterTask.id ? { ...t, lastReportedMinutes: elapsedMinutes } : t
+        );
+        await change.after.ref.update({
+          tasks: workingTasks,
+          [`pendingOverrunAlerts.${afterTask.id}`]: admin.firestore.FieldValue.delete(),
+          'timeAccuracy.inaccurateMinutes': admin.firestore.FieldValue.increment(overageMinutes)
+        });
+      } catch (error) {
+        console.error('超過タスク終了の即時通知失敗（続行）:', error.message);
+      }
     }
 
-    try {
-      await change.after.ref.set({ pendingIdleAlert: admin.firestore.FieldValue.delete() }, { merge: true });
-    } catch (error) {
-      console.error('pendingIdleAlertのクリア失敗（続行）:', error.message);
+    // (2) 実行中→実行中タスクなし（＝タイマーを止めた）になった瞬間、日中のみ即座に知らせる
+    if (wasAnyRunning && !isAnyRunningNow) {
+      const { hour } = jstHourMinute(new Date());
+      if (hour >= IDLE_CHECK_START_HOUR && hour < IDLE_CHECK_END_HOUR && !after.pendingIdleAlert) {
+        const stoppedBefore = beforeTasksAll.find(isRunningTask);
+        if (stoppedBefore) {
+          try {
+            const email = await findStaffEmail(db, after.representative);
+            if (email) {
+              const stoppedAfter = workingTasks.find((t) => t.id === stoppedBefore.id) || stoppedBefore;
+              const elapsedMinutes = Math.round(computeActualMinutes(stoppedAfter));
+              const text = `⏸『${stoppedAfter.name}』を終了しました（実績${elapsedMinutes}分）。現在実行中のタスクがありません。タイマーを開始し忘れていませんか？`;
+              const threadTs = await notifyRepresentative(slack, email, text);
+
+              const sessions = Array.isArray(stoppedAfter.sessions) ? stoppedAfter.sessions : [];
+              const idleSinceMs = sessions[sessions.length - 1]?.endedAt?.toMillis?.() ?? Date.now();
+              await change.after.ref.update({
+                pendingIdleAlert: { threadTs, sentAt: admin.firestore.Timestamp.now(), idleSinceMs },
+                'timeAccuracy.reminderCount': admin.firestore.FieldValue.increment(1)
+              });
+            }
+          } catch (error) {
+            console.error('タイマー停止の即時通知失敗（続行）:', error.message);
+          }
+        }
+      }
+      return; // このケースでは(3)(4)の判定は不要
+    }
+
+    // (3) 「タイマー開始し忘れ」リマインド中に実行中タスクが0→1になった（＝再開された）瞬間
+    const alert = before.pendingIdleAlert;
+    if (alert && !wasAnyRunning) {
+      const runningTask = workingTasks.find(isRunningTask);
+      if (runningTask) {
+        try {
+          const sessions = Array.isArray(runningTask.sessions) ? runningTask.sessions : [];
+          const startedAtMs = sessions[sessions.length - 1]?.startedAt?.toMillis?.() ?? Date.now();
+          const sentAtMs = alert.sentAt?.toMillis?.();
+          const reminderToStartMinutes = sentAtMs != null ? Math.max(0, Math.round((startedAtMs - sentAtMs) / 60000)) : null;
+          const totalIdleMinutes = alert.idleSinceMs != null ? Math.max(0, Math.round((startedAtMs - alert.idleSinceMs) / 60000)) : null;
+
+          const details = [];
+          if (reminderToStartMinutes != null) details.push(`リマインドから${reminderToStartMinutes}分後`);
+          if (totalIdleMinutes != null) details.push(`タイマーが止まっていた時間 合計${totalIdleMinutes}分`);
+          const text = `▶️ タイマーが再開されました${details.length ? `（${details.join(' / ')}）` : ''}`;
+
+          await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.threadTs, text });
+
+          const updates = { pendingIdleAlert: admin.firestore.FieldValue.delete() };
+          if (totalIdleMinutes) updates['timeAccuracy.inaccurateMinutes'] = admin.firestore.FieldValue.increment(totalIdleMinutes);
+          await change.after.ref.update(updates);
+        } catch (error) {
+          console.error('タイマー再開リプライ送信失敗（続行）:', error.message);
+        }
+      }
+      return;
+    }
+
+    // (4) 既に完了報告済みのタスクが、後から時刻修正で実績が変わっていないか検出
+    for (const afterTask of workingTasks) {
+      if (isRunningTask(afterTask)) continue;
+      if (afterTask.lastReportedMinutes == null) continue;
+      const beforeTask = beforeTasksAll.find((t) => t.id === afterTask.id);
+      if (!beforeTask || isRunningTask(beforeTask)) continue; // 終了した瞬間自体は(1)(2)が担当
+      const newMinutes = Math.round(computeActualMinutes(afterTask));
+      if (newMinutes === afterTask.lastReportedMinutes) continue;
+
+      try {
+        const email = await findStaffEmail(db, after.representative);
+        if (!email) continue;
+        const diff = newMinutes - afterTask.lastReportedMinutes;
+        const diffLabel = diff > 0 ? `+${diff}分` : `${diff}分`;
+        const text = `✏️『${afterTask.name}』の実績時間が修正されました（${afterTask.lastReportedMinutes}分 → ${newMinutes}分、${diffLabel}）`;
+        await notifyRepresentative(slack, email, text);
+
+        workingTasks = workingTasks.map((t) =>
+          t.id === afterTask.id ? { ...t, lastReportedMinutes: newMinutes } : t
+        );
+        await change.after.ref.update({ tasks: workingTasks });
+      } catch (error) {
+        console.error('実績時間修正の通知失敗（続行）:', error.message);
+      }
     }
   };
 }
