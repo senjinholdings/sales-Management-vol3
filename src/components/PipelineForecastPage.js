@@ -42,6 +42,97 @@ const generateQuarterOptions = () => {
   return { options, current: `${currentYear}-Q${currentQ}` };
 };
 
+// 実績（確定済み売上）はsalesRecords/newCaseSalesRecordsのrecordTypeで新規/継続を区別する
+// （案件側のisExistingProjectとは別の集計軸。HomeDashboard.jsの実績集計と同じ考え方）
+const RECORD_TYPE_BY_DEAL_TYPE = { new: '新規', existing: '継続' };
+
+/** 四半期キーから、その四半期に含まれる3つの月の範囲を返す */
+const getQuarterMonths = (quarterKey) => {
+  const [y, q] = quarterKey.split('-Q').map(Number);
+  const startMonth = (q - 1) * 3;
+  const months = [];
+  for (let i = 0; i < 3; i++) {
+    const monthIndex = startMonth + i;
+    months.push({
+      start: new Date(y, monthIndex, 1),
+      end: new Date(y, monthIndex + 1, 0, 23, 59, 59),
+      label: `${monthIndex + 1}月`
+    });
+  }
+  return months;
+};
+
+// 週の区切りはWeeklyReportPage.jsと同じ「火曜始まり・月曜終わり」に揃える
+const getWeekRange = (date) => {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = (day + 5) % 7; // 火=0を基準にする
+  const tuesday = new Date(d);
+  tuesday.setDate(d.getDate() - diff);
+  tuesday.setHours(0, 0, 0, 0);
+  const monday = new Date(tuesday);
+  monday.setDate(tuesday.getDate() + 6);
+  monday.setHours(23, 59, 59, 999);
+  return { start: tuesday, end: monday };
+};
+
+const formatMonthDay = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+
+/** 指定した月の範囲を、月をまたがない形で火〜月の週に分割する */
+const splitMonthIntoWeeks = (monthStart, monthEnd) => {
+  const weeks = [];
+  let cursor = new Date(monthStart);
+  while (cursor <= monthEnd) {
+    const { start: weekStart } = getWeekRange(cursor);
+    const rangeStart = weekStart < monthStart ? monthStart : weekStart;
+    const weekEndRaw = new Date(weekStart);
+    weekEndRaw.setDate(weekStart.getDate() + 6);
+    weekEndRaw.setHours(23, 59, 59, 999);
+    const rangeEnd = weekEndRaw > monthEnd ? monthEnd : weekEndRaw;
+    weeks.push({ start: rangeStart, end: rangeEnd, label: `${formatMonthDay(rangeStart)}〜${formatMonthDay(rangeEnd)}` });
+    cursor = new Date(weekEndRaw);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return weeks;
+};
+
+/**
+ * 荒幡さんの確定済み売上（フェーズ8）を全案件のsalesRecords/newCaseSalesRecordsから集める。
+ * HomeDashboard.jsのfetchData/calculateStatsと同じデータ源・同じ判定基準（phase==='フェーズ8'）を使う
+ */
+const fetchRealizedRecords = async (repName) => {
+  const dealsSnap = await getDocs(collection(db, 'progressDashboard'));
+  const deals = dealsSnap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((d) => d.representative === repName);
+
+  const records = [];
+  await Promise.all(deals.map(async (deal) => {
+    await Promise.all(['salesRecords', 'newCaseSalesRecords'].map(async (subCol) => {
+      try {
+        const recSnap = await getDocs(collection(db, 'progressDashboard', deal.id, subCol));
+        recSnap.forEach((r) => {
+          const rd = r.data();
+          if (rd.phase !== 'フェーズ8') return;
+          const dateStr = rd.confirmedDate || rd.date;
+          if (!dateStr) return;
+          records.push({
+            dealId: deal.id,
+            companyName: deal.companyName || deal.productName || '(社名未設定)',
+            productName: deal.productName || '',
+            recordType: rd.recordType,
+            budget: typeof rd.budget === 'string' ? Number(rd.budget) || 0 : rd.budget || 0,
+            date: new Date(dateStr)
+          });
+        });
+      } catch (error) {
+        // 権限やデータ不整合でこの案件だけ読めない場合はスキップ
+      }
+    }));
+  }));
+  return records;
+};
+
 /**
  * 案件配下のアクティブなネクストアクションのうち最新の1件を取得する。
  * 編集・完了操作に必要なrecordId/subColも一緒に返す（無ければnull）
@@ -300,6 +391,93 @@ const EmptyText = styled.div`
   padding: 2rem 0;
 `;
 
+const SectionCard = styled.div`
+  background: white;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+`;
+
+const SectionTitle = styled.h2`
+  font-size: 1rem;
+  color: #2c3e50;
+  margin: 0 0 0.9rem 0;
+`;
+
+const BarList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+`;
+
+const BarRow = styled.div`
+  display: grid;
+  grid-template-columns: 90px 1fr 110px;
+  align-items: center;
+  gap: 0.75rem;
+`;
+
+const BarLabel = styled.div`
+  font-size: 0.85rem;
+  color: ${(props) => (props.$current ? '#2980b9' : '#2c3e50')};
+  font-weight: ${(props) => (props.$current ? '700' : '400')};
+`;
+
+const BarTrack = styled.div`
+  background: #f0f0f0;
+  border-radius: 4px;
+  height: 14px;
+  overflow: hidden;
+`;
+
+const BarFill = styled.div`
+  background: ${(props) => (props.$current ? '#2980b9' : '#95a5a6')};
+  height: 100%;
+  width: ${(props) => Math.min(100, props.$percent)}%;
+`;
+
+const BarValue = styled.div`
+  font-size: 0.85rem;
+  color: #2c3e50;
+  text-align: right;
+`;
+
+const RecordTable = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+`;
+
+const RecordRow = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.6rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  font-size: 0.85rem;
+`;
+
+const RecordCompany = styled.div`
+  flex: 1;
+  color: #2c3e50;
+  font-weight: 600;
+`;
+
+const RecordDate = styled.div`
+  color: #7f8c8d;
+  width: 70px;
+`;
+
+const RecordBudget = styled.div`
+  color: #27ae60;
+  font-weight: 700;
+  width: 110px;
+  text-align: right;
+`;
+
 // ============================================
 // メインコンポーネント
 // ============================================
@@ -317,9 +495,12 @@ function PipelineForecastPage() {
   const [naEditingId, setNaEditingId] = useState(null);
   const [naDraft, setNaDraft] = useState({ content: '', dueDate: '' });
   const [savingNa, setSavingNa] = useState(false);
+  const [realizedRecords, setRealizedRecords] = useState([]);
 
   const isExisting = dealType === 'existing';
   const subCol = isExisting ? 'salesRecords' : 'newCaseSalesRecords';
+  const recordType = RECORD_TYPE_BY_DEAL_TYPE[dealType];
+  const isCurrentQuarter = selectedQuarter === currentQuarterKey;
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -348,6 +529,9 @@ function PipelineForecastPage() {
       const targetDocId = isExisting ? `${selectedQuarter}-existing` : selectedQuarter;
       const targetSnap = await getDoc(doc(db, 'salesTargets', targetDocId));
       setTarget(targetSnap.exists() ? (targetSnap.data().target || 0) : 0);
+
+      const records = await fetchRealizedRecords(REP_NAME);
+      setRealizedRecords(records);
     } catch (error) {
       console.error('週次パイプライン取得エラー:', error);
     } finally {
@@ -357,13 +541,71 @@ function PipelineForecastPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const forecastTotal = useMemo(() => (
+  // 選択中の新規/既存に対応する実績レコードだけに絞る
+  const recordsForType = useMemo(() => (
+    realizedRecords.filter((r) => r.recordType === recordType)
+  ), [realizedRecords, recordType]);
+
+  const quarterRangeForSelected = useMemo(() => {
+    const [y, q] = selectedQuarter.split('-Q').map(Number);
+    const startMonth = (q - 1) * 3;
+    return { start: new Date(y, startMonth, 1), end: new Date(y, startMonth + 3, 0, 23, 59, 59) };
+  }, [selectedQuarter]);
+
+  const quarterActualTotal = useMemo(() => (
+    recordsForType
+      .filter((r) => r.date >= quarterRangeForSelected.start && r.date <= quarterRangeForSelected.end)
+      .reduce((sum, r) => sum + r.budget, 0)
+  ), [recordsForType, quarterRangeForSelected]);
+
+  // 保有中の案件（想定予算×着地確率）の見込み。まだ確定していない分の予想
+  const pipelineForecast = useMemo(() => (
     deals.reduce((sum, d) => sum + (d.expectedBudget || 0) * (d.landingProbability || 0) / 100, 0)
   ), [deals]);
-  const gap = target - forecastTotal;
+
+  // 着地予想額 = 今期すでに確定した実績 ＋ 保有中案件の見込み
+  const landingForecastTotal = quarterActualTotal + pipelineForecast;
+  const gap = target - landingForecastTotal;
   const avgBudget = deals.length > 0
     ? deals.reduce((sum, d) => sum + (d.expectedBudget || 0), 0) / deals.length
     : 0;
+
+  // 今の四半期を見ている時だけ、月別・週別の内訳と「今週の実績」を表示する
+  const monthlyBreakdown = useMemo(() => {
+    if (!isCurrentQuarter) return [];
+    return getQuarterMonths(selectedQuarter).map((m) => ({
+      ...m,
+      total: recordsForType
+        .filter((r) => r.date >= m.start && r.date <= m.end)
+        .reduce((sum, r) => sum + r.budget, 0)
+    }));
+  }, [isCurrentQuarter, selectedQuarter, recordsForType]);
+
+  const currentMonthInfo = useMemo(() => {
+    const now = new Date();
+    return monthlyBreakdown.find((m) => now >= m.start && now <= m.end) || null;
+  }, [monthlyBreakdown]);
+
+  const weeklyBreakdown = useMemo(() => {
+    if (!currentMonthInfo) return [];
+    const weeks = splitMonthIntoWeeks(currentMonthInfo.start, currentMonthInfo.end);
+    const now = new Date();
+    return weeks.map((w) => ({
+      ...w,
+      isCurrent: now >= w.start && now <= w.end,
+      total: recordsForType
+        .filter((r) => r.date >= w.start && r.date <= w.end)
+        .reduce((sum, r) => sum + r.budget, 0)
+    }));
+  }, [currentMonthInfo, recordsForType]);
+
+  const thisWeekRecords = useMemo(() => {
+    if (!isCurrentQuarter) return [];
+    const { start, end } = getWeekRange(new Date());
+    return recordsForType
+      .filter((r) => r.date >= start && r.date <= end)
+      .sort((a, b) => b.date - a.date);
+  }, [isCurrentQuarter, recordsForType]);
 
   const handleProbabilityInput = (dealId, value) => {
     setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, landingProbability: value } : d)));
@@ -491,14 +733,78 @@ function PipelineForecastPage() {
               <SummaryValue>{formatCurrency(target)}</SummaryValue>
             </SummaryCard>
             <SummaryCard>
-              <SummaryLabel>着地予想額（想定予算×着地確率の合計）</SummaryLabel>
-              <SummaryValue>{formatCurrency(forecastTotal)}</SummaryValue>
+              <SummaryLabel>今期の確定済み実績</SummaryLabel>
+              <SummaryValue>{formatCurrency(quarterActualTotal)}</SummaryValue>
             </SummaryCard>
+            <SummaryCard>
+              <SummaryLabel>着地予想額（確定済み実績＋保有案件の見込み）</SummaryLabel>
+              <SummaryValue>{formatCurrency(landingForecastTotal)}</SummaryValue>
+            </SummaryCard>
+          </SummaryRow>
+          <SummaryRow style={{ gridTemplateColumns: '1fr' }}>
             <SummaryCard>
               <SummaryLabel>{gap > 0 ? '不足額' : '超過見込み'}</SummaryLabel>
               <SummaryValue $negative={gap > 0}>{formatCurrency(Math.abs(gap))}</SummaryValue>
             </SummaryCard>
           </SummaryRow>
+
+          {isCurrentQuarter && (
+            <SectionCard>
+              <SectionTitle>月別の実績（{selectedQuarter.split('-Q')[0]}年 Q{selectedQuarter.split('-Q')[1]}）</SectionTitle>
+              <BarList>
+                {monthlyBreakdown.map((m) => {
+                  const percent = monthlyBreakdown.length > 0
+                    ? (m.total / Math.max(1, Math.max(...monthlyBreakdown.map((x) => x.total)))) * 100
+                    : 0;
+                  const isCurrent = currentMonthInfo && m.label === currentMonthInfo.label;
+                  return (
+                    <BarRow key={m.label}>
+                      <BarLabel $current={isCurrent}>{m.label}{isCurrent ? '（今月）' : ''}</BarLabel>
+                      <BarTrack><BarFill $current={isCurrent} $percent={percent} /></BarTrack>
+                      <BarValue>{formatCurrency(m.total)}</BarValue>
+                    </BarRow>
+                  );
+                })}
+              </BarList>
+            </SectionCard>
+          )}
+
+          {isCurrentQuarter && weeklyBreakdown.length > 0 && (
+            <SectionCard>
+              <SectionTitle>{currentMonthInfo?.label}の週別実績</SectionTitle>
+              <BarList>
+                {weeklyBreakdown.map((w) => {
+                  const maxVal = Math.max(1, ...weeklyBreakdown.map((x) => x.total));
+                  return (
+                    <BarRow key={w.label}>
+                      <BarLabel $current={w.isCurrent}>{w.label}{w.isCurrent ? '（今週）' : ''}</BarLabel>
+                      <BarTrack><BarFill $current={w.isCurrent} $percent={(w.total / maxVal) * 100} /></BarTrack>
+                      <BarValue>{formatCurrency(w.total)}</BarValue>
+                    </BarRow>
+                  );
+                })}
+              </BarList>
+            </SectionCard>
+          )}
+
+          {isCurrentQuarter && (
+            <SectionCard>
+              <SectionTitle>今週確定した案件</SectionTitle>
+              {thisWeekRecords.length === 0 ? (
+                <EmptyText>今週はまだ確定した案件がありません</EmptyText>
+              ) : (
+                <RecordTable>
+                  {thisWeekRecords.map((r, i) => (
+                    <RecordRow key={`${r.dealId}_${i}`}>
+                      <RecordCompany>{r.companyName}{r.productName ? `（${r.productName}）` : ''}</RecordCompany>
+                      <RecordDate>{formatMonthDay(r.date)}</RecordDate>
+                      <RecordBudget>{formatCurrency(r.budget)}</RecordBudget>
+                    </RecordRow>
+                  ))}
+                </RecordTable>
+              )}
+            </SectionCard>
+          )}
 
           {gap > 0 && (
             <SuggestBox>
