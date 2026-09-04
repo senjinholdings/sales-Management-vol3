@@ -8,7 +8,9 @@ import { addSalesEntry, updateSalesEntry, updateSalesEntryStatus } from '../serv
 import { suggestGapClosingActions, isGPTServiceAvailable } from '../services/gptService.js';
 
 // 日報（デイリータイマー）等と同様、現状は荒幡さんのみが対象の専用画面
-const REP_NAME = '荒幡 輝';
+// progressDashboardのrepresentativeは実データ上「荒幡」（姓のみ）で保存されている
+// （SALES_REPRESENTATIVES定数の「荒幡 輝」とは表記が異なるので注意）
+const REP_NAME = '荒幡';
 
 // 受注済み(フェーズ8)・Dead・失注は対象外。それ以外の進行中フェーズだけを一覧に出す
 const OPEN_PHASES = ['フェーズ1', 'フェーズ2', 'フェーズ3', 'フェーズ4', 'フェーズ5', 'フェーズ6', 'フェーズ7'];
