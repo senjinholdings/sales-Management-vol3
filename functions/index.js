@@ -445,7 +445,9 @@ exports.checkDailyTimerOverruns = functions.runWith({ secrets: ['SLACK_BOT_TOKEN
   .onRun(createOverrunChecker({ admin, db }));
 
 // 日報: 「タイマー開始し忘れ」リマインド後、実際に押されたらそのメッセージへスレッド返信する
-exports.notifyTimerResumeAfterIdle = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'] })
+// timeoutSeconds: タイマー停止時の通知は2分待ってからまだ止まっていれば送る仕組みのため、
+// デフォルトの60秒では待ちきれずタイムアウトしてしまう
+exports.notifyTimerResumeAfterIdle = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], timeoutSeconds: 180 })
   .firestore.document('dailyTimers/{docId}')
   .onUpdate(createIdleResumeNotifier({ admin, db }));
 

@@ -5,7 +5,9 @@
  *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
  *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）。
  *   (b)は10分おきの検知を待たず、日中に実行中のタスクが0件になった瞬間（Firestore
- *   トリガー）にも即座に一報を送る。その際、直前まで動いていたタスク名と実績時間も添える
+ *   トリガー）にも一報を送る。ただし止めた直後は次のタスクに移るだけのことも多いため、
+ *   2分待ってそれでもまだ何も動いていなければ送る（2分以内に再開されれば送らない）。
+ *   送る際は直前まで動いていたタスク名と実績時間も添える
  *   （createIdleResumeNotifier。タイマーが再開された時のスレッド返信、超過タスクが終了した
  *   時の即時報告、後からの時刻修正による実績のズレ検知も同じ関数が担当）。
  *   これら記入漏れ由来の「不正確な時間」の合計（超過分＋タイマー未開始で空いていた時間）と
@@ -42,6 +44,11 @@ const OVERRUN_RATIO = 1.3;
 // 「実行中のタスクなし」リマインドの対象時間帯（この時間外＝夜は送らない）
 const IDLE_CHECK_START_HOUR = 9;
 const IDLE_CHECK_END_HOUR = 22;
+// タイマーを止めた直後は次のタスクに移るだけのことも多いため、即座には知らせず
+// この時間だけ待ってから「まだ何も動いていなければ」知らせる
+const IDLE_GRACE_PERIOD_MS = 2 * 60 * 1000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 日報機能は今のところ荒幡さんのみが対象（DailyTimerPage.jsのREPRESENTATIVE_FILTERと同じ）
 const REP_NAME = '荒幡';
@@ -287,10 +294,12 @@ function createOverrunChecker({ admin, db }) {
  * タイマーの停止・再開・修正の通知（Firestoreトリガー、dailyTimersのonUpdate）。4つのケースを扱う:
  * (1) 超過していたタスクが終了した瞬間: 実績時間つきで即座に知らせ、超過分（実績-予定）を
  *     dailyTimers.timeAccuracy.inaccurateMinutesに加算する。既に督促スレッドがあれば返信する
- * (2) 実行中タスクが1→0に変わった瞬間（日中9時〜22時未満のみ）: 直前まで動いていたタスク名・
- *     実績時間つきで、その場で「現在実行中のタスクがありません」の一報を送る（10分おきの
- *     定期チェックを待たない）。このメッセージ自体がpendingIdleAlertの起点になり、
- *     timeAccuracy.reminderCountを1つ増やす
+ * (2) 実行中タスクが1→0に変わった瞬間（日中9時〜22時未満のみ）: IDLE_GRACE_PERIOD_MS
+ *     （2分）待ってから、それでもまだ何も実行中でなければ、直前まで動いていたタスク名・
+ *     実績時間つきで「現在実行中のタスクがありません」の一報を送る（10分おきの定期チェックを
+ *     待たない。ただし止めた直後は次のタスクに移るだけのことも多いため即時ではなく2分待つ。
+ *     2分以内に再開されれば送らない）。送った場合、このメッセージ自体がpendingIdleAlertの
+ *     起点になり、timeAccuracy.reminderCountを1つ増やす
  * (3) 「タイマー開始し忘れ」リマインド（pendingIdleAlert、(2)or定期チェックのどちらかで
  *     セットされる）が残っている状態で、実行中タスクが0→1に変わった（＝タイマーが押された）
  *     瞬間: 同じスレッドへ「リマインドから何分後だったか」「実際に止まっていた合計時間」を
@@ -342,16 +351,26 @@ function createIdleResumeNotifier({ admin, db }) {
       }
     }
 
-    // (2) 実行中→実行中タスクなし（＝タイマーを止めた）になった瞬間、日中のみ即座に知らせる
+    // (2) 実行中→実行中タスクなし（＝タイマーを止めた）になった瞬間、日中のみ知らせる。
+    // ただし止めてすぐは次のタスクに移るだけのことも多いため、少し待って（IDLE_GRACE_PERIOD_MS）
+    // それでもまだ何も動いていなければ送る（待っている間に再開されていれば何もしない）
     if (wasAnyRunning && !isAnyRunningNow) {
-      const { hour } = jstHourMinute(new Date());
-      if (hour >= IDLE_CHECK_START_HOUR && hour < IDLE_CHECK_END_HOUR && !after.pendingIdleAlert) {
-        const stoppedBefore = beforeTasksAll.find(isRunningTask);
-        if (stoppedBefore) {
-          try {
-            const email = await findStaffEmail(db, after.representative);
+      const stoppedBefore = beforeTasksAll.find(isRunningTask);
+      if (stoppedBefore) {
+        try {
+          await sleep(IDLE_GRACE_PERIOD_MS);
+
+          const recheckSnap = await change.after.ref.get();
+          const recheckData = recheckSnap.data() || {};
+          const recheckTasks = Array.isArray(recheckData.tasks) ? recheckData.tasks : [];
+          const { hour } = jstHourMinute(new Date());
+          const stillIdle = !recheckTasks.some(isRunningTask);
+          const isDaytime = hour >= IDLE_CHECK_START_HOUR && hour < IDLE_CHECK_END_HOUR;
+
+          if (stillIdle && isDaytime && !recheckData.pendingIdleAlert) {
+            const email = await findStaffEmail(db, recheckData.representative);
             if (email) {
-              const stoppedAfter = workingTasks.find((t) => t.id === stoppedBefore.id) || stoppedBefore;
+              const stoppedAfter = recheckTasks.find((t) => t.id === stoppedBefore.id) || stoppedBefore;
               const elapsedMinutes = Math.round(computeActualMinutes(stoppedAfter));
               const text = `⏸『${stoppedAfter.name}』を終了しました（実績${elapsedMinutes}分）。現在実行中のタスクがありません。タイマーを開始し忘れていませんか？`;
               const threadTs = await notifyRepresentative(slack, email, text);
@@ -363,9 +382,9 @@ function createIdleResumeNotifier({ admin, db }) {
                 'timeAccuracy.reminderCount': admin.firestore.FieldValue.increment(1)
               });
             }
-          } catch (error) {
-            console.error('タイマー停止の即時通知失敗（続行）:', error.message);
           }
+        } catch (error) {
+          console.error('タイマー停止の即時通知失敗（続行）:', error.message);
         }
       }
       return; // このケースでは(3)(4)の判定は不要
