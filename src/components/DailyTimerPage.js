@@ -283,6 +283,15 @@ const TimeInput = styled.input`
   &:focus { outline: none; border-color: #3498db; }
 `;
 
+const DateInput = styled.input`
+  width: 140px;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  &:focus { outline: none; border-color: #3498db; }
+`;
+
 const AddButton = styled.button`
   display: flex;
   align-items: center;
@@ -883,11 +892,13 @@ const REPRESENTATIVE_FILTER = '荒幡';
 // 振り返りヘルパー
 // ============================================
 
+// NA（次のアクション）は自由文ではなく、下の「NA」タスク一覧（名前・時間・対象日を
+// 入力できる、通常のタスクと同じ形式）に一本化した。nextActionは過去データ互換のため
+// normalizeReview等には残すが、入力欄としては出さない
 const REVIEW_FIELDS = [
   { key: 'notAchieved', label: '達成できなかったことはないか？なぜか？どう組み直すか？' },
   { key: 'timeImprovement', label: '時間の使い方をもっとよくすることはできないか？' },
-  { key: 'reflection', label: '振り返り' },
-  { key: 'nextAction', label: 'NA（明日のネクストアクション）' }
+  { key: 'reflection', label: '振り返り' }
 ];
 
 // 未完了タスクの予定時間合計が2時間以上の日だけ表示する追加欄
@@ -965,11 +976,14 @@ const DailyTimerPage = () => {
   const [savedReview, setSavedReview] = useState(normalizeReview());
   const [reviewOpen, setReviewOpen] = useState(false);
   const reviewKeyRef = useRef(null);
-  // 翌日の予定タスク（振り返り保存時にまとめて登録する）。ローカルidは編集用の一時キー
+  // NA（次のアクション）タスク一覧（振り返り保存時にまとめて登録する）。
+  // ローカルidは編集用の一時キー。基本は翌日だが、タスクごとに対象日を変えられる
   const [nextDayPlan, setNextDayPlan] = useState([]);
   const [nextDayTaskName, setNextDayTaskName] = useState('');
   const [nextDayPlannedMinutes, setNextDayPlannedMinutes] = useState('');
   const [nextDayPlannedStartTime, setNextDayPlannedStartTime] = useState('');
+  const [nextDayTaskDate, setNextDayTaskDate] = useState('');
+  const [initialNextDayPlan, setInitialNextDayPlan] = useState([]);
 
   // カレンダー
   const [calendarOpen, setCalendarOpen] = useState(false);
@@ -1039,8 +1053,6 @@ const DailyTimerPage = () => {
     setReviewOpen(hasReviewContent(review));
   }, [dayDocs, loadedDate, selectedDate, representative]);
 
-  const reviewDirty = !isSameReview(reviewDraft, savedReview);
-
   // 振り返り用の未完了・超過タスク一覧（選択中の担当者のみ、表示専用の派生データ）
   // 実行中で予定超過中のタスクは実績未確定のため超過一覧には含めず、未完了一覧に載せる
   const { unfinishedTasks, overdueTasks } = useMemo(() => {
@@ -1059,25 +1071,35 @@ const DailyTimerPage = () => {
     return { unfinishedTasks: unfinished, overdueTasks: over };
   }, [dayDocs, representative]);
 
-  // 翌日の予定タスクの初期候補：今日の未完了タスクを自動で繰越候補にする
+  // NAタスクの初期候補：今日の未完了タスクを自動で繰越候補にする（対象日はデフォルトで翌日）
   // （担当者×日付が変わった時だけ再セットし、以後の追加・削除はそのまま保持する）
   const nextDayPlanKeyRef = useRef(null);
   useEffect(() => {
     const key = `${representative}_${loadedDate}`;
     if (nextDayPlanKeyRef.current === key) return;
     nextDayPlanKeyRef.current = key;
-    setNextDayPlan(
-      unfinishedTasks
-        .filter(({ task }) => !task.isReviewTask) // 「振り返り」枠は毎日自動で作られるため繰越候補には出さない
-        .map(({ task }) => ({
-          localId: `carry_${task.id}`,
-          name: task.name,
-          plannedMinutes: task.plannedMinutes,
-          plannedStartTime: null,
-          fromCarryover: true
-        }))
-    );
+    const defaultDate = loadedDate ? shiftDateKey(loadedDate, 1) : '';
+    setNextDayTaskDate(defaultDate);
+    const seeded = unfinishedTasks
+      .filter(({ task }) => !task.isReviewTask) // 「振り返り」枠は毎日自動で作られるため繰越候補には出さない
+      .map(({ task }) => ({
+        localId: `carry_${task.id}`,
+        name: task.name,
+        plannedMinutes: task.plannedMinutes,
+        plannedStartTime: null,
+        fromCarryover: true,
+        date: defaultDate
+      }));
+    setNextDayPlan(seeded);
+    setInitialNextDayPlan(seeded);
   }, [unfinishedTasks, loadedDate, representative]);
+
+  // NAタスク一覧を、繰越で自動セットされた時点から変更したかどうか
+  // （文字での識別のため区切り文字を含む値が来ても壊れないよう配列長も合わせて見る）
+  const planSignature = (plan) =>
+    `${plan.length}:${plan.map((t) => [t.localId, t.name, t.plannedMinutes, t.plannedStartTime, t.date].join('')).join('')}`;
+  const nextDayPlanDirty = planSignature(nextDayPlan) !== planSignature(initialNextDayPlan);
+  const reviewDirty = !isSameReview(reviewDraft, savedReview) || nextDayPlanDirty;
 
   // 未完了タスク（振り返り枠を除く）の予定時間合計。2時間以上ズレていたら
   // 振り返り欄に「なぜズレたのか」の入力欄を追加で出す
@@ -1098,16 +1120,19 @@ const DailyTimerPage = () => {
 
   const addNextDayTask = () => {
     if (!nextDayTaskName.trim()) return;
+    const defaultDate = loadedDate ? shiftDateKey(loadedDate, 1) : '';
     setNextDayPlan((prev) => [...prev, {
       localId: `new_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       name: nextDayTaskName.trim(),
       plannedMinutes: nextDayPlannedMinutes.trim() === '' ? null : Number(nextDayPlannedMinutes),
       plannedStartTime: nextDayPlannedStartTime || null,
-      fromCarryover: false
+      fromCarryover: false,
+      date: nextDayTaskDate || defaultDate
     }]);
     setNextDayTaskName('');
     setNextDayPlannedMinutes('');
     setNextDayPlannedStartTime('');
+    setNextDayTaskDate(defaultDate); // 対象日は次の入力のためデフォルト（翌日）に戻す
   };
 
   const removeNextDayTask = (localId) => {
@@ -1369,12 +1394,26 @@ const DailyTimerPage = () => {
     runMutation(async () => {
       await saveReview(representative, selectedDate, reviewDraft);
       setSavedReview({ ...reviewDraft });
-      const tomorrowKey = shiftDateKey(selectedDate, 1);
-      await planNextDayTasks(representative, tomorrowKey, nextDayPlan.map((t) => ({
-        name: t.name,
-        plannedMinutes: t.plannedMinutes,
-        plannedStartTime: t.plannedStartTime
-      })));
+      // NAタスクは対象日ごとにグループ化し、日付ごとのドキュメントへ分けて登録する
+      // （基本は翌日だが、タスクごとに別の日を指定できるため）
+      const defaultDate = shiftDateKey(selectedDate, 1);
+      const byDate = new Map();
+      nextDayPlan.forEach((t) => {
+        const date = t.date || defaultDate;
+        if (!byDate.has(date)) byDate.set(date, []);
+        byDate.get(date).push({
+          name: t.name,
+          plannedMinutes: t.plannedMinutes,
+          plannedStartTime: t.plannedStartTime
+        });
+      });
+      // 今回のNA一覧に1件も無い日は変更しない。デフォルト日（翌日）だけは、
+      // 全部消して空にした場合でも反映されるよう常に呼ぶ
+      if (!byDate.has(defaultDate)) byDate.set(defaultDate, []);
+      for (const [date, tasksForDate] of byDate) {
+        await planNextDayTasks(representative, date, tasksForDate);
+      }
+      setInitialNextDayPlan(nextDayPlan);
     });
   };
 
@@ -1941,14 +1980,15 @@ const DailyTimerPage = () => {
               )}
             </ReviewSummaryBlock>
             <ReviewSummaryBlock>
-              <ReviewSummaryTitle>翌日の予定（保存時にまとめて登録されます）</ReviewSummaryTitle>
+              <ReviewSummaryTitle>NA（次のアクション・保存時にまとめて登録されます）</ReviewSummaryTitle>
               {nextDayPlan.length === 0 ? (
-                <ReviewSummaryEmpty>翌日の予定タスクはありません</ReviewSummaryEmpty>
+                <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
               ) : (
                 <TaskList>
                   {nextDayPlan.map((t) => (
                     <TaskRow key={t.localId}>
                       <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
+                      <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
                       {t.plannedMinutes != null && (
                         <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
                       )}
@@ -1964,6 +2004,12 @@ const DailyTimerPage = () => {
                   placeholder="タスク名を追加"
                   value={nextDayTaskName}
                   onChange={(e) => setNextDayTaskName(e.target.value)}
+                />
+                <DateInput
+                  type="date"
+                  value={nextDayTaskDate}
+                  onChange={(e) => setNextDayTaskDate(e.target.value)}
+                  title="対象日（基本は翌日）"
                 />
                 <MinutesInput
                   type="number"
