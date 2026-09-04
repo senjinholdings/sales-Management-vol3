@@ -4,12 +4,18 @@
  *   動いたままのタスク、(b) 日中（9時〜22時未満）なのに誰も実行中のタスクがない状態、
  *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
  *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）
- * - 夜の振り返りフロー: 平日分は今日から先2週間ぶん「振り返り」タスク枠（23:30〜24:00）を
- *   前もって自動で用意しておく（固定枠。カレンダーで先の日付を開いても既に入っている）。
- *   23:30になったらSlackスレッドを
- *   1本立てて開始連絡をし、以後23:40〜1:00は10分おきに、そのスレッドへ催促を返信し続ける。
+ * - 夜の振り返りフロー: 平日分は今日から先2週間ぶん、振り返りの4区切り（各10分・
+ *   23:20/23:30/23:40/23:50スタート）を前もって自動で用意しておく（固定枠。
+ *   カレンダーで先の日付を開いても既に入っている）。23:20になったらSlackスレッドを
+ *   1本立てて開始連絡をする。以後は2段階で督促する:
+ *   (a) 4区切りのどれも一度も開始されていない間は「振り返りを始めてください」を
+ *       10分おきに返信し、時間が経つほど文面を強くする
+ *   (b) いずれか1つでも開始された後は、4区切りをそれぞれ「予定10分の普通のタスク」として
+ *       扱い、日中のタイマー超過・タイマー止まったままチェックと同じ基準だけを見る
+ *       （順調なら何も送らない）
  *   止まるのは「完了」ボタン（functions/staff.jsのnight-review-completeエンドポイント）が
- *   押された時だけで、文字が入力されたかどうかでは判定しない。土日は枠の用意・催促とも行わない
+ *   押された時だけで、4区切りが全部終わっているかどうかでは自動判定しない。
+ *   土日は枠の用意・催促とも行わない
  *
  * Slackへの送信は個人DMではなく、#営業_日報チャンネル（担当者・増田さんの両方が
  * 参加済み）への投稿＋両者へのメンションで行う。ユーザー本人だけでは「自分に届いて
@@ -34,9 +40,16 @@ const IDLE_CHECK_END_HOUR = 22;
 const REP_NAME = '荒幡';
 const REP_EMAIL = 'hikaru.arahata@senjinholdings.com';
 
-const REVIEW_TASK_NAME = '振り返り';
-const REVIEW_TASK_START_TIME = '23:30';
-const REVIEW_TASK_MINUTES = 30;
+// 夜の振り返りは4つの区切り（各10分、合計40分）に分かれている。開始は23:20
+const REVIEW_SECTIONS = [
+  { name: 'Q3新規の振り返り', startTime: '23:20' },
+  { name: 'Q3既存の振り返り', startTime: '23:30' },
+  { name: '今日のアクションの振り返り', startTime: '23:40' },
+  { name: '明日の日程記入', startTime: '23:50' }
+];
+const REVIEW_SECTION_MINUTES = 10;
+const REVIEW_KICKOFF_HOUR = 23;
+const REVIEW_KICKOFF_MINUTE = 20;
 // 「振り返り」枠を先々の日付までどれだけ前もって用意しておくか（今日を含め何日分か）
 const REVIEW_TASK_PREP_DAYS_AHEAD = 14;
 
@@ -311,14 +324,18 @@ function createIdleResumeNotifier({ admin, db }) {
 
 /**
  * 夜の振り返りフロー（10分おきに実行し、JST時刻で内部分岐）。土日は完全にスキップする。
- * - 常時: 「振り返り」タスク枠（23:30〜24:00）を平日分は前もって用意しておく
- *   （23:30を待たず、日付が変わり次第すぐ日報に見える固定枠にする）
- * - 23:30以降、スレッドがまだ無ければその時点でSlackスレッドを1本立てて開始連絡をする
+ * - 常時: 振り返りの4区切り（各10分・23:20/23:30/23:40/23:50スタート）を
+ *   平日分は前もって用意しておく（23:20を待たず、日付が変わり次第すぐ日報に見える固定枠にする）
+ * - 23:20以降、スレッドがまだ無ければその時点でSlackスレッドを1本立てて開始連絡をする
  *   （スケジュール実行の発火時刻はちょうど:00/:10...とは限らずずれることがあるため、
- *   厳密な時刻一致ではなく「23:30以降で最初に実行された時」に作る）
+ *   厳密な時刻一致ではなく「23:20以降で最初に実行された時」に作る）
  * - スレッドができた後は、1:00台前半まで実行のたびにreviewCompletedAtが立つまで
- *   そのスレッドへ督促を返信し続ける。回数はスレッド開始からの実経過時間で算出する
- *   （発火間隔がずれても整数の回数になり、スレッド無しで督促だけが飛ぶことはない）
+ *   そのスレッドへ督促を返信し続ける:
+ *   (a) 4区切りのどれも一度も開始されていない間は、時間が経つほど文面を強める督促
+ *       （回数はスレッド開始からの実経過時間で算出。発火間隔がずれても整数になる）
+ *   (b) いずれか1つでも開始された後は、4区切りを「予定10分の普通のタスク」として扱い、
+ *       日中のタイマー超過・タイマー止まったままチェックと同じ基準だけを見る
+ *       （順調なら何も送らない。回数表示・語調のエスカレーションはしない）
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createReviewReminder({ admin, db }) {
@@ -343,27 +360,27 @@ function createReviewReminder({ admin, db }) {
         date: dateStr,
         tasks: [
           ...tasks,
-          {
-            id: `task_${Date.now()}_review_${offset}`,
-            name: REVIEW_TASK_NAME,
-            plannedMinutes: REVIEW_TASK_MINUTES,
-            plannedStartTime: REVIEW_TASK_START_TIME,
+          ...REVIEW_SECTIONS.map((section, sectionIndex) => ({
+            id: `task_${Date.now()}_review_${offset}_${sectionIndex}`,
+            name: section.name,
+            plannedMinutes: REVIEW_SECTION_MINUTES,
+            plannedStartTime: section.startTime,
             sessions: [],
             source: 'system',
             isReviewTask: true
-          }
+          }))
         ],
         updatedAt: admin.firestore.Timestamp.now()
       }, { merge: true });
     }
 
-    // 夜のチェック対象時間帯（23:30〜翌1時台前半）。スケジュール実行は必ずしも
+    // 夜のチェック対象時間帯（23:20〜翌1時台前半）。スケジュール実行は必ずしも
     // ちょうど:00/:10/:20...に発火するとは限らない（実際に:X9のようにずれて
     // 発火することがある）ため、厳密な分一致ではなく範囲で判定する
-    const inNightWindow = (hour === 23 && minute >= 30) || hour === 0 || (hour === 1 && minute < 10);
+    const inNightWindow = (hour === REVIEW_KICKOFF_HOUR && minute >= REVIEW_KICKOFF_MINUTE) || hour === 0 || (hour === 1 && minute < 10);
     if (!inNightWindow) return;
 
-    // 0時・1時台は日付が変わっているため、督促対象は前日（23:30に始まった振り返り）を指す
+    // 0時・1時台は日付が変わっているため、督促対象は前日（23:20に始まった振り返り）を指す
     const reviewDateStr = hour === 23 ? todayStr : toJstDateStr(new Date(now.getTime() - 24 * 60 * 60 * 1000));
     if (isWeekendDateStr(reviewDateStr)) return; // 土日は振り返りなし＝催促もなし
 
@@ -390,7 +407,8 @@ function createReviewReminder({ admin, db }) {
         .filter((t) => !t.isReviewTask && isTaskUnfinished(t))
         .reduce((sum, t) => sum + (t.plannedMinutes || 0), 0);
 
-      let text = `📋 ${reviewDateStr} 夜チェック\n23時30分になりました。作業をやめて夜の振り返りに移行してください。`;
+      const sectionList = REVIEW_SECTIONS.map((s, i) => `${i + 1}.${s.name}`).join(' / ');
+      let text = `📋 ${reviewDateStr} 夜チェック\n23時20分になりました。作業をやめて夜の振り返りに移行してください。\n振り返りは4つに分かれています（各${REVIEW_SECTION_MINUTES}分）: ${sectionList}`;
       if (overrunLines.length > 0) {
         text += `\n\n本日、予定を大幅に超過したタスク:\n${overrunLines.join('\n')}`;
       }
@@ -416,17 +434,32 @@ function createReviewReminder({ admin, db }) {
     // フォローアップ（スレッドは既にある。reviewCompletedAtが立つまで返信し続ける）
     if (data.reviewCompletedAt) return;
 
-    const reviewTask = tasks.find((t) => t.isReviewTask);
-    const actionText = reviewTask && isRunningTask(reviewTask)
-      ? '振り返りが終わったらDBで完了ボタンを押してください'
-      : '作業を中断して振り返りを開始してください';
+    const reviewTasks = tasks.filter((t) => t.isReviewTask);
+    const reviewStarted = reviewTasks.some((t) => (Array.isArray(t.sessions) ? t.sessions.length > 0 : false));
 
-    const createdAtMs = data.nightThreadCreatedAt?.toMillis?.() ?? now.getTime();
-    const elapsedMinutes = Math.max(0, (now.getTime() - createdAtMs) / 60000);
-    const count = followUpReminderCount(elapsedMinutes);
-    const isFinal = hour === 1;
-    const tone = escalationTone(count, isFinal);
-    const text = `【${count}回目の督促】${tone}${tone ? ' ' : ''}${actionText}`;
+    let text;
+    if (!reviewStarted) {
+      // まだどの区切りも始まっていない間は、時間が経つほど文面を強くする督促を続ける
+      const createdAtMs = data.nightThreadCreatedAt?.toMillis?.() ?? now.getTime();
+      const elapsedMinutes = Math.max(0, (now.getTime() - createdAtMs) / 60000);
+      const count = followUpReminderCount(elapsedMinutes);
+      const isFinal = hour === 1;
+      const tone = escalationTone(count, isFinal);
+      text = `【${count}回目の督促】${tone}${tone ? ' ' : ''}作業を中断して振り返りを開始してください`;
+    } else {
+      // 一度でも始まったら、以降は4区切りをそれぞれ「予定10分の普通のタスク」として扱い、
+      // 日中のタイマーチェックと同じ基準だけを見る（回数表示・語調のエスカレーションは使わない）
+      const runningReviewTask = reviewTasks.find(isRunningTask);
+      if (runningReviewTask) {
+        if (!isOverrun(runningReviewTask)) return; // 順調に作業中なら何も送らない
+        text = `『${runningReviewTask.name}』が予定時間を大幅に超過しています（予定${runningReviewTask.plannedMinutes}分・実績${Math.round(computeActualMinutes(runningReviewTask))}分）`;
+      } else {
+        const allSectionsDone = reviewTasks.length > 0 && reviewTasks.every((t) => t.sessions?.length > 0 && !isRunningTask(t));
+        text = allSectionsDone
+          ? '振り返りは終わっているようです。DBの完了ボタンを押してください'
+          : 'タイマーが止まっています。再開するか、完了していればDBの完了ボタンを押してください';
+      }
+    }
 
     try {
       await notifyRepresentative(slack, REP_EMAIL, text, data.nightThreadTs);
