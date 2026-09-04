@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
-import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget } from 'react-icons/fi';
+import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget, FiFileText } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
 import { STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
@@ -268,105 +268,125 @@ const SuggestText = styled.div`
   line-height: 1.6;
 `;
 
-const DealCard = styled.div`
-  background: white;
-  border: 1px solid #eee;
-  border-radius: 10px;
-  padding: 1rem 1.25rem;
-  margin-bottom: 0.75rem;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+// 案件一覧はあくまで全体振り返りの補足という位置づけのため、1件1件を大きなカードに
+// せず、1行にぎゅっとまとめたテーブル形式にする（状況メモは書かない案件があってもよい
+// 前提で、普段は畳んでおき必要な時だけ開く）
+const DealTableWrap = styled.div`
+  display: flex;
+  flex-direction: column;
 `;
 
-const DealHeader = styled.div`
-  display: flex;
+const DealRow = styled.div`
+  display: grid;
+  grid-template-columns: 1.3fr 90px 100px 56px 1.6fr 28px;
   align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.6rem;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.82rem;
+  &:hover { background: #fafbfc; }
+  @media (max-width: 860px) { grid-template-columns: 1fr; row-gap: 0.3rem; }
+`;
+
+const DealRowHeader = styled(DealRow)`
+  font-weight: 600;
+  color: #95a5a6;
+  font-size: 0.72rem;
+  border-bottom: 2px solid #eee;
+  &:hover { background: none; }
+  @media (max-width: 860px) { display: none; }
 `;
 
 const CompanyName = styled.div`
-  font-weight: 700;
+  font-weight: 600;
   color: #2c3e50;
-  font-size: 1rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 `;
 
 const PhaseBadge = styled.span`
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   font-weight: 600;
   color: white;
   background: ${(props) => STATUS_COLORS[props.$status] || '#95a5a6'};
-  padding: 0.15rem 0.6rem;
+  padding: 0.1rem 0.5rem;
   border-radius: 10px;
+  white-space: nowrap;
+  justify-self: start;
 `;
 
-const BudgetText = styled.span`
-  font-size: 0.9rem;
+const BudgetText = styled.div`
   color: #2c3e50;
-  margin-left: auto;
-`;
-
-const FieldsGrid = styled.div`
-  display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 0.6rem 1rem;
-  align-items: start;
-  @media (max-width: 600px) { grid-template-columns: 1fr; }
-`;
-
-const FieldLabel = styled.div`
-  font-size: 0.8rem;
-  color: #7f8c8d;
-  padding-top: 0.4rem;
+  white-space: nowrap;
 `;
 
 const ProbabilityInput = styled.input`
-  width: 70px;
-  padding: 0.4rem;
+  width: 44px;
+  padding: 0.25rem;
   border: 1px solid #ddd;
   border-radius: 4px;
-  font-size: 0.9rem;
+  font-size: 0.8rem;
 `;
 
-const NoteTextarea = styled.textarea`
-  width: 100%;
-  min-height: 50px;
-  padding: 0.5rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  font-family: inherit;
-  resize: vertical;
-`;
-
-const NaRow = styled.div`
+const NaCell = styled.div`
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  flex-wrap: wrap;
+  gap: 0.4rem;
+  min-width: 0;
 `;
 
 const NaText = styled.span`
-  font-size: 0.9rem;
   color: #2c3e50;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
 `;
 
 const NaDue = styled.span`
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   color: #e67e22;
+  white-space: nowrap;
+`;
+
+const NaPlaceholder = styled.span`
+  color: #bbb;
 `;
 
 const IconButton = styled.button`
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.3rem 0.6rem;
+  gap: 0.2rem;
+  padding: 0.2rem 0.4rem;
   border: 1px solid #ddd;
   background: white;
   border-radius: 4px;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   cursor: pointer;
+  white-space: nowrap;
   &:hover { background: #f8f9fa; }
+`;
+
+const NoteToggleButton = styled.button`
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: ${(props) => (props.$hasNote ? '#e67e22' : '#ccc')};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+`;
+
+const ExpandedPanel = styled.div`
+  grid-column: 1 / -1;
+  padding: 0.5rem 0.5rem 0.7rem;
+  background: #fafbfc;
+  border-bottom: 1px solid #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 `;
 
 const NaEditRow = styled.div`
@@ -379,10 +399,21 @@ const NaEditRow = styled.div`
 const NaInput = styled.input`
   flex: 1;
   min-width: 200px;
-  padding: 0.45rem;
+  padding: 0.4rem;
   border: 1px solid #ddd;
   border-radius: 4px;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+`;
+
+const NoteTextarea = styled.textarea`
+  width: 100%;
+  min-height: 40px;
+  padding: 0.4rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  font-family: inherit;
+  resize: vertical;
 `;
 
 const EmptyText = styled.div`
@@ -496,6 +527,11 @@ function PipelineForecastPage() {
   const [naDraft, setNaDraft] = useState({ content: '', dueDate: '' });
   const [savingNa, setSavingNa] = useState(false);
   const [realizedRecords, setRealizedRecords] = useState([]);
+  const [openNoteId, setOpenNoteId] = useState(null); // 状況メモは普段畳んでおき、開いた案件だけ編集欄を出す
+
+  const toggleNote = (dealId) => {
+    setOpenNoteId((prev) => (prev === dealId ? null : dealId));
+  };
 
   const isExisting = dealType === 'existing';
   const subCol = isExisting ? 'salesRecords' : 'newCaseSalesRecords';
@@ -822,75 +858,101 @@ function PipelineForecastPage() {
           {deals.length === 0 ? (
             <EmptyText>対象の案件はありません</EmptyText>
           ) : (
-            deals.map((deal) => (
-              <DealCard key={deal.id}>
-                <DealHeader>
-                  <CompanyName>{deal.companyName || deal.productName || '(社名未設定)'}</CompanyName>
-                  <PhaseBadge $status={deal.status}>
-                    {deal.status}（{PHASE_DESCRIPTIONS[deal.status] || ''}）
-                  </PhaseBadge>
-                  <BudgetText>想定予算 {formatCurrency(deal.expectedBudget)}</BudgetText>
-                </DealHeader>
+            <SectionCard>
+              <SectionTitle>保有中の案件（全体振り返りの補足。メモは書かなくてもよい）</SectionTitle>
+              <DealTableWrap>
+                <DealRowHeader>
+                  <div>会社名</div>
+                  <div>フェーズ</div>
+                  <div>想定予算</div>
+                  <div>確率</div>
+                  <div>ネクストアクション</div>
+                  <div>メモ</div>
+                </DealRowHeader>
+                {deals.map((deal) => (
+                  <React.Fragment key={deal.id}>
+                    <DealRow>
+                      <CompanyName title={deal.companyName || deal.productName || ''}>
+                        {deal.companyName || deal.productName || '(社名未設定)'}
+                      </CompanyName>
+                      <PhaseBadge $status={deal.status} title={PHASE_DESCRIPTIONS[deal.status] || ''}>
+                        {deal.status}
+                      </PhaseBadge>
+                      <BudgetText>{formatCurrency(deal.expectedBudget)}</BudgetText>
+                      <div>
+                        <ProbabilityInput
+                          type="number"
+                          min="0"
+                          max="100"
+                          value={deal.landingProbability}
+                          onChange={(e) => handleProbabilityInput(deal.id, e.target.value)}
+                          onBlur={(e) => handleProbabilityBlur(deal.id, e.target.value)}
+                        />%
+                      </div>
+                      <NaCell>
+                        {deal.na ? (
+                          <>
+                            <NaText title={deal.na.actionContent}>{deal.na.actionContent}</NaText>
+                            {deal.na.actionDueDate && <NaDue>〜{deal.na.actionDueDate}</NaDue>}
+                            <IconButton onClick={() => beginNaEdit(deal)}><FiEdit3 /></IconButton>
+                            <IconButton onClick={() => completeNa(deal)}><FiCheck /></IconButton>
+                          </>
+                        ) : (
+                          <>
+                            <NaPlaceholder>未設定</NaPlaceholder>
+                            <IconButton onClick={() => beginNaEdit(deal)}><FiPlus /></IconButton>
+                          </>
+                        )}
+                      </NaCell>
+                      <NoteToggleButton
+                        $hasNote={!!deal.landingStatusNote}
+                        onClick={() => toggleNote(deal.id)}
+                        title={deal.landingStatusNote || 'メモを書く（任意）'}
+                      >
+                        <FiFileText size={14} />
+                      </NoteToggleButton>
+                    </DealRow>
 
-                <FieldsGrid>
-                  <FieldLabel>今期内の着地確率</FieldLabel>
-                  <div>
-                    <ProbabilityInput
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={deal.landingProbability}
-                      onChange={(e) => handleProbabilityInput(deal.id, e.target.value)}
-                      onBlur={(e) => handleProbabilityBlur(deal.id, e.target.value)}
-                    /> %
-                  </div>
+                    {naEditingId === deal.id && (
+                      <ExpandedPanel>
+                        <NaEditRow>
+                          <NaInput
+                            placeholder="ネクストアクションの内容"
+                            value={naDraft.content}
+                            onChange={(e) => setNaDraft((prev) => ({ ...prev, content: e.target.value }))}
+                            autoFocus
+                          />
+                          <NaInput
+                            type="date"
+                            style={{ flex: 'none', minWidth: '140px' }}
+                            value={naDraft.dueDate}
+                            onChange={(e) => setNaDraft((prev) => ({ ...prev, dueDate: e.target.value }))}
+                          />
+                          <IconButton onClick={() => saveNa(deal)} disabled={savingNa || !naDraft.content.trim()}>
+                            <FiCheck /> 保存
+                          </IconButton>
+                          <IconButton onClick={cancelNaEdit} disabled={savingNa}>
+                            <FiX /> キャンセル
+                          </IconButton>
+                        </NaEditRow>
+                      </ExpandedPanel>
+                    )}
 
-                  <FieldLabel>状況メモ</FieldLabel>
-                  <NoteTextarea
-                    value={deal.landingStatusNote}
-                    onChange={(e) => handleNoteChange(deal.id, e.target.value)}
-                    onBlur={(e) => handleNoteBlur(deal.id, e.target.value)}
-                    placeholder="今の状況、懸念点、直近の動きなどを書く"
-                  />
-
-                  <FieldLabel>ネクストアクション</FieldLabel>
-                  {naEditingId === deal.id ? (
-                    <NaEditRow>
-                      <NaInput
-                        placeholder="ネクストアクションの内容"
-                        value={naDraft.content}
-                        onChange={(e) => setNaDraft((prev) => ({ ...prev, content: e.target.value }))}
-                        autoFocus
-                      />
-                      <NaInput
-                        type="date"
-                        style={{ flex: 'none', minWidth: '140px' }}
-                        value={naDraft.dueDate}
-                        onChange={(e) => setNaDraft((prev) => ({ ...prev, dueDate: e.target.value }))}
-                      />
-                      <IconButton onClick={() => saveNa(deal)} disabled={savingNa || !naDraft.content.trim()}>
-                        <FiCheck /> 保存
-                      </IconButton>
-                      <IconButton onClick={cancelNaEdit} disabled={savingNa}>
-                        <FiX /> キャンセル
-                      </IconButton>
-                    </NaEditRow>
-                  ) : deal.na ? (
-                    <NaRow>
-                      <NaText>{deal.na.actionContent}</NaText>
-                      {deal.na.actionDueDate && <NaDue>期限 {deal.na.actionDueDate}</NaDue>}
-                      <IconButton onClick={() => beginNaEdit(deal)}><FiEdit3 /> 直す</IconButton>
-                      <IconButton onClick={() => completeNa(deal)}><FiCheck /> 完了にする</IconButton>
-                    </NaRow>
-                  ) : (
-                    <NaRow>
-                      <NaText style={{ color: '#999' }}>設定されていません</NaText>
-                      <IconButton onClick={() => beginNaEdit(deal)}><FiPlus /> 追加</IconButton>
-                    </NaRow>
-                  )}
-                </FieldsGrid>
-              </DealCard>
-            ))
+                    {openNoteId === deal.id && (
+                      <ExpandedPanel>
+                        <NoteTextarea
+                          value={deal.landingStatusNote}
+                          onChange={(e) => handleNoteChange(deal.id, e.target.value)}
+                          onBlur={(e) => handleNoteBlur(deal.id, e.target.value)}
+                          placeholder="今の状況、懸念点、直近の動きなど（任意。書かなくてもよい）"
+                          autoFocus
+                        />
+                      </ExpandedPanel>
+                    )}
+                  </React.Fragment>
+                ))}
+              </DealTableWrap>
+            </SectionCard>
           )}
         </>
       )}
