@@ -33,6 +33,8 @@ const { createOverrunChecker, createIdleResumeNotifier, createReviewReminder } =
 const { createMorningDigest } = require('./morningDigest');
 // モール別売上データの更新確認とSlack督促
 const { createMallUpdateChecker } = require('./mallUpdateGuard');
+// 緊急クエスト（増田さんの投稿への🚨スタンプで日報に最優先タスクを自動登録）
+const { createUrgentQuestRouter } = require('./urgentQuest');
 
 // CORS を設定
 app.use(cors({
@@ -44,6 +46,7 @@ app.use(cors({
 // JSONパーサーより先にマウントする（express.jsonはcontent-typeが
 // application/jsonでなければ素通りするが、念のため順序でも保証する）
 app.use('/api/slack', createSlackInteractionRouter({ admin, db }));
+app.use('/api/slack', createUrgentQuestRouter({ admin, db }));
 
 // JSONパースを有効化
 app.use(express.json());

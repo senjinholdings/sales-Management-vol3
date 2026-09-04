@@ -474,3 +474,25 @@ export const completeNightReview = async (representative, date) => {
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 };
+
+/**
+ * 緊急クエスト（増田さんの投稿へのスタンプで自動登録されたタスク）の完了報告。
+ * 実行中なら区間を閉じたうえで、元のSlackスレッドへ経過時間つきで報告する
+ * （functions/staff.jsのurgent-task-complete、functions/urgentQuest.js参照）
+ * @param {string} representative - 担当者名
+ * @param {string} date - "YYYY-MM-DD"
+ * @param {string} taskId - タスクID
+ */
+export const reportUrgentTaskComplete = async (representative, date, taskId) => {
+  const res = await fetch(`${APP_API_BASE}/staff/urgent-task-complete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(APP_SECRET ? { 'x-app-secret': APP_SECRET } : {})
+    },
+    body: JSON.stringify({ representative, date, taskId })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+};

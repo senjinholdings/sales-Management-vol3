@@ -12,6 +12,7 @@ const { WebClient } = require('@slack/web-api');
 const { getSecret, setSecret, hasSecret, chatworkSecretName } = require('./secrets');
 const { requireAppSecret, env } = require('./authHelpers');
 const { resolveSlackUserId } = require('./slackApproval');
+const { computeActualMinutes, isRunningTask } = require('./dailyReportGuard');
 
 const CHATWORK_API_BASE = 'https://api.chatwork.com/v2';
 const NIGHT_REVIEW_NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR'; // #営業_日報
@@ -202,6 +203,68 @@ function createStaffRouter({ admin, db }) {
       return res.status(200).json({ success: true });
     } catch (error) {
       console.error('夜の振り返り完了記録エラー:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  /**
+   * POST /api/staff/urgent-task-complete
+   * body: { representative: string, date: string ("YYYY-MM-DD"), taskId: string }
+   * 日報画面の緊急クエストの「完了報告」ボタンから呼ばれる。実行中なら区間を閉じたうえで、
+   * その緊急クエストの元になったSlackスレッド（functions/urgentQuest.js参照）へ
+   * 経過時間つきで完了報告を返信する。
+   */
+  router.post('/urgent-task-complete', async (req, res) => {
+    if (!requireAppSecret(req, res)) return;
+    try {
+      const { representative, date, taskId } = req.body || {};
+      if (!representative || !date || !taskId) {
+        return res.status(400).json({ error: 'representative, date, taskId は必須です' });
+      }
+
+      const docRef = db.collection('dailyTimers').doc(`${representative}_${date}`);
+      const snap = await docRef.get();
+      if (!snap.exists) {
+        return res.status(404).json({ error: '対象の日報データが見つかりません' });
+      }
+      const data = snap.data();
+      const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+      const target = tasks.find((t) => t.id === taskId);
+      if (!target || !target.isUrgentTask) {
+        return res.status(404).json({ error: '対象の緊急クエストが見つかりません' });
+      }
+
+      const now = admin.firestore.Timestamp.now();
+      const updatedTasks = tasks.map((t) => {
+        if (t.id !== taskId) return t;
+        const sessions = Array.isArray(t.sessions) ? t.sessions : [];
+        const closedSessions = isRunningTask(t)
+          ? sessions.map((s, i) => (i === sessions.length - 1 ? { ...s, endedAt: now } : s))
+          : sessions;
+        return { ...t, sessions: closedSessions, urgentReportedAt: now };
+      });
+      await docRef.update({ tasks: updatedTasks });
+
+      const reportedTask = updatedTasks.find((t) => t.id === taskId);
+      const elapsedMinutes = Math.round(computeActualMinutes(reportedTask));
+
+      const token = env('SLACK_BOT_TOKEN');
+      if (token && target.slackChannelId) {
+        try {
+          const slack = new WebClient(token);
+          await slack.chat.postMessage({
+            channel: target.slackChannelId,
+            thread_ts: target.slackThreadTs || undefined,
+            text: `✅ 対応完了しました（経過${elapsedMinutes}分）`
+          });
+        } catch (slackError) {
+          console.error('緊急クエスト完了報告のSlack送信失敗（続行）:', slackError.message);
+        }
+      }
+
+      return res.status(200).json({ success: true });
+    } catch (error) {
+      console.error('緊急クエスト完了報告エラー:', error);
       return res.status(500).json({ error: error.message });
     }
   });

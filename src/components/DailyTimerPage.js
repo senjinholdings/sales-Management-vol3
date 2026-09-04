@@ -32,7 +32,8 @@ import {
   updateTaskDetails,
   reorderTasks,
   planNextDayTasks,
-  completeNightReview
+  completeNightReview,
+  reportUrgentTaskComplete
 } from '../services/dailyTimerService.js';
 
 // ============================================
@@ -336,8 +337,9 @@ const TaskRow = styled.div`
   gap: 0.75rem;
   padding: 0.6rem 0.75rem;
   border-radius: 6px;
-  border: 1px solid ${(props) => (props.$overdue ? '#e74c3c' : props.$running ? '#3498db' : '#e0e0e0')};
-  background: ${(props) => (props.$overdue ? '#fdecea' : props.$running ? '#eaf4fd' : '#f8f9fa')};
+  border: 1px solid ${(props) => (props.$urgent ? '#e67e22' : props.$overdue ? '#e74c3c' : props.$running ? '#3498db' : '#e0e0e0')};
+  border-width: ${(props) => (props.$urgent ? '2px' : '1px')};
+  background: ${(props) => (props.$urgent ? '#fef3e6' : props.$overdue ? '#fdecea' : props.$running ? '#eaf4fd' : '#f8f9fa')};
   flex-wrap: wrap;
 `;
 
@@ -362,6 +364,23 @@ const FixedBadge = styled.span`
   background: #ecebfd;
   padding: 0.1rem 0.45rem;
   border-radius: 4px;
+  white-space: nowrap;
+`;
+
+const UrgentBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: white;
+  background: #e67e22;
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
+const ReportedBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #27ae60;
   white-space: nowrap;
 `;
 
@@ -845,10 +864,15 @@ const sortTasksForDisplay = (tasks) => {
 /**
  * ドキュメントの表示順のタスク一覧を返す
  * manualSort（一度でもD&Dで並び替えた）ならtasks配列の並びが正、
- * 未設定の既存ドキュメントは従来どおり予定開始時刻ソート
+ * 未設定の既存ドキュメントは従来どおり予定開始時刻ソート。
+ * 緊急クエスト（isUrgentTask）は並び順に関わらず常に先頭に出す（最優先タスクのため）
  */
-const getDisplayTasks = (dayDoc) =>
-  dayDoc?.manualSort ? (dayDoc.tasks || []) : sortTasksForDisplay(dayDoc?.tasks || []);
+const getDisplayTasks = (dayDoc) => {
+  const base = dayDoc?.manualSort ? (dayDoc.tasks || []) : sortTasksForDisplay(dayDoc?.tasks || []);
+  const urgent = base.filter((t) => t.isUrgentTask);
+  if (urgent.length === 0) return base;
+  return [...urgent, ...base.filter((t) => !t.isUrgentTask)];
+};
 
 const LAST_REP_STORAGE_KEY = 'dailyTimerLastRepresentative';
 
@@ -1361,6 +1385,13 @@ const DailyTimerPage = () => {
     });
   };
 
+  const handleReportUrgentComplete = (rep, taskId) => {
+    if (!window.confirm('緊急クエストの完了をSlackに報告します。よろしいですか？')) return;
+    runMutation(async () => {
+      await reportUrgentTaskComplete(rep, selectedDate, taskId);
+    });
+  };
+
   const renderTaskRow = (rep, task) => {
     const timing = getTaskTiming(task);
     const hasPlanned = task.plannedMinutes != null;
@@ -1498,8 +1529,9 @@ const DailyTimerPage = () => {
     // 未開始
     if (timing.status === 'notStarted') {
       return (
-        <TaskRow key={task.id}>
+        <TaskRow key={task.id} $urgent={task.isUrgentTask}>
           <TaskName>{task.name}</TaskName>
+          {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {scheduleLabel && <PlannedBadge>{scheduleLabel}</PlannedBadge>}
           <ActionButton onClick={() => handleStart(rep, task.id)} disabled={saving}>
@@ -1508,8 +1540,17 @@ const DailyTimerPage = () => {
           {editIcon}
           {insertIcon}
           {linkIcon}
-          {/* 開始済みの行・毎日自動で用意される固定枠は削除ボタン自体を出さない */}
-          {!task.isReviewTask && (
+          {task.isUrgentTask && (
+            task.urgentReportedAt
+              ? <ReportedBadge>報告済み</ReportedBadge>
+              : (
+                <ActionButton onClick={() => handleReportUrgentComplete(rep, task.id)} disabled={saving}>
+                  <FiCheck size={12} /> 完了報告
+                </ActionButton>
+              )
+          )}
+          {/* 開始済みの行・毎日自動で用意される固定枠/緊急クエストは削除ボタン自体を出さない */}
+          {!task.isReviewTask && !task.isUrgentTask && (
             <DeleteButton onClick={() => handleDelete(rep, task.id)} disabled={saving}>
               <FiTrash2 size={14} />
             </DeleteButton>
@@ -1524,8 +1565,9 @@ const DailyTimerPage = () => {
       const overdue = hasPlanned && elapsedMs > plannedMs;
       const overdueMinutes = overdue ? Math.ceil((elapsedMs - plannedMs) / 60000) : 0;
       return (
-        <TaskRow key={task.id} $running $overdue={overdue}>
+        <TaskRow key={task.id} $running $overdue={overdue} $urgent={task.isUrgentTask}>
           <TaskName>{task.name}</TaskName>
+          {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           {hasPlanned && <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>}
@@ -1537,6 +1579,11 @@ const DailyTimerPage = () => {
           {editIcon}
           {insertIcon}
           {linkIcon}
+          {task.isUrgentTask && (
+            <ActionButton onClick={() => handleReportUrgentComplete(rep, task.id)} disabled={saving}>
+              <FiCheck size={12} /> 完了報告
+            </ActionButton>
+          )}
         </TaskRow>
       );
     }
@@ -1554,8 +1601,9 @@ const DailyTimerPage = () => {
     // 予定なしの行は超過判定をせず実績のみ表示（妥当性は判定不能で「−」）
     if (!hasPlanned) {
       return (
-        <TaskRow key={task.id}>
+        <TaskRow key={task.id} $urgent={task.isUrgentTask}>
           <TaskName>{task.name}</TaskName>
+          {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
@@ -1563,7 +1611,17 @@ const DailyTimerPage = () => {
           {editIcon}
           {insertIcon}
           {linkIcon}
-          <ValidityMark $type="none" title="予定時間が未設定のため判定なし">−</ValidityMark>
+          {task.isUrgentTask ? (
+            task.urgentReportedAt
+              ? <ReportedBadge>報告済み</ReportedBadge>
+              : (
+                <ActionButton onClick={() => handleReportUrgentComplete(rep, task.id)} disabled={saving}>
+                  <FiCheck size={12} /> 完了報告
+                </ActionButton>
+              )
+          ) : (
+            <ValidityMark $type="none" title="予定時間が未設定のため判定なし">−</ValidityMark>
+          )}
         </TaskRow>
       );
     }

@@ -469,4 +469,11 @@ function createReviewReminder({ admin, db }) {
   };
 }
 
-module.exports = { createOverrunChecker, createIdleResumeNotifier, createReviewReminder };
+module.exports = {
+  createOverrunChecker,
+  createIdleResumeNotifier,
+  createReviewReminder,
+  toJstDateStr,
+  computeActualMinutes,
+  isRunningTask
+};
