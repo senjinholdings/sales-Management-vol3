@@ -67,21 +67,26 @@ function isWeekendDateStr(dateStr) {
 }
 
 /**
- * 23:40〜1:00の督促が何回目かを、時刻から機械的に算出する（カウンタをDBに持たず、
- * 時刻さえ分かれば一意に決まるようにするため。23:40が1回目、1:00が9回目）
+ * 督促が何回目かを、スレッド開始からの実経過時間（分）から算出する。
+ * スケジュール実行の実際の発火時刻は毎回ちょうど:00/:10/:20...とは限らず
+ * ずれることがあるため、時刻の分（minute）そのものでは割り切れず端数が出てしまう
+ * （例: 49分経過を10で割ると4.9）。必ず整数になるよう丸める
  */
-function followUpReminderCount(hour, minute) {
-  const minutesSince2330 = hour === 23 ? minute - 30 : hour === 0 ? 30 + minute : 90 + minute;
-  return minutesSince2330 / 10;
+function followUpReminderCount(elapsedMinutes) {
+  return Math.max(1, Math.round(elapsedMinutes / 10));
 }
 
-/** 督促回数に応じて語調を強める前置き文（回数が伸びるほど強くする） */
-function escalationTone(count) {
+/**
+ * 督促回数に応じて語調を強める前置き文（回数が伸びるほど強くする）。
+ * 「何回目で終わり」という固定の総数は前提にしない（発火タイミングのずれで
+ * 回数が想定通りに伸びるとは限らないため）。isFinalの時だけ最後の文言にする
+ */
+function escalationTone(count, isFinal) {
+  if (isFinal) return '本日最後の連絡です。今すぐ対応してください。';
   if (count <= 2) return '';
   if (count <= 4) return 'まだ完了していません。';
   if (count <= 6) return 'かなり時間が経っています。';
-  if (count <= 8) return '何度も催促していますが、まだ完了していません。今すぐお願いします。';
-  return '本日最後の連絡です。今すぐ対応してください。';
+  return '何度も催促していますが、まだ完了していません。今すぐお願いします。';
 }
 
 function isRunningTask(task) {
@@ -308,8 +313,12 @@ function createIdleResumeNotifier({ admin, db }) {
  * 夜の振り返りフロー（10分おきに実行し、JST時刻で内部分岐）。土日は完全にスキップする。
  * - 常時: 「振り返り」タスク枠（23:30〜24:00）を平日分は前もって用意しておく
  *   （23:30を待たず、日付が変わり次第すぐ日報に見える固定枠にする）
- * - 23:30: Slackスレッドを1本立てて開始連絡をする
- * - 23:40〜1:00（10分おき）: reviewCompletedAtが立つまでスレッドへ督促を返信し続ける
+ * - 23:30以降、スレッドがまだ無ければその時点でSlackスレッドを1本立てて開始連絡をする
+ *   （スケジュール実行の発火時刻はちょうど:00/:10...とは限らずずれることがあるため、
+ *   厳密な時刻一致ではなく「23:30以降で最初に実行された時」に作る）
+ * - スレッドができた後は、1:00台前半まで実行のたびにreviewCompletedAtが立つまで
+ *   そのスレッドへ督促を返信し続ける。回数はスレッド開始からの実経過時間で算出する
+ *   （発火間隔がずれても整数の回数になり、スレッド無しで督促だけが飛ぶことはない）
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createReviewReminder({ admin, db }) {
@@ -348,9 +357,11 @@ function createReviewReminder({ admin, db }) {
       }, { merge: true });
     }
 
-    const isSetupSlot = hour === 23 && minute === 30;
-    const isFollowUpSlot = (hour === 23 && minute >= 40) || hour === 0 || (hour === 1 && minute === 0);
-    if (!isSetupSlot && !isFollowUpSlot) return;
+    // 夜のチェック対象時間帯（23:30〜翌1時台前半）。スケジュール実行は必ずしも
+    // ちょうど:00/:10/:20...に発火するとは限らない（実際に:X9のようにずれて
+    // 発火することがある）ため、厳密な分一致ではなく範囲で判定する
+    const inNightWindow = (hour === 23 && minute >= 30) || hour === 0 || (hour === 1 && minute < 10);
+    if (!inNightWindow) return;
 
     // 0時・1時台は日付が変わっているため、督促対象は前日（23:30に始まった振り返り）を指す
     const reviewDateStr = hour === 23 ? todayStr : toJstDateStr(new Date(now.getTime() - 24 * 60 * 60 * 1000));
@@ -368,9 +379,9 @@ function createReviewReminder({ admin, db }) {
     const data = snap.exists ? snap.data() : null;
     const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
 
-    if (isSetupSlot) {
-      if (data?.nightThreadTs) return; // 既に開始連絡済み
-
+    // スレッドがまだ無ければ、この時間帯で最初に実行されたタイミングで開始連絡を投稿する
+    // （スレッドが無い状態で督促だけが単発投稿されることが絶対に無いよう、常にここを経由させる）
+    if (!data?.nightThreadTs) {
       // その日超過したタスク・未完了予定時間の合計を添えて最初の投稿をする
       const overrunLines = tasks
         .filter((t) => !t.isReviewTask && isOverrun(t))
@@ -393,27 +404,32 @@ function createReviewReminder({ admin, db }) {
           representative: REP_NAME,
           date: reviewDateStr,
           nightThreadTs: threadTs,
+          nightThreadCreatedAt: admin.firestore.Timestamp.now(),
           updatedAt: admin.firestore.Timestamp.now()
         }, { merge: true });
       } catch (error) {
         console.error('夜チェックスレッド作成失敗（続行）:', error.message);
       }
-      return;
+      return; // 開始連絡そのものが最初の合図なので、同じタイミングでの督促は送らない
     }
 
-    // フォローアップ（23:40〜1:00、10分おき）
-    if (!data || data.reviewCompletedAt) return; // セットアップ未実施 or 完了済みなら何もしない
+    // フォローアップ（スレッドは既にある。reviewCompletedAtが立つまで返信し続ける）
+    if (data.reviewCompletedAt) return;
 
     const reviewTask = tasks.find((t) => t.isReviewTask);
     const actionText = reviewTask && isRunningTask(reviewTask)
       ? '振り返りが終わったらDBで完了ボタンを押してください'
       : '作業を中断して振り返りを開始してください';
-    const count = followUpReminderCount(hour, minute);
-    const tone = escalationTone(count);
+
+    const createdAtMs = data.nightThreadCreatedAt?.toMillis?.() ?? now.getTime();
+    const elapsedMinutes = Math.max(0, (now.getTime() - createdAtMs) / 60000);
+    const count = followUpReminderCount(elapsedMinutes);
+    const isFinal = hour === 1;
+    const tone = escalationTone(count, isFinal);
     const text = `【${count}回目の督促】${tone}${tone ? ' ' : ''}${actionText}`;
 
     try {
-      await notifyRepresentative(slack, REP_EMAIL, text, data.nightThreadTs || undefined);
+      await notifyRepresentative(slack, REP_EMAIL, text, data.nightThreadTs);
     } catch (error) {
       console.error('夜の振り返り督促送信失敗（続行）:', error.message);
     }
