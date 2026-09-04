@@ -459,14 +459,29 @@ function createReviewReminder({ admin, db }) {
       const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${dateStr}`);
       const snap = await docRef.get();
       const tasks = Array.isArray(snap.data()?.tasks) ? snap.data().tasks : [];
-      if (tasks.some((t) => t.isReviewTask)) continue;
+
+      // 4区切りが名前まで含めて揃っていればOK。旧形式（1本30分の「振り返り」枠など）が
+      // 混ざっている場合は「isReviewTaskが1つでもあれば揃っている」とみなさないよう、
+      // 名前で個別に判定する（でないと旧形式のまま新しい4区切りへの移行が一生起きない）
+      const existingReviewTasks = tasks.filter((t) => t.isReviewTask);
+      const hasAllSections = REVIEW_SECTIONS.every((section) =>
+        existingReviewTasks.some((t) => t.name === section.name)
+      );
+      if (hasAllSections) continue;
+
+      // 未着手の旧形式レビュー枠は新しい4区切りに置き換える（記録を守るため、
+      // 一度でも着手されたものはそのまま残し、足りない区切りだけ追加する）
+      const keptTasks = tasks.filter((t) => !t.isReviewTask || (Array.isArray(t.sessions) && t.sessions.length > 0));
+      const keptSectionNames = new Set(keptTasks.filter((t) => t.isReviewTask).map((t) => t.name));
+      const sectionsToAdd = REVIEW_SECTIONS.filter((section) => !keptSectionNames.has(section.name));
+      if (sectionsToAdd.length === 0) continue;
 
       await docRef.set({
         representative: REP_NAME,
         date: dateStr,
         tasks: [
-          ...tasks,
-          ...REVIEW_SECTIONS.map((section, sectionIndex) => ({
+          ...keptTasks,
+          ...sectionsToAdd.map((section, sectionIndex) => ({
             id: `task_${Date.now()}_review_${offset}_${sectionIndex}`,
             name: section.name,
             plannedMinutes: REVIEW_SECTION_MINUTES,
