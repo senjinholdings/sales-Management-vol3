@@ -356,6 +356,56 @@ export const parseGPTResponse = (response) => {
   return { summary, actionPlans, status };
 };
 
+/**
+ * 着地予想と目標の差分を埋めるための追加アクションをGPTに提案させる
+ * （実データの業種情報や配信実績は無いため、一般的な知見にもとづく参考意見という位置づけ）
+ * @param {{dealType: string, gapAmount: number, avgDealBudget: number, dealCount: number}} params
+ * @returns {Promise<{suggestion: string, error?: string}>}
+ */
+export const suggestGapClosingActions = async ({ dealType, gapAmount, avgDealBudget, dealCount }) => {
+  try {
+    if (!API_KEY) {
+      return { suggestion: '', error: 'OpenAI APIキーが設定されていません。' };
+    }
+    const client = getOpenAIClient();
+    if (!client) {
+      return { suggestion: '', error: 'OpenAI APIクライアントの初期化に失敗しました。' };
+    }
+
+    const prompt = `あなたは営業支援AIです。ソリューション営業の担当者が、今期の${dealType}の売上目標に対して着地予想が不足しています。
+
+不足額: 約${Math.round(gapAmount).toLocaleString()}円
+現在保有している${dealType}案件の平均想定予算: 約${Math.round(avgDealBudget || 0).toLocaleString()}円
+現在保有している${dealType}案件数: ${dealCount}件
+
+この不足を埋めるために、新規の見込み顧客への架電・メールなどのアプローチを増やす前提で、以下を答えてください。
+
+1. 目標達成のためにはおおよそ何件くらいの新規アプローチ（メール・架電など）が必要そうか。想定する成約率（歩留まり）の前提も明記し、あくまで目安の試算であることが分かるようにする
+2. どのような業種・規模の企業層を優先して狙うとよさそうか（一般的な知見にもとづく提案でよい）
+
+実データにもとづく精緻な計算ではなく、あくまで参考意見であることが伝わる書き方にしてください。300字程度で簡潔にまとめてください。`;
+
+    const response = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'あなたは営業支援AIです。営業担当者が次に取るべき現実的なアクションを、前提を明示しながら簡潔に提案してください。' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 600,
+      temperature: 0.4
+    });
+
+    const suggestion = response.choices[0]?.message?.content?.trim();
+    if (!suggestion) {
+      return { suggestion: '', error: 'AIから提案を取得できませんでした。' };
+    }
+    return { suggestion };
+  } catch (error) {
+    console.error('提案生成エラー:', error);
+    return { suggestion: '', error: error.message || '提案の生成に失敗しました。' };
+  }
+};
+
 // APIキーチェック用のヘルパー関数をエクスポート
 export const checkAPIKeyStatus = async () => {
   try {

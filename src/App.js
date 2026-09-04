@@ -34,6 +34,7 @@ import AccountSalesDashboard from './components/AccountSalesDashboard.js';
 import AccountDealsListPage from './components/AccountDealsListPage.js';
 import KeyAccountMasterPage from './components/KeyAccountMasterPage.js';
 import DailyTimerPage from './components/DailyTimerPage.js';
+import PipelineForecastPage from './components/PipelineForecastPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import { db } from './firebase.js';
@@ -504,6 +505,12 @@ function AdminApp() {
             </NavLink>
           </NavItem>
           <NavItem>
+            <NavLink to="/pipeline-forecast" onClick={closeMobileMenu}>
+              <FiTarget />
+              パイプライン振り返り
+            </NavLink>
+          </NavItem>
+          <NavItem>
             <NavLink to="/weekly-report" onClick={closeMobileMenu}>
               <FiClipboard />
               週報
@@ -590,6 +597,7 @@ function AdminApp() {
           <Route path="/account-deals-list" element={<AccountDealsListPage />} />
           <Route path="/key-accounts" element={<KeyAccountMasterPage />} />
           <Route path="/daily-timer" element={<DailyTimerPage />} />
+          <Route path="/pipeline-forecast" element={<PipelineForecastPage />} />
         </Routes>
       </MainContent>
       </AppContainer>
