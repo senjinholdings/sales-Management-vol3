@@ -3,7 +3,10 @@
  * - タイマーの止め忘れ・つけ忘れ: 10分おきに実行し、(a) 予定時間を明らかに超えて
  *   動いたままのタスク、(b) 日中（9時〜22時未満）なのに誰も実行中のタスクがない状態、
  *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
- *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）
+ *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）。
+ *   (b)は10分おきの検知を待たず、日中に実行中のタスクが0件になった瞬間（Firestore
+ *   トリガー）にも即座に一報を送る。その際、直前まで動いていたタスク名と実績時間も添える
+ *   （createIdleResumeNotifier。タイマーが再開された時のスレッド返信も同じ関数が担当）
  * - 夜の振り返りフロー: 平日分は今日から先2週間ぶん、振り返りの4区切り（各10分・
  *   23:20/23:30/23:40/23:50スタート）を前もって自動で用意しておく（固定枠。
  *   カレンダーで先の日付を開いても既に入っている）。23:20になったらSlackスレッドを
@@ -270,27 +273,63 @@ function createOverrunChecker({ admin, db }) {
 }
 
 /**
- * タイマー再開の通知（Firestoreトリガー、dailyTimersのonUpdate）。
- * 「タイマー開始し忘れ」リマインド（pendingIdleAlert）が残っている状態で、
- * 実行中タスクが0→1に変わった（＝タイマーが押された）瞬間だけ発火し、
- * リマインドのメッセージへスレッド返信で「リマインドから何分後だったか」
- * 「実際にタイマーが止まっていた合計時間」を知らせる。送信後はpendingIdleAlertを消す
- * （複数回リマインドが飛んでいてもcreateOverrunCheckerが都度上書きするため、
- * 常に直近1通への返信になる）
+ * タイマーの停止・再開の通知（Firestoreトリガー、dailyTimersのonUpdate）。2つの向きを扱う:
+ * - 実行中タスクが1→0に変わった瞬間（日中9時〜22時未満のみ）: 直前まで動いていたタスク名・
+ *   実績時間つきで、その場で「現在実行中のタスクがありません」の一報を送る（10分おきの
+ *   定期チェックを待たない）。このメッセージ自体がpendingIdleAlertの起点になる
+ * - 「タイマー開始し忘れ」リマインド（pendingIdleAlert、上記の一報 or 定期チェックのどちらかで
+ *   セットされる）が残っている状態で、実行中タスクが0→1に変わった（＝タイマーが押された）
+ *   瞬間: 同じスレッドへ「リマインドから何分後だったか」「実際に止まっていた合計時間」を
+ *   返信し、pendingIdleAlertを消す
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createIdleResumeNotifier({ admin, db }) {
   return async (change) => {
     const before = change.before.data() || {};
     const after = change.after.data() || {};
+    const beforeTasksAll = Array.isArray(before.tasks) ? before.tasks : [];
+    const afterTasksAll = Array.isArray(after.tasks) ? after.tasks : [];
+    const wasAnyRunning = beforeTasksAll.some(isRunningTask);
+    const isAnyRunningNow = afterTasksAll.some(isRunningTask);
+
+    // 実行中→実行中タスクなし（＝タイマーを止めた）になった瞬間、日中（9時〜22時未満）なら
+    // 定期チェックの次回を待たずすぐに知らせる。何のタスクが何分だったかも添える
+    if (wasAnyRunning && !isAnyRunningNow) {
+      const { hour } = jstHourMinute(new Date());
+      if (hour < IDLE_CHECK_START_HOUR || hour >= IDLE_CHECK_END_HOUR) return;
+      if (after.pendingIdleAlert) return; // 既に別経路で通知済み（同時書き込み等）なら二重送信しない
+
+      const stoppedBefore = beforeTasksAll.find(isRunningTask);
+      if (!stoppedBefore) return;
+      const stoppedAfter = afterTasksAll.find((t) => t.id === stoppedBefore.id) || stoppedBefore;
+
+      const token = env('SLACK_BOT_TOKEN');
+      if (!token) return;
+      const slack = new WebClient(token);
+
+      try {
+        const email = await findStaffEmail(db, after.representative);
+        if (!email) return;
+        const elapsedMinutes = Math.round(computeActualMinutes(stoppedAfter));
+        const text = `⏸『${stoppedAfter.name}』を終了しました（実績${elapsedMinutes}分）。現在実行中のタスクがありません。タイマーを開始し忘れていませんか？`;
+        const threadTs = await notifyRepresentative(slack, email, text);
+
+        const sessions = Array.isArray(stoppedAfter.sessions) ? stoppedAfter.sessions : [];
+        const idleSinceMs = sessions[sessions.length - 1]?.endedAt?.toMillis?.() ?? Date.now();
+        await change.after.ref.set({
+          pendingIdleAlert: { threadTs, sentAt: admin.firestore.Timestamp.now(), idleSinceMs }
+        }, { merge: true });
+      } catch (error) {
+        console.error('タイマー停止の即時通知失敗（続行）:', error.message);
+      }
+      return;
+    }
+
     const alert = before.pendingIdleAlert;
     if (!alert) return;
+    if (wasAnyRunning) return; // 元々何か動いていた更新は対象外（上のケースで処理済み）
 
-    const beforeTasks = Array.isArray(before.tasks) ? before.tasks : [];
-    if (beforeTasks.some(isRunningTask)) return; // 元々何か動いていた更新は対象外
-
-    const afterTasks = Array.isArray(after.tasks) ? after.tasks : [];
-    const runningTask = afterTasks.find(isRunningTask);
+    const runningTask = afterTasksAll.find(isRunningTask);
     if (!runningTask) return; // 今回の更新でタイマーが押されたわけではない
 
     const token = env('SLACK_BOT_TOKEN');
