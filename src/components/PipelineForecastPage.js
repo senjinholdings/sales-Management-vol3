@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
 import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget, FiFileText } from 'react-icons/fi';
 import { db } from '../firebase.js';
-import { collection, getDocs, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
 import { addSalesEntry, updateSalesEntry, updateSalesEntryStatus } from '../services/projectService.js';
 import { suggestGapClosingActions, isGPTServiceAvailable } from '../services/gptService.js';
@@ -77,6 +77,28 @@ const getWeekRange = (date) => {
 };
 
 const formatMonthDay = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
+
+/** 週の一意なID（週の始まり=火曜日の日付）。WeeklyReportPage.jsのgetWeekIdと同じ形式 */
+const getWeekId = (date) => {
+  const { start } = getWeekRange(date);
+  return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+};
+
+/** 直近12週＋今週の選択肢を作る（WeeklyReportPage.jsと同じ考え方） */
+const generateWeekOptions = () => {
+  const options = [];
+  const today = new Date();
+  for (let i = 0; i < 13; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i * 7);
+    const { start, end } = getWeekRange(d);
+    options.push({
+      id: getWeekId(d),
+      label: `${formatMonthDay(start)}〜${formatMonthDay(end)}${i === 0 ? '（今週）' : ''}`
+    });
+  }
+  return options;
+};
 
 /** 指定した月の範囲を、月をまたがない形で火〜月の週に分割する */
 const splitMonthIntoWeeks = (monthStart, monthEnd) => {
@@ -515,7 +537,9 @@ const RecordBudget = styled.div`
 
 function PipelineForecastPage() {
   const { options: quarterOptions, current: currentQuarterKey } = useMemo(() => generateQuarterOptions(), []);
+  const weekOptions = useMemo(() => generateWeekOptions(), []);
   const [selectedQuarter, setSelectedQuarter] = useState(currentQuarterKey);
+  const [selectedWeekId, setSelectedWeekId] = useState(() => getWeekId(new Date()));
   const [dealType, setDealType] = useState('new'); // 'new' | 'existing'
   const [deals, setDeals] = useState([]);
   const [target, setTarget] = useState(0);
@@ -552,11 +576,15 @@ function PipelineForecastPage() {
       );
 
       const withNa = await Promise.all(filtered.map(async (d) => {
-        const na = await fetchDealActiveNa(d.id, subCol).catch(() => null);
+        const [na, weeklySnap] = await Promise.all([
+          fetchDealActiveNa(d.id, subCol).catch(() => null),
+          getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null)
+        ]);
+        const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
         return {
           ...d,
-          landingProbability: d.landingProbability != null ? d.landingProbability : (PHASE_PROBABILITY[d.status] || 0),
-          landingStatusNote: d.landingStatusNote || '',
+          landingProbability: weekly?.probability != null ? weekly.probability : (PHASE_PROBABILITY[d.status] || 0),
+          landingStatusNote: weekly?.statusNote || '',
           na
         };
       }));
@@ -573,7 +601,7 @@ function PipelineForecastPage() {
     } finally {
       setLoading(false);
     }
-  }, [isExisting, subCol, selectedQuarter]);
+  }, [isExisting, subCol, selectedQuarter, selectedWeekId]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -651,7 +679,9 @@ function PipelineForecastPage() {
     const num = Math.max(0, Math.min(100, Number(value) || 0));
     setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, landingProbability: num } : d)));
     try {
-      await updateDoc(doc(db, 'progressDashboard', dealId), { landingProbability: num });
+      await setDoc(doc(db, 'progressDashboard', dealId, 'weeklyForecasts', selectedWeekId), {
+        probability: num
+      }, { merge: true });
     } catch (error) {
       console.error('着地確率の保存に失敗:', error);
     }
@@ -663,7 +693,9 @@ function PipelineForecastPage() {
 
   const handleNoteBlur = async (dealId, value) => {
     try {
-      await updateDoc(doc(db, 'progressDashboard', dealId), { landingStatusNote: value });
+      await setDoc(doc(db, 'progressDashboard', dealId, 'weeklyForecasts', selectedWeekId), {
+        statusNote: value
+      }, { merge: true });
     } catch (error) {
       console.error('状況メモの保存に失敗:', error);
     }
@@ -752,6 +784,11 @@ function PipelineForecastPage() {
           <Select value={selectedQuarter} onChange={(e) => setSelectedQuarter(e.target.value)}>
             {quarterOptions.map((opt) => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </Select>
+          <Select value={selectedWeekId} onChange={(e) => setSelectedWeekId(e.target.value)}>
+            {weekOptions.map((opt) => (
+              <option key={opt.id} value={opt.id}>{opt.label}</option>
             ))}
           </Select>
           <TabButton $active={dealType === 'new'} onClick={() => setDealType('new')}>新規</TabButton>
@@ -859,7 +896,10 @@ function PipelineForecastPage() {
             <EmptyText>対象の案件はありません</EmptyText>
           ) : (
             <SectionCard>
-              <SectionTitle>保有中の案件（全体振り返りの補足。メモは書かなくてもよい）</SectionTitle>
+              <SectionTitle>
+                保有中の案件（全体振り返りの補足。メモは書かなくてもよい）
+                　{weekOptions.find((w) => w.id === selectedWeekId)?.label}の記入内容
+              </SectionTitle>
               <DealTableWrap>
                 <DealRowHeader>
                   <div>会社名</div>
