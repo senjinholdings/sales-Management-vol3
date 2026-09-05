@@ -1,8 +1,9 @@
 /**
  * 日報（dailyTimers）の記入漏れ防止。2つのスケジュール実行Cloud Functionsで構成する：
  * - タイマーの止め忘れ・つけ忘れ: 10分おきに実行し、(a) 予定時間を明らかに超えて
- *   動いたままのタスク、(b) 日中（9時〜22時未満）なのに誰も実行中のタスクがない状態、
- *   の両方を検知して本人にSlack DM。どちらもチェック間隔（10分）そのものが再送間隔になる
+ *   動いたままのタスク、(b) 誰も実行中のタスクがない状態、の両方を検知して本人にSlack DM。
+ *   夜の振り返りフロー以外のこの手の通知は、土日と深夜0時〜8時未満は送らない（8時から
+ *   再開する）。どちらもチェック間隔（10分）そのものが再送間隔になる
  *   （動きっぱなし・止まりっぱなしが続く限り毎回送る。個別の抑制フラグは持たない）。
  *   (b)は10分おきの検知を待たず、日中に実行中のタスクが0件になった瞬間（Firestore
  *   トリガー）にも一報を送る。ただし止めた直後は次のタスクに移るだけのことも多いため、
@@ -41,9 +42,9 @@ const { resolveSlackUserId } = require('./slackApproval');
 // 両方を超えたら明らかな超過とみなす
 const OVERRUN_BUFFER_MINUTES = 20;
 const OVERRUN_RATIO = 1.3;
-// 「実行中のタスクなし」リマインドの対象時間帯（この時間外＝夜は送らない）
-const IDLE_CHECK_START_HOUR = 9;
-const IDLE_CHECK_END_HOUR = 22;
+// 夜の振り返りフロー以外のリマインド（タイマー超過・タイマー未開始など）は、
+// 土日と深夜0時〜8時は送らない（8時から再開する）
+const REMINDER_ACTIVE_START_HOUR = 8;
 // タイマーを止めた直後は次のタスクに移るだけのことも多いため、即座には知らせず
 // この時間だけ待ってから「まだ何も動いていなければ」知らせる
 const IDLE_GRACE_PERIOD_MS = 2 * 60 * 1000;
@@ -91,6 +92,17 @@ function isWeekendDateStr(dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
   const day = new Date(y, m - 1, d).getDay();
   return day === 0 || day === 6;
+}
+
+/**
+ * 夜の振り返りフロー以外のリマインドを送ってよい時間帯かどうか。
+ * 土日、または深夜0時〜8時未満は対象外（8時から再開する）
+ */
+function isReminderActiveNow(now) {
+  const { hour } = jstHourMinute(now);
+  if (hour < REMINDER_ACTIVE_START_HOUR) return false;
+  if (isWeekendDateStr(toJstDateStr(now))) return false;
+  return true;
 }
 
 /**
@@ -191,13 +203,14 @@ function jstHourStartMs(now, hour) {
 }
 
 /**
- * タイマーの止め忘れ・つけ忘れチェック（10分おき）。
+ * タイマーの止め忘れ・つけ忘れチェック（10分おき）。土日・深夜0時〜8時未満は何もしない
+ * （REMINDER_ACTIVE_START_HOUR、8時から再開する）。
  * 同じ超過・同じ放置が続く間の再送はチャンネルを埋めないよう、初回だけ新規投稿し、
  * 以後はその1通へのスレッド返信にする（超過タスクごとにpendingOverrunAlerts.{taskId}、
  * 実行中タスクなしの放置にはpendingIdleAlertとしてスレッドの起点tsを記録）。
  * 「タイマー開始し忘れ」の方は、後でタイマーが実際に押された時にそのスレッドへ
  * 「何分後だったか」を返信できるよう、送信時刻・実際に止まっていた起点（直近の
- * 作業終了時刻。それも無ければ9時扱い）も併せて記録する（返信はcreateIdleResumeNotifierが行う）
+ * 作業終了時刻。それも無ければ8時扱い）も併せて記録する（返信はcreateIdleResumeNotifierが行う）
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createOverrunChecker({ admin, db }) {
@@ -207,11 +220,10 @@ function createOverrunChecker({ admin, db }) {
       console.error('SLACK_BOT_TOKEN が未設定のためタイマーチェックをスキップ');
       return;
     }
-    const slack = new WebClient(token);
     const now = new Date();
+    if (!isReminderActiveNow(now)) return; // 土日・深夜0時〜8時は送らない
+    const slack = new WebClient(token);
     const today = toJstDateStr(now);
-    const { hour } = jstHourMinute(now);
-    const isDaytime = hour >= IDLE_CHECK_START_HOUR && hour < IDLE_CHECK_END_HOUR;
 
     const snap = await db.collection('dailyTimers').where('date', '==', today).get();
     for (const docSnap of snap.docs) {
@@ -256,8 +268,8 @@ function createOverrunChecker({ admin, db }) {
         }
       });
 
-      // 日中（9時〜22時未満）なのに実行中のタスクが1つもない＝タイマーの開始忘れの可能性
-      if (!anyRunning && isDaytime) {
+      // 実行中のタスクが1つもない（対象時間帯であることは関数の先頭で確認済み）＝タイマーの開始忘れの可能性
+      if (!anyRunning) {
         try {
           const email = await findStaffEmail(db, data.representative);
           if (email) {
@@ -269,7 +281,7 @@ function createOverrunChecker({ admin, db }) {
               existingAlert?.threadTs || undefined
             );
             if (!existingAlert) {
-              const idleSinceMs = latestSessionEndMs(tasks) ?? jstHourStartMs(now, IDLE_CHECK_START_HOUR);
+              const idleSinceMs = latestSessionEndMs(tasks) ?? jstHourStartMs(now, REMINDER_ACTIVE_START_HOUR);
               docUpdates.pendingIdleAlert = { threadTs: ts, sentAt: admin.firestore.Timestamp.now(), idleSinceMs };
             }
             remindersSent += 1;
@@ -294,7 +306,7 @@ function createOverrunChecker({ admin, db }) {
  * タイマーの停止・再開・修正の通知（Firestoreトリガー、dailyTimersのonUpdate）。4つのケースを扱う:
  * (1) 超過していたタスクが終了した瞬間: 実績時間つきで即座に知らせ、超過分（実績-予定）を
  *     dailyTimers.timeAccuracy.inaccurateMinutesに加算する。既に督促スレッドがあれば返信する
- * (2) 実行中タスクが1→0に変わった瞬間（日中9時〜22時未満のみ）: IDLE_GRACE_PERIOD_MS
+ * (2) 実行中タスクが1→0に変わった瞬間（土日・深夜0時〜8時未満は対象外）: IDLE_GRACE_PERIOD_MS
  *     （2分）待ってから、それでもまだ何も実行中でなければ、直前まで動いていたタスク名・
  *     実績時間つきで「現在実行中のタスクがありません」の一報を送る（10分おきの定期チェックを
  *     待たない。ただし止めた直後は次のタスクに移るだけのことも多いため即時ではなく2分待つ。
@@ -334,9 +346,12 @@ function createIdleResumeNotifier({ admin, db }) {
         if (!email) continue;
         const elapsedMinutes = Math.round(computeActualMinutes(afterTask));
         const overageMinutes = Math.max(0, elapsedMinutes - (afterTask.plannedMinutes || 0));
-        const existingThreadTs = before.pendingOverrunAlerts?.[afterTask.id]?.threadTs;
-        const text = `⏱『${afterTask.name}』が終了しました（予定${afterTask.plannedMinutes}分・実績${elapsedMinutes}分、${overageMinutes}分超過）`;
-        await notifyRepresentative(slack, email, text, existingThreadTs || undefined);
+        // 記入漏れ時間の集計は時間帯を問わず行うが、通知そのものは対象時間帯だけ送る
+        if (isReminderActiveNow(new Date())) {
+          const existingThreadTs = before.pendingOverrunAlerts?.[afterTask.id]?.threadTs;
+          const text = `⏱『${afterTask.name}』が終了しました（予定${afterTask.plannedMinutes}分・実績${elapsedMinutes}分、${overageMinutes}分超過）`;
+          await notifyRepresentative(slack, email, text, existingThreadTs || undefined);
+        }
 
         workingTasks = workingTasks.map((t) =>
           t.id === afterTask.id ? { ...t, lastReportedMinutes: elapsedMinutes } : t
@@ -363,11 +378,9 @@ function createIdleResumeNotifier({ admin, db }) {
           const recheckSnap = await change.after.ref.get();
           const recheckData = recheckSnap.data() || {};
           const recheckTasks = Array.isArray(recheckData.tasks) ? recheckData.tasks : [];
-          const { hour } = jstHourMinute(new Date());
           const stillIdle = !recheckTasks.some(isRunningTask);
-          const isDaytime = hour >= IDLE_CHECK_START_HOUR && hour < IDLE_CHECK_END_HOUR;
 
-          if (stillIdle && isDaytime && !recheckData.pendingIdleAlert) {
+          if (stillIdle && isReminderActiveNow(new Date()) && !recheckData.pendingIdleAlert) {
             const email = await findStaffEmail(db, recheckData.representative);
             if (email) {
               const stoppedAfter = recheckTasks.find((t) => t.id === stoppedBefore.id) || stoppedBefore;
@@ -407,7 +420,10 @@ function createIdleResumeNotifier({ admin, db }) {
           if (totalIdleMinutes != null) details.push(`タイマーが止まっていた時間 合計${totalIdleMinutes}分`);
           const text = `▶️ タイマーが再開されました${details.length ? `（${details.join(' / ')}）` : ''}`;
 
-          await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.threadTs, text });
+          // 記入漏れ時間の集計は時間帯を問わず行うが、通知そのものは対象時間帯だけ送る
+          if (isReminderActiveNow(new Date())) {
+            await slack.chat.postMessage({ channel: NOTIFY_CHANNEL_ID, thread_ts: alert.threadTs, text });
+          }
 
           const updates = { pendingIdleAlert: admin.firestore.FieldValue.delete() };
           if (totalIdleMinutes) updates['timeAccuracy.inaccurateMinutes'] = admin.firestore.FieldValue.increment(totalIdleMinutes);
@@ -420,6 +436,7 @@ function createIdleResumeNotifier({ admin, db }) {
     }
 
     // (4) 既に完了報告済みのタスクが、後から時刻修正で実績が変わっていないか検出
+    if (!isReminderActiveNow(new Date())) return;
     for (const afterTask of workingTasks) {
       if (isRunningTask(afterTask)) continue;
       if (afterTask.lastReportedMinutes == null) continue;
@@ -615,5 +632,6 @@ module.exports = {
   createReviewReminder,
   toJstDateStr,
   computeActualMinutes,
-  isRunningTask
+  isRunningTask,
+  isReminderActiveNow
 };

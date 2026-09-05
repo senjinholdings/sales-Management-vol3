@@ -28,6 +28,7 @@ const fetch = require('node-fetch');
 const { WebClient } = require('@slack/web-api');
 const { env } = require('./authHelpers');
 const { resolveSlackUserId } = require('./slackApproval');
+const { isReminderActiveNow } = require('./dailyReportGuard');
 
 const MALL_PROJECT_ID = 'mall-batch-manager';
 const FIRESTORE_DOCS_BASE = `https://firestore.googleapis.com/v1/projects/${MALL_PROJECT_ID}/databases/(default)/documents`;
@@ -164,10 +165,13 @@ async function postMallAlert(slack, checkRef, check, { product, channel, latestS
 }
 
 /**
+ * 土日・深夜0時〜8時未満は督促・報告とも行わない（8時から再開する）。
  * @param {{admin: import('firebase-admin'), db: FirebaseFirestore.Firestore}} deps
  */
 function createMallUpdateChecker({ admin, db }) {
   return async () => {
+    if (!isReminderActiveNow(new Date())) return;
+
     const token = env('SLACK_BOT_TOKEN');
     if (!token) {
       console.error('SLACK_BOT_TOKEN が未設定のためモール更新チェックをスキップ');

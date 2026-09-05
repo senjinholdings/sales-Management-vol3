@@ -31,6 +31,13 @@ function toJstDateStr(date) {
   return `${y}-${m}-${d}`;
 }
 
+/** "YYYY-MM-DD" が土曜・日曜かどうか */
+function isWeekendDateStr(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const day = new Date(y, m - 1, d).getDay();
+  return day === 0 || day === 6;
+}
+
 /**
  * 期限バッジ判定（画面表示側のProgressDashboard.js等と同じ基準に揃えたもの）。
  * 2日以内は「急ぎ」、過ぎていれば「超過」
@@ -80,6 +87,7 @@ function createMorningDigest({ db }) {
 
     const now = new Date();
     const todayStr = toJstDateStr(now);
+    if (isWeekendDateStr(todayStr)) return; // 土日は投稿しない
     const yesterdayStr = toJstDateStr(new Date(now.getTime() - 24 * 60 * 60 * 1000));
 
     const dealsSnap = await db.collection('progressDashboard').get();
