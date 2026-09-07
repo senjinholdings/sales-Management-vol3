@@ -15,6 +15,11 @@ const REP_NAME = '荒幡';
 // 受注済み(フェーズ8)・Dead・失注は対象外。それ以外の進行中フェーズだけを一覧に出す
 const OPEN_PHASES = ['フェーズ1', 'フェーズ2', 'フェーズ3', 'フェーズ4', 'フェーズ5', 'フェーズ6', 'フェーズ7'];
 
+// 荒幡さん個人の四半期合計目標（新規＋既存の合算）。salesTargetsコレクションは
+// チーム全体（ソリューション営業の新規・既存、アカウント営業）の目標であり、担当者個人の
+// 目標という概念が無いため別に定数として持つ。四半期が変わったら手動で更新する
+const REP_QUARTERLY_TARGET = 100_000_000;
+
 // フェーズに応じた着地確率の目安（%）。案件ごとに手で上書きできる初期値として使う
 const PHASE_PROBABILITY = {
   'フェーズ1': 5,
@@ -527,6 +532,24 @@ const BarValue = styled.div`
   text-align: right;
 `;
 
+// ---- 四半期合計進捗（新規＋既存の合算）----
+const ForecastBlock = styled.div`
+  & + & { margin-top: 0.9rem; }
+`;
+
+const ForecastRow = styled.div`
+  display: grid;
+  grid-template-columns: 100px 1fr 180px;
+  align-items: center;
+  gap: 0.75rem;
+`;
+
+const ForecastBreakdown = styled.div`
+  margin: 0.3rem 0 0 100px;
+  font-size: 0.8rem;
+  color: #7f8c8d;
+`;
+
 const RecordTable = styled.div`
   display: flex;
   flex-direction: column;
@@ -846,6 +869,33 @@ function PipelineForecastPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // 新規/既存タブの選択に関係なく、荒幡さんの保有中案件（両方の区分）の見込みを合算するための
+  // 独立したフェッチ。loadData（794〜850行目付近）の「案件ごとにweeklyForecastsから着地確率を
+  // 取得し、無ければフェーズ既定値を使う」というロジックと同じ考え方で、新規・既存の両方を対象にする
+  const [combinedForecasts, setCombinedForecasts] = useState([]); // [{isExistingProject, value}]
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, 'progressDashboard'));
+        const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const repOpenDeals = all.filter((d) =>
+          d.representative === REP_NAME && OPEN_PHASES.includes(d.status) && !d.excludedFromForecast
+        );
+        const forecasts = await Promise.all(repOpenDeals.map(async (d) => {
+          const weeklySnap = await getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null);
+          const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
+          const probability = weekly?.probability != null ? weekly.probability : (PHASE_PROBABILITY[d.status] || 0);
+          return { isExistingProject: !!d.isExistingProject, value: (d.expectedBudget || 0) * probability / 100 };
+        }));
+        if (!cancelled) setCombinedForecasts(forecasts);
+      } catch (error) {
+        console.error('四半期合計進捗の見込み取得エラー:', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedWeekId]);
+
   // 選択中の新規/既存に対応する実績レコードだけに絞る
   const recordsForType = useMemo(() => (
     realizedRecords.filter((r) => r.recordType === recordType)
@@ -874,6 +924,32 @@ function PipelineForecastPage() {
   const avgBudget = activeDeals.length > 0
     ? activeDeals.reduce((sum, d) => sum + (d.expectedBudget || 0), 0) / activeDeals.length
     : 0;
+
+  // ---- 四半期合計進捗（新規＋既存の合算、荒幡さん個人の目標に対して）----
+  // 確定実績は新規/既存タブに関係なく全件（realizedRecords）を今期の範囲で合算する
+  const combinedQuarterActualTotal = useMemo(() => (
+    realizedRecords
+      .filter((r) => r.date >= quarterRangeForSelected.start && r.date <= quarterRangeForSelected.end)
+      .reduce((sum, r) => sum + r.budget, 0)
+  ), [realizedRecords, quarterRangeForSelected]);
+  const combinedQuarterActualNew = useMemo(() => (
+    realizedRecords
+      .filter((r) => r.recordType === '新規' && r.date >= quarterRangeForSelected.start && r.date <= quarterRangeForSelected.end)
+      .reduce((sum, r) => sum + r.budget, 0)
+  ), [realizedRecords, quarterRangeForSelected]);
+  const combinedQuarterActualExisting = combinedQuarterActualTotal - combinedQuarterActualNew;
+
+  const combinedPipelineForecastTotal = useMemo(() => (
+    combinedForecasts.reduce((sum, f) => sum + f.value, 0)
+  ), [combinedForecasts]);
+  const combinedPipelineForecastNew = useMemo(() => (
+    combinedForecasts.filter((f) => !f.isExistingProject).reduce((sum, f) => sum + f.value, 0)
+  ), [combinedForecasts]);
+  const combinedPipelineForecastExisting = combinedPipelineForecastTotal - combinedPipelineForecastNew;
+
+  const combinedLandingTotal = combinedQuarterActualTotal + combinedPipelineForecastTotal;
+  const combinedActualPercent = REP_QUARTERLY_TARGET > 0 ? (combinedQuarterActualTotal / REP_QUARTERLY_TARGET) * 100 : 0;
+  const combinedLandingPercent = REP_QUARTERLY_TARGET > 0 ? (combinedLandingTotal / REP_QUARTERLY_TARGET) * 100 : 0;
 
   // 今の四半期を見ている時だけ、月別・週別の内訳と「今週の実績」を表示する
   const monthlyBreakdown = useMemo(() => {
@@ -1036,6 +1112,37 @@ function PipelineForecastPage() {
           <TabButton $active={dealType === 'existing'} onClick={() => setDealType('existing')}>既存</TabButton>
         </Controls>
       </Header>
+
+      <SectionCard>
+        <SectionTitle>荒幡さんの四半期合計進捗（新規＋既存、目標 {formatCurrency(REP_QUARTERLY_TARGET)}）</SectionTitle>
+        <ForecastBlock>
+          <ForecastRow>
+            <BarLabel>確定実績</BarLabel>
+            <BarTrack>
+              <BarFill $current $percent={combinedActualPercent} />
+            </BarTrack>
+            <BarValue>{formatCurrency(combinedQuarterActualTotal)}（{Math.round(combinedActualPercent)}%）</BarValue>
+          </ForecastRow>
+          <ForecastBreakdown>
+            新規 {formatCurrency(combinedQuarterActualNew)} / 既存 {formatCurrency(combinedQuarterActualExisting)}
+          </ForecastBreakdown>
+        </ForecastBlock>
+        {isCurrentQuarter && (
+          <ForecastBlock>
+            <ForecastRow>
+              <BarLabel>見込み込み</BarLabel>
+              <BarTrack>
+                <BarFill $percent={combinedLandingPercent} />
+              </BarTrack>
+              <BarValue>{formatCurrency(combinedLandingTotal)}（{Math.round(combinedLandingPercent)}%）</BarValue>
+            </ForecastRow>
+            <ForecastBreakdown>
+              新規 {formatCurrency(combinedQuarterActualNew + combinedPipelineForecastNew)} /
+              既存 {formatCurrency(combinedQuarterActualExisting + combinedPipelineForecastExisting)}
+            </ForecastBreakdown>
+          </ForecastBlock>
+        )}
+      </SectionCard>
 
       {loading ? (
         <EmptyText>読み込み中...</EmptyText>
