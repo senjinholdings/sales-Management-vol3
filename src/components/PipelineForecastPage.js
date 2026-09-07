@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
-import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget, FiFileText, FiArchive, FiRotateCcw, FiChevronDown, FiChevronUp } from 'react-icons/fi';
+import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget, FiFileText, FiArchive, FiRotateCcw, FiChevronDown, FiChevronUp, FiCalendar } from 'react-icons/fi';
 import { db } from '../firebase.js';
 import { collection, getDocs, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
@@ -62,39 +62,46 @@ const getQuarterMonths = (quarterKey) => {
   return months;
 };
 
-// 週の区切りはWeeklyReportPage.jsと同じ「火曜始まり・月曜終わり」に揃える
+// 週の区切りは「月曜始まり・日曜終わり」。実際の振り返りは金曜16時に行われる運用に合わせる
 const getWeekRange = (date) => {
   const d = new Date(date);
   const day = d.getDay();
-  const diff = (day + 5) % 7; // 火=0を基準にする
-  const tuesday = new Date(d);
-  tuesday.setDate(d.getDate() - diff);
-  tuesday.setHours(0, 0, 0, 0);
-  const monday = new Date(tuesday);
-  monday.setDate(tuesday.getDate() + 6);
-  monday.setHours(23, 59, 59, 999);
-  return { start: tuesday, end: monday };
+  const diff = (day + 6) % 7; // 月=0を基準にする
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - diff);
+  monday.setHours(0, 0, 0, 0);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+  return { start: monday, end: sunday };
 };
 
 const formatMonthDay = (d) => `${d.getMonth() + 1}/${d.getDate()}`;
 
-/** 週の一意なID（週の始まり=火曜日の日付）。WeeklyReportPage.jsのgetWeekIdと同じ形式 */
+/** "YYYY-MM-DD" を年無し・区切り記号無しの "M/D" にする（NA期限などの表示用） */
+const formatDueDateShort = (dateStr) => {
+  if (!dateStr) return '';
+  const [, m, d] = dateStr.split('-').map(Number);
+  return `${m}/${d}`;
+};
+
+/** 週の一意なID（週の始まり=月曜日の日付） */
 const getWeekId = (date) => {
   const { start } = getWeekRange(date);
   return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
 };
 
-/** 直近12週＋今週の選択肢を作る（WeeklyReportPage.jsと同じ考え方） */
+/** 直近12週＋今週の選択肢を作る（表示は月曜日の日付のみ。年・範囲表記は出さない） */
 const generateWeekOptions = () => {
   const options = [];
   const today = new Date();
   for (let i = 0; i < 13; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() - i * 7);
-    const { start, end } = getWeekRange(d);
+    const { start } = getWeekRange(d);
     options.push({
       id: getWeekId(d),
-      label: `${formatMonthDay(start)}〜${formatMonthDay(end)}${i === 0 ? '（今週）' : ''}`
+      label: `${formatMonthDay(start)}週${i === 0 ? '（今週）' : ''}`
     });
   }
   return options;
@@ -300,7 +307,7 @@ const DealTableWrap = styled.div`
 
 const DealRow = styled.div`
   display: grid;
-  grid-template-columns: 1.3fr 90px 100px 56px 1.4fr 28px 28px;
+  grid-template-columns: 1.3fr 90px 100px 64px 1.2fr 28px 28px 28px;
   align-items: center;
   gap: 0.5rem;
   padding: 0.45rem 0.5rem;
@@ -317,14 +324,6 @@ const DealRowHeader = styled(DealRow)`
   border-bottom: 2px solid #eee;
   &:hover { background: none; }
   @media (max-width: 860px) { display: none; }
-`;
-
-const CompanyName = styled.div`
-  font-weight: 600;
-  color: #2c3e50;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 `;
 
 const PhaseBadge = styled.span`
@@ -344,11 +343,18 @@ const BudgetText = styled.div`
 `;
 
 const ProbabilityInput = styled.input`
-  width: 44px;
+  width: 40px;
   padding: 0.25rem;
   border: 1px solid #ddd;
   border-radius: 4px;
   font-size: 0.8rem;
+`;
+
+const ProbabilityCell = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  white-space: nowrap;
 `;
 
 const NaCell = styled.div`
@@ -542,6 +548,61 @@ const NewBadge = styled.span`
   vertical-align: middle;
 `;
 
+const DealNameWrap = styled.div`
+  min-width: 0;
+`;
+
+const DealNamePrimary = styled.div`
+  font-weight: 600;
+  color: #2c3e50;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const DealNameSecondary = styled.div`
+  font-size: 0.7rem;
+  color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+`;
+
+const PredictedSection = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+`;
+
+const PredictedRow = styled.div`
+  display: grid;
+  grid-template-columns: 1.5fr 90px 1fr 90px;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  background: #f8f9fa;
+  border-radius: 6px;
+  font-size: 0.85rem;
+`;
+
+const WonBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: white;
+  background: #27ae60;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
+const MissedInput = styled.input`
+  width: 100%;
+  padding: 0.35rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 0.8rem;
+`;
+
 const ExcludedToggleHeader = styled.button`
   display: flex;
   align-items: center;
@@ -570,6 +631,21 @@ const ExcludedRow = styled.div`
   color: #999;
 `;
 
+/** 商品名をメインに、会社名はその下に小さく「」つきで表示する（会社名の方が主役ではない） */
+function DealNameCell({ companyName, productName, isNew }) {
+  return (
+    <DealNameWrap>
+      <DealNamePrimary title={productName || companyName || ''}>
+        {productName || companyName || '(商品未設定)'}
+        {isNew && <NewBadge>NEW</NewBadge>}
+      </DealNamePrimary>
+      {companyName && productName && (
+        <DealNameSecondary title={companyName}>「{companyName}」</DealNameSecondary>
+      )}
+    </DealNameWrap>
+  );
+}
+
 // ============================================
 // メインコンポーネント
 // ============================================
@@ -592,6 +668,7 @@ function PipelineForecastPage() {
   const [realizedRecords, setRealizedRecords] = useState([]);
   const [openNoteId, setOpenNoteId] = useState(null); // 状況メモは普段畳んでおき、開いた案件だけ編集欄を出す
   const [excludedOpen, setExcludedOpen] = useState(false); // 「今期対象外」は普段畳んでおく
+  const [predictedDeals, setPredictedDeals] = useState([]); // 表示中の週に「成約予定」とマークされていた案件
 
   const toggleNote = (dealId) => {
     setOpenNoteId((prev) => (prev === dealId ? null : dealId));
@@ -627,6 +704,46 @@ function PipelineForecastPage() {
     return ms >= selectedWeekRange.start.getTime() && ms <= selectedWeekRange.end.getTime();
   };
 
+  // 「来週の成約予定にする」は常に、表示中の週の次の週に対して立てる
+  const nextWeekId = useMemo(() => (
+    getWeekId(new Date(selectedWeekRange.start.getTime() + 7 * 24 * 60 * 60 * 1000))
+  ), [selectedWeekRange]);
+
+  const togglePredicted = async (dealId, predicted) => {
+    setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, predictedNextWeek: predicted } : d)));
+    try {
+      await setDoc(doc(db, 'progressDashboard', dealId, 'weeklyForecasts', nextWeekId), {
+        predictedToClose: predicted
+      }, { merge: true });
+    } catch (error) {
+      console.error('来週の成約予定フラグの保存に失敗:', error);
+    }
+  };
+
+  const handleMissedReasonBlur = async (dealId, value) => {
+    setPredictedDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, missedReason: value } : d)));
+    try {
+      await setDoc(doc(db, 'progressDashboard', dealId, 'weeklyForecasts', selectedWeekId), {
+        missedReason: value
+      }, { merge: true });
+    } catch (error) {
+      console.error('成約しなかった理由の保存に失敗:', error);
+    }
+  };
+
+  // 表示中の週（selectedWeekId）に立っている「成約予定」フラグ自体を外す
+  // （togglePredictedは常に「次の週」に対して立てる用途なので、これとは別にする）
+  const handleRemovePrediction = async (dealId) => {
+    setPredictedDeals((prev) => prev.filter((d) => d.id !== dealId));
+    try {
+      await setDoc(doc(db, 'progressDashboard', dealId, 'weeklyForecasts', selectedWeekId), {
+        predictedToClose: false
+      }, { merge: true });
+    } catch (error) {
+      console.error('成約予定フラグの解除に失敗:', error);
+    }
+  };
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setAiSuggestion('');
@@ -641,15 +758,17 @@ function PipelineForecastPage() {
       );
 
       const withNa = await Promise.all(filtered.map(async (d) => {
-        const [na, weeklySnap] = await Promise.all([
+        const [na, weeklySnap, nextWeeklySnap] = await Promise.all([
           fetchDealActiveNa(d.id, subCol).catch(() => null),
-          getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null)
+          getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null),
+          getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', nextWeekId)).catch(() => null)
         ]);
         const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
         return {
           ...d,
           landingProbability: weekly?.probability != null ? weekly.probability : (PHASE_PROBABILITY[d.status] || 0),
           landingStatusNote: weekly?.statusNote || '',
+          predictedNextWeek: !!nextWeeklySnap?.data()?.predictedToClose,
           na
         };
       }));
@@ -661,12 +780,22 @@ function PipelineForecastPage() {
 
       const records = await fetchRealizedRecords(REP_NAME);
       setRealizedRecords(records);
+
+      // 表示中の週に「成約予定」とマークされていた案件（フェーズを問わず全案件から探す）
+      const allRepDeals = all.filter((d) => d.representative === REP_NAME);
+      const predicted = await Promise.all(allRepDeals.map(async (d) => {
+        const weeklySnap = await getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null);
+        const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
+        if (!weekly?.predictedToClose) return null;
+        return { ...d, missedReason: weekly.missedReason || '' };
+      }));
+      setPredictedDeals(predicted.filter(Boolean));
     } catch (error) {
       console.error('週次パイプライン取得エラー:', error);
     } finally {
       setLoading(false);
     }
-  }, [isExisting, subCol, selectedQuarter, selectedWeekId]);
+  }, [isExisting, subCol, selectedQuarter, selectedWeekId, nextWeekId]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -925,6 +1054,41 @@ function PipelineForecastPage() {
             </SectionCard>
           )}
 
+          {predictedDeals.length > 0 && (
+            <SectionCard>
+              <SectionTitle>
+                {weekOptions.find((w) => w.id === selectedWeekId)?.label}中に成約予定としていた案件（{predictedDeals.length}件）
+              </SectionTitle>
+              <PredictedSection>
+                {predictedDeals.map((deal) => {
+                  const won = recordsForType.some((r) =>
+                    r.dealId === deal.id && r.date >= selectedWeekRange.start && r.date <= selectedWeekRange.end
+                  );
+                  return (
+                    <PredictedRow key={deal.id}>
+                      <DealNameCell companyName={deal.companyName} productName={deal.productName} />
+                      <BudgetText>{formatCurrency(deal.expectedBudget)}</BudgetText>
+                      {won ? (
+                        <WonBadge>✅ 成約しました</WonBadge>
+                      ) : (
+                        <MissedInput
+                          placeholder="成約しなかった理由"
+                          defaultValue={deal.missedReason}
+                          onBlur={(e) => handleMissedReasonBlur(deal.id, e.target.value)}
+                        />
+                      )}
+                      {!won && (
+                        <IconButton onClick={() => handleRemovePrediction(deal.id)} title="予定から外す">
+                          <FiX /> 外す
+                        </IconButton>
+                      )}
+                    </PredictedRow>
+                  );
+                })}
+              </PredictedSection>
+            </SectionCard>
+          )}
+
           {isCurrentQuarter && (
             <SectionCard>
               <SectionTitle>今週確定した案件</SectionTitle>
@@ -934,7 +1098,9 @@ function PipelineForecastPage() {
                 <RecordTable>
                   {thisWeekRecords.map((r, i) => (
                     <RecordRow key={`${r.dealId}_${i}`}>
-                      <RecordCompany>{r.companyName}{r.productName ? `（${r.productName}）` : ''}</RecordCompany>
+                      <RecordCompany>
+                        <DealNameCell companyName={r.companyName} productName={r.productName} />
+                      </RecordCompany>
                       <RecordDate>{formatMonthDay(r.date)}</RecordDate>
                       <RecordBudget>{formatCurrency(r.budget)}</RecordBudget>
                     </RecordRow>
@@ -974,19 +1140,21 @@ function PipelineForecastPage() {
                   <div>ネクストアクション</div>
                   <div>メモ</div>
                   <div></div>
+                  <div></div>
                 </DealRowHeader>
                 {activeDeals.map((deal) => (
                   <React.Fragment key={deal.id}>
                     <DealRow>
-                      <CompanyName title={deal.companyName || deal.productName || ''}>
-                        {deal.companyName || deal.productName || '(社名未設定)'}
-                        {isNewDeal(deal) && <NewBadge>NEW</NewBadge>}
-                      </CompanyName>
+                      <DealNameCell
+                        companyName={deal.companyName}
+                        productName={deal.productName}
+                        isNew={isNewDeal(deal)}
+                      />
                       <PhaseBadge $status={deal.status} title={PHASE_DESCRIPTIONS[deal.status] || ''}>
                         {deal.status}
                       </PhaseBadge>
                       <BudgetText>{formatCurrency(deal.expectedBudget)}</BudgetText>
-                      <div>
+                      <ProbabilityCell>
                         <ProbabilityInput
                           type="number"
                           min="0"
@@ -995,12 +1163,12 @@ function PipelineForecastPage() {
                           onChange={(e) => handleProbabilityInput(deal.id, e.target.value)}
                           onBlur={(e) => handleProbabilityBlur(deal.id, e.target.value)}
                         />%
-                      </div>
+                      </ProbabilityCell>
                       <NaCell>
                         {deal.na ? (
                           <>
                             <NaText title={deal.na.actionContent}>{deal.na.actionContent}</NaText>
-                            {deal.na.actionDueDate && <NaDue>〜{deal.na.actionDueDate}</NaDue>}
+                            {deal.na.actionDueDate && <NaDue>{formatDueDateShort(deal.na.actionDueDate)}</NaDue>}
                             <IconButton onClick={() => beginNaEdit(deal)}><FiEdit3 /></IconButton>
                             <IconButton onClick={() => completeNa(deal)}><FiCheck /></IconButton>
                           </>
@@ -1023,6 +1191,13 @@ function PipelineForecastPage() {
                         title="今期対象外にする"
                       >
                         <FiArchive size={14} />
+                      </NoteToggleButton>
+                      <NoteToggleButton
+                        $hasNote={!!deal.predictedNextWeek}
+                        onClick={() => togglePredicted(deal.id, !deal.predictedNextWeek)}
+                        title={deal.predictedNextWeek ? '来週の成約予定（解除する）' : '来週の成約予定にする'}
+                      >
+                        <FiCalendar size={14} />
                       </NoteToggleButton>
                     </DealRow>
 
@@ -1078,9 +1253,7 @@ function PipelineForecastPage() {
                 <DealTableWrap style={{ marginTop: '0.5rem' }}>
                   {excludedDeals.map((deal) => (
                     <ExcludedRow key={deal.id}>
-                      <CompanyName title={deal.companyName || deal.productName || ''}>
-                        {deal.companyName || deal.productName || '(社名未設定)'}
-                      </CompanyName>
+                      <DealNameCell companyName={deal.companyName} productName={deal.productName} />
                       <PhaseBadge $status={deal.status} title={PHASE_DESCRIPTIONS[deal.status] || ''}>
                         {deal.status}
                       </PhaseBadge>
