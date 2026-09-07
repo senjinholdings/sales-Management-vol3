@@ -722,11 +722,11 @@ function PipelineForecastPage() {
   const isCurrentQuarter = selectedQuarter === currentQuarterKey;
 
   // 「今期対象外」にした案件は下の畳んだ一覧にまとめ、着地予想からも除く（あとで対象に戻せる）
-  // 保有中の案件はフェーズ順（フェーズ1〜7）に並べる
+  // 保有中の案件はフェーズが大きい方（成約に近い方）から並べる
   const activeDeals = useMemo(() => (
     deals
       .filter((d) => !d.excludedFromForecast)
-      .sort((a, b) => OPEN_PHASES.indexOf(a.status) - OPEN_PHASES.indexOf(b.status))
+      .sort((a, b) => OPEN_PHASES.indexOf(b.status) - OPEN_PHASES.indexOf(a.status))
   ), [deals]);
   const excludedDeals = useMemo(() => deals.filter((d) => d.excludedFromForecast), [deals]);
 
