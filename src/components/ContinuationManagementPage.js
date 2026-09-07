@@ -11,6 +11,8 @@ import {
   SALES_REPRESENTATIVES
 } from '../data/constants.js';
 import { FiSearch, FiChevronUp, FiChevronDown, FiMinus, FiEdit2, FiX } from 'react-icons/fi';
+import { fetchClientMeetingSettings } from '../services/projectService.js';
+import { ensureContinuationMealNa } from '../utils/continuationMealNa.js';
 
 // ============================================
 // Styled Components
@@ -252,6 +254,13 @@ const OverdueBadge = styled.span`
   color: white;
   background-color: #8e44ad;
   margin-left: 0.5rem;
+`;
+
+const MeetingStatusText = styled.span`
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: ${props => (props.$active ? '#27ae60' : '#95a5a6')};
 `;
 
 const InlineSelect = styled.select`
@@ -537,6 +546,33 @@ const ContinuationManagementPage = () => {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [fetchData]);
 
+  // 会社ごとの定例MTG設定（clientMeetingSettings）を取得し、一覧の「定例」列に使う。
+  // 会社単位のデータなので、同じ会社の別商材は同じ結果を共有する
+  const [meetingSettingsByCompany, setMeetingSettingsByCompany] = useState(new Map());
+  useEffect(() => {
+    const uniqueCompanies = [...new Set(deals.map(d => d.companyName).filter(Boolean))];
+    const missing = uniqueCompanies.filter(name => !meetingSettingsByCompany.has(name));
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const results = await Promise.all(missing.map(async (name) => {
+        try {
+          return [name, await fetchClientMeetingSettings(name)];
+        } catch (error) {
+          console.error('定例MTG設定取得エラー:', name, error);
+          return [name, null];
+        }
+      }));
+      if (cancelled) return;
+      setMeetingSettingsByCompany(prev => {
+        const next = new Map(prev);
+        results.forEach(([name, settings]) => next.set(name, settings));
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [deals, meetingSettingsByCompany]);
+
   // Summary calculation
   const summary = useMemo(() => {
     const result = { 施策実施中: 0, 継続提案中: 0, 終了: 0, 継続成約: 0, 継続成約金額: 0 };
@@ -636,6 +672,13 @@ const ContinuationManagementPage = () => {
 
       await updateDoc(dealRef, updateData);
       setDeals(prev => prev.map(deal => deal.id === dealId ? { ...deal, ...updateData } : deal));
+
+      // 継続成約になった瞬間だけ、会食/定例打診のネクストアクションを自動で立てる
+      // （さかのぼり生成はしないため、この直後にだけ呼ぶ）
+      if (newStatus === '継続成約') {
+        const target = deals.find(deal => deal.id === dealId);
+        if (target) ensureContinuationMealNa({ ...target, ...updateData });
+      }
     } catch (error) {
       console.error('継続ステータス更新エラー:', error);
       alert('ステータス更新に失敗しました');
@@ -654,6 +697,11 @@ const ContinuationManagementPage = () => {
 
       await updateDoc(dealRef, updateData);
       setDeals(prev => prev.map(deal => deal.id === dealId ? { ...deal, ...updateData } : deal));
+
+      if (newPhase === 'フォロー5') {
+        const target = deals.find(deal => deal.id === dealId);
+        if (target) ensureContinuationMealNa({ ...target, ...updateData });
+      }
     } catch (error) {
       console.error('フォローフェーズ更新エラー:', error);
       fetchData();
@@ -840,6 +888,7 @@ const ContinuationManagementPage = () => {
                 <TableHeaderCell sortable onClick={() => handleSort('nextActionDate')}>
                   期日 {getSortIcon('nextActionDate')}
                 </TableHeaderCell>
+                <TableHeaderCell>定例</TableHeaderCell>
               </tr>
             </TableHead>
             <tbody>
@@ -911,6 +960,19 @@ const ContinuationManagementPage = () => {
                       {deal.nextActionDate || '-'}
                       {dateStatus === 'urgent' && <UrgentBadge>急</UrgentBadge>}
                       {dateStatus === 'overdue' && <OverdueBadge>超過</OverdueBadge>}
+                    </TableCell>
+                    <TableCell style={{ whiteSpace: 'nowrap' }}>
+                      {(() => {
+                        const meetingSettings = meetingSettingsByCompany.get(deal.companyName);
+                        const hasRecurring = !!meetingSettings?.recurringDayOfWeek;
+                        return (
+                          <MeetingStatusText $active={hasRecurring}>
+                            {hasRecurring
+                              ? `定例あり（毎週${meetingSettings.recurringDayOfWeek}${meetingSettings.recurringTime ? ' ' + meetingSettings.recurringTime : ''}）`
+                              : '定例なし'}
+                          </MeetingStatusText>
+                        );
+                      })()}
                     </TableCell>
                   </TableRow>
                 );
