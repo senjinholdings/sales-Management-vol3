@@ -292,16 +292,6 @@ const Input = styled.input`
   &:focus { outline: none; border-color: #3498db; }
 `;
 
-const Select = styled.select`
-  padding: 0.6rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 0.875rem;
-  background: white;
-  cursor: pointer;
-  &:focus { outline: none; border-color: #3498db; }
-`;
-
 const MinutesChip = styled.button`
   padding: 0.5rem 0.9rem;
   border: 1px solid ${(props) => (props.$selected ? '#3498db' : '#ddd')};
@@ -1151,7 +1141,7 @@ const buildTimedRowsWithGaps = (tasks) => {
 
 // ---- タイムライン（左＝朝の予定 / 右＝実績）用の時刻換算 ----
 
-const TIMELINE_START_MIN = timeToMinutes(PLAN_WINDOW_START); // 9:00
+const TIMELINE_START_MIN = timeToMinutes(PLAN_WINDOW_START); // 6:00（表示レイアウト用の下限。空き時間の判定はcomputeScheduleGapsが動的に行う）
 const TIMELINE_END_MIN = 24 * 60;
 const TIMELINE_PX_PER_MIN = 0.9;
 const TIMELINE_HEIGHT = (TIMELINE_END_MIN - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN;
@@ -1254,7 +1244,6 @@ const buildCalendarCells = ({ year, month }) => {
 const DailyTimerPage = () => {
   const [selectedDate, setSelectedDate] = useState(() => formatDateKey(new Date()));
   const [loadedDate, setLoadedDate] = useState(null);
-  const [salesReps, setSalesReps] = useState([]);
   const [dayDocs, setDayDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1276,13 +1265,12 @@ const DailyTimerPage = () => {
   // { rep, taskId } | null
   const [linksPopover, setLinksPopover] = useState(null);
 
-  // 空き時間の行から開く「ここにタスクを追加」フォーム（同時に開けるのは1つ、時刻編集とも排他）
-  // { rep, gapStart: 分（0:00からの分数）, name, minutes: string }
-  const [insertForm, setInsertForm] = useState(null);
-
   // タイムラインのブロックをクリックした時、下のタスク一覧の該当行を光らせる
   const [highlightedTaskId, setHighlightedTaskId] = useState(null);
   const taskRowRefs = useRef({});
+
+  // 空き時間の行の「ここにタスクを追加」から、上の「タスクを追加」フォームへフォーカスを移すための参照
+  const taskNameInputRef = useRef(null);
 
   // 振り返り
   const [reviewDraft, setReviewDraft] = useState(normalizeReview());
@@ -1333,7 +1321,6 @@ const DailyTimerPage = () => {
       try {
         const reps = (await fetchStaffByRole('sales'))
           .filter((r) => r.name.includes(REPRESENTATIVE_FILTER));
-        setSalesReps(reps);
         // 記憶した担当者がマスターに存在しなければ先頭を初期選択
         setRepresentative((prev) =>
           reps.some((r) => r.name === prev) ? prev : (reps[0]?.name || '')
@@ -1598,15 +1585,8 @@ const DailyTimerPage = () => {
   const changeDate = (dateKey) => {
     if (!confirmLeaveReview()) return;
     setEditingTask(null);
-    setInsertForm(null);
     setLinksPopover(null);
     setSelectedDate(dateKey);
-  };
-
-  const handleRepresentativeChange = (name) => {
-    if (!confirmLeaveReview()) return;
-    setRepresentative(name);
-    localStorage.setItem(LAST_REP_STORAGE_KEY, name);
   };
 
   // ---- カレンダー ----
@@ -1642,7 +1622,6 @@ const DailyTimerPage = () => {
   const handleCalendarSelect = (dateKey) => {
     if (!confirmLeaveReview()) return;
     setEditingTask(null);
-    setInsertForm(null);
     setLinksPopover(null);
     setSelectedDate(dateKey);
     setCalendarOpen(false);
@@ -1750,28 +1729,12 @@ const DailyTimerPage = () => {
 
   // ---- 空き時間の埋め方 ----
 
-  const beginGapInsert = (rep, gap) => {
-    setEditingTask(null);
-    setInsertForm({ rep, gapStart: gap.start, name: '', minutes: String(Math.round(gap.minutes)) });
-  };
-
-  const updateInsertForm = (field, value) => {
-    setInsertForm((prev) => ({ ...prev, [field]: value }));
-  };
-
-  const insertMinutesNum = Number(insertForm?.minutes);
-  const canInsert = !saving && !!insertForm
-    && insertForm.name.trim() !== ''
-    && insertForm.minutes.trim() !== ''
-    && Number.isInteger(insertMinutesNum) && insertMinutesNum > 0;
-
-  const handleInsertSave = () => {
-    if (!canInsert) return;
-    const { rep, name, gapStart } = insertForm;
-    runMutation(async () => {
-      await addTask(rep, selectedDate, name.trim(), insertMinutesNum, minutesToTime(gapStart));
-      setInsertForm(null);
-    });
+  // 空き時間の開始時刻を起点に、上の「タスクを追加」フォームへ入力させる
+  // （分・タスク名はそのフォームでいつも通り入力してもらう）
+  const beginGapInsert = (gap) => {
+    setPlannedStartTime(minutesToTime(gap.start));
+    taskNameInputRef.current?.focus();
+    taskNameInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   // タイムラインのブロックをクリックすると、下のタスク一覧の該当行までスクロールして光らせる
@@ -1784,7 +1747,6 @@ const DailyTimerPage = () => {
   };
 
   const beginEditTask = (rep, task) => {
-    setInsertForm(null);
     const sessions = getTaskSessions(task);
     // 未開始は区間1つの新規入力（両方入力で完了扱い）
     const times = sessions.length === 0
@@ -2218,18 +2180,9 @@ const DailyTimerPage = () => {
         <SectionTitle><FiPlus /> タスクを追加</SectionTitle>
         <AddForm>
           <FormRow>
-            <FormLabel>担当者</FormLabel>
-            <Select
-              value={representative}
-              onChange={(e) => handleRepresentativeChange(e.target.value)}
-            >
-              <option value="">選択してください</option>
-              {salesReps.map((r) => (
-                <option key={r.id} value={r.name}>{r.name}</option>
-              ))}
-            </Select>
             <FormLabel>タスク名</FormLabel>
             <Input
+              ref={taskNameInputRef}
               placeholder="タスク名を入力..."
               value={taskName}
               onChange={(e) => setTaskName(e.target.value)}
@@ -2281,135 +2234,7 @@ const DailyTimerPage = () => {
       </Section>
 
       <Section>
-        <SectionTitle><FiCheckCircle /> 予定の確認・確定{representative ? `（${representative}）` : ''}</SectionTitle>
-        {!representative ? (
-          <EmptyText>担当者を選択してください</EmptyText>
-        ) : (
-          <>
-            {isTodaySelected && (
-              <ConfirmBar>
-                <ConfirmStatus $confirmed={planConfirmed}>
-                  {planConfirmed ? (
-                    <><FiCheckCircle /> 確定済み（{formatClock(toMillis(selectedDayDoc.planSnapshot.confirmedAt))}）</>
-                  ) : (
-                    <><FiLock /> 未確定（9:00〜23:20が埋まるまで開始できません）</>
-                  )}
-                </ConfirmStatus>
-                {!planConfirmed && (
-                  <ConfirmButton onClick={handleConfirmPlan} disabled={saving || !scheduleCheck.isFilled}>
-                    <FiCheck size={14} /> 予定を確定する
-                  </ConfirmButton>
-                )}
-              </ConfirmBar>
-            )}
-            {isTodaySelected && !planConfirmed && (scheduleCheck.gaps.length > 0 || scheduleCheck.overlaps.length > 0) && (
-              <GapWarningList>
-                {scheduleCheck.gaps.map((g) => (
-                  <GapWarningItem key={`gap_${g.start}`}>
-                    空いています：{minutesToTime(g.start)}〜{minutesToTime(g.end)}（{g.minutes}分）
-                  </GapWarningItem>
-                ))}
-                {scheduleCheck.overlaps.map((o, i) => (
-                  <GapWarningItem key={`overlap_${i}`}>
-                    時刻が重なっています：「{o.a.name}」と「{o.b.name}」
-                  </GapWarningItem>
-                ))}
-              </GapWarningList>
-            )}
-            <TimelineGrid>
-              <div />
-              <TimelineColHeader>予定</TimelineColHeader>
-              <TimelineColHeader>実績</TimelineColHeader>
-              <TimelineHourGutter style={{ height: TIMELINE_HEIGHT }}>
-                {Array.from({ length: 16 }, (_, i) => 9 + i).map((h) => (
-                  <TimelineHourLabel key={h} style={{ top: timelineTopPx(h * 60) }}>
-                    {h}:00
-                  </TimelineHourLabel>
-                ))}
-              </TimelineHourGutter>
-              <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
-                {Array.from({ length: 16 }, (_, i) => 9 + i).map((h) => (
-                  <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
-                ))}
-                {planConfirmed ? (
-                  selectedDayDoc.planSnapshot.tasks.map((t) => {
-                    const start = timeToMinutes(t.plannedStartTime);
-                    return (
-                      <TimelineBlock
-                        key={t.id}
-                        style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + (t.plannedMinutes || 0)) }}
-                        onClick={() => handleTimelineBlockClick(t.id)}
-                        title={`${t.name}（${formatTimeHM(t.plannedStartTime)}〜）`}
-                      >
-                        {t.name}
-                      </TimelineBlock>
-                    );
-                  })
-                ) : isTodaySelected ? (
-                  <>
-                    {(selectedDayDoc?.tasks || [])
-                      .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
-                      .map((t) => {
-                        const start = timeToMinutes(t.plannedStartTime);
-                        return (
-                          <TimelineBlock
-                            key={t.id}
-                            style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
-                            onClick={() => handleTimelineBlockClick(t.id)}
-                            title={t.name}
-                          >
-                            {t.name}
-                          </TimelineBlock>
-                        );
-                      })}
-                    {scheduleCheck.gaps.map((g) => (
-                      <TimelineGapBlock
-                        key={`gap_${g.start}`}
-                        $alert
-                        style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
-                      >
-                        {g.minutes >= 20 ? `空き${g.minutes}分` : ''}
-                      </TimelineGapBlock>
-                    ))}
-                  </>
-                ) : (
-                  <TimelinePlaceholder>この日は予定が確定されていません</TimelinePlaceholder>
-                )}
-              </TimelineColumn>
-              <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
-                {Array.from({ length: 16 }, (_, i) => 9 + i).map((h) => (
-                  <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
-                ))}
-                {actualBlocks.map((b) => (
-                  <TimelineBlock
-                    key={b.key}
-                    $variant={b.variant}
-                    style={{ top: timelineTopPx(b.startMin), height: timelineHeightPx(b.startMin, b.endMin) }}
-                    onClick={() => handleTimelineBlockClick(b.taskId)}
-                    title={b.name}
-                  >
-                    {b.name}
-                  </TimelineBlock>
-                ))}
-                {freeGaps.map((g) => (
-                  <TimelineGapBlock
-                    key={`free_${g.start}`}
-                    style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
-                  >
-                    {g.minutes >= 20 ? `${g.minutes}分` : ''}
-                  </TimelineGapBlock>
-                ))}
-                {isTodaySelected && (
-                  <TimelineNowLine style={{ top: timelineTopPx(minutesFromMidnight(now)) }} />
-                )}
-              </TimelineColumn>
-            </TimelineGrid>
-          </>
-        )}
-      </Section>
-
-      <Section>
-        <SectionTitle><FiClock /> {formatDateDisplay(selectedDate)} のタスク（全担当者）</SectionTitle>
+        <SectionTitle><FiClock /> {formatDateDisplay(selectedDate)} のタスク</SectionTitle>
         {loading ? (
           <EmptyText>読み込み中...</EmptyText>
         ) : dayDocs.length === 0 ? (
@@ -2441,47 +2266,16 @@ const DailyTimerPage = () => {
                     row.type === 'task' ? (
                       renderTaskRow(dayDoc, row.task)
                     ) : (
-                      <React.Fragment key={`gap_${dayDoc.id}_${row.gap.start}`}>
-                        <GapRow>
-                          <GapLabel>
-                            空き {row.gap.minutes}分（{minutesToTime(row.gap.start)}〜{minutesToTime(row.gap.end)}）
-                          </GapLabel>
-                          <GapActions>
-                            <GapButton onClick={() => beginGapInsert(dayDoc.representative, row.gap)}>
-                              ここにタスクを追加
-                            </GapButton>
-                          </GapActions>
-                        </GapRow>
-                        {insertForm &&
-                          insertForm.rep === dayDoc.representative &&
-                          insertForm.gapStart === row.gap.start && (
-                            <TaskRow>
-                              <FormLabel>開始 {formatTimeHM(minutesToTime(insertForm.gapStart))}</FormLabel>
-                              <Input
-                                placeholder="タスク名を入力..."
-                                value={insertForm.name}
-                                onChange={(e) => updateInsertForm('name', e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') handleInsertSave(); }}
-                                autoFocus
-                              />
-                              <MinutesInput
-                                type="number"
-                                min="1"
-                                step="1"
-                                placeholder="分"
-                                value={insertForm.minutes}
-                                onChange={(e) => updateInsertForm('minutes', e.target.value)}
-                              />
-                              <FormLabel>分</FormLabel>
-                              <AddButton onClick={handleInsertSave} disabled={!canInsert}>
-                                <FiPlus size={14} /> 追加
-                              </AddButton>
-                              <CancelButton onClick={() => setInsertForm(null)} disabled={saving}>
-                                キャンセル
-                              </CancelButton>
-                            </TaskRow>
-                          )}
-                      </React.Fragment>
+                      <GapRow key={`gap_${dayDoc.id}_${row.gap.start}`}>
+                        <GapLabel>
+                          空き {row.gap.minutes}分（{minutesToTime(row.gap.start)}〜{minutesToTime(row.gap.end)}）
+                        </GapLabel>
+                        <GapActions>
+                          <GapButton onClick={() => beginGapInsert(row.gap)}>
+                            ここにタスクを追加
+                          </GapButton>
+                        </GapActions>
+                      </GapRow>
                     )
                   ))}
                 </TaskList>
@@ -2723,6 +2517,134 @@ const DailyTimerPage = () => {
               </AddButton>
             </ReviewFooter>
           </ReviewBody>
+        )}
+      </Section>
+
+      <Section>
+        <SectionTitle><FiCheckCircle /> 予定の確認・確定</SectionTitle>
+        {!representative ? (
+          <EmptyText>担当者を選択してください</EmptyText>
+        ) : (
+          <>
+            {isTodaySelected && (
+              <ConfirmBar>
+                <ConfirmStatus $confirmed={planConfirmed}>
+                  {planConfirmed ? (
+                    <><FiCheckCircle /> 確定済み（{formatClock(toMillis(selectedDayDoc.planSnapshot.confirmedAt))}）</>
+                  ) : (
+                    <><FiLock /> 未確定（最初の予定〜23:20が埋まるまで開始できません）</>
+                  )}
+                </ConfirmStatus>
+                {!planConfirmed && (
+                  <ConfirmButton onClick={handleConfirmPlan} disabled={saving || !scheduleCheck.isFilled}>
+                    <FiCheck size={14} /> 予定を確定する
+                  </ConfirmButton>
+                )}
+              </ConfirmBar>
+            )}
+            {isTodaySelected && !planConfirmed && (scheduleCheck.gaps.length > 0 || scheduleCheck.overlaps.length > 0) && (
+              <GapWarningList>
+                {scheduleCheck.gaps.map((g) => (
+                  <GapWarningItem key={`gap_${g.start}`}>
+                    空いています：{minutesToTime(g.start)}〜{minutesToTime(g.end)}（{g.minutes}分）
+                  </GapWarningItem>
+                ))}
+                {scheduleCheck.overlaps.map((o, i) => (
+                  <GapWarningItem key={`overlap_${i}`}>
+                    時刻が重なっています：「{o.a.name}」と「{o.b.name}」
+                  </GapWarningItem>
+                ))}
+              </GapWarningList>
+            )}
+            <TimelineGrid>
+              <div />
+              <TimelineColHeader>予定</TimelineColHeader>
+              <TimelineColHeader>実績</TimelineColHeader>
+              <TimelineHourGutter style={{ height: TIMELINE_HEIGHT }}>
+                {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                  <TimelineHourLabel key={h} style={{ top: timelineTopPx(h * 60) }}>
+                    {h}:00
+                  </TimelineHourLabel>
+                ))}
+              </TimelineHourGutter>
+              <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
+                {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                  <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
+                ))}
+                {planConfirmed ? (
+                  selectedDayDoc.planSnapshot.tasks.map((t) => {
+                    const start = timeToMinutes(t.plannedStartTime);
+                    return (
+                      <TimelineBlock
+                        key={t.id}
+                        style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + (t.plannedMinutes || 0)) }}
+                        onClick={() => handleTimelineBlockClick(t.id)}
+                        title={`${t.name}（${formatTimeHM(t.plannedStartTime)}〜）`}
+                      >
+                        {t.name}
+                      </TimelineBlock>
+                    );
+                  })
+                ) : isTodaySelected ? (
+                  <>
+                    {(selectedDayDoc?.tasks || [])
+                      .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
+                      .map((t) => {
+                        const start = timeToMinutes(t.plannedStartTime);
+                        return (
+                          <TimelineBlock
+                            key={t.id}
+                            style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
+                            onClick={() => handleTimelineBlockClick(t.id)}
+                            title={t.name}
+                          >
+                            {t.name}
+                          </TimelineBlock>
+                        );
+                      })}
+                    {scheduleCheck.gaps.map((g) => (
+                      <TimelineGapBlock
+                        key={`gap_${g.start}`}
+                        $alert
+                        style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
+                      >
+                        {g.minutes >= 20 ? `空き${g.minutes}分` : ''}
+                      </TimelineGapBlock>
+                    ))}
+                  </>
+                ) : (
+                  <TimelinePlaceholder>この日は予定が確定されていません</TimelinePlaceholder>
+                )}
+              </TimelineColumn>
+              <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
+                {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                  <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
+                ))}
+                {actualBlocks.map((b) => (
+                  <TimelineBlock
+                    key={b.key}
+                    $variant={b.variant}
+                    style={{ top: timelineTopPx(b.startMin), height: timelineHeightPx(b.startMin, b.endMin) }}
+                    onClick={() => handleTimelineBlockClick(b.taskId)}
+                    title={b.name}
+                  >
+                    {b.name}
+                  </TimelineBlock>
+                ))}
+                {freeGaps.map((g) => (
+                  <TimelineGapBlock
+                    key={`free_${g.start}`}
+                    style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
+                  >
+                    {g.minutes >= 20 ? `${g.minutes}分` : ''}
+                  </TimelineGapBlock>
+                ))}
+                {isTodaySelected && (
+                  <TimelineNowLine style={{ top: timelineTopPx(minutesFromMidnight(now)) }} />
+                )}
+              </TimelineColumn>
+            </TimelineGrid>
+          </>
         )}
       </Section>
 

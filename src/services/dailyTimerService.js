@@ -373,7 +373,7 @@ export const deleteTask = async (representative, date, taskId) => {
 };
 
 /**
- * 朝立てた予定を確定する。9:00〜23:20が隙間なく埋まっていること（時刻の重なりも無いこと）を
+ * 朝立てた予定を確定する。その日いちばん早い予定の開始時刻〜23:20が隙間なく埋まっていること（時刻の重なりも無いこと）を
  * 再チェックしたうえで、その時点のtasksをplanSnapshotとして保存する。
  * 確定後に追加されたタスクはaddTask/addTaskAndStartがaddedAfterConfirmを立てる。
  * 画面側は事前にcomputeScheduleGapsでボタンの活性・非活性を出すが、ここでも同じ関数で
