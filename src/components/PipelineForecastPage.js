@@ -126,8 +126,11 @@ const splitMonthIntoWeeks = (monthStart, monthEnd) => {
 };
 
 /**
- * 荒幡さんの確定済み売上（フェーズ8）を全案件のsalesRecords/newCaseSalesRecordsから集める。
- * HomeDashboard.jsのfetchData/calculateStatsと同じデータ源・同じ判定基準（phase==='フェーズ8'）を使う
+ * 荒幡さんの確定済み売上（フェーズ8）を全案件から集める。
+ * 案件ごとに今のisExistingProjectに対応する片方のサブコレクションだけを見る
+ * （ClosedDealsList.js・HomeDashboard.jsと同じ判定基準）。
+ * 新規→既存への切り替え時、切り替え前のnewCaseSalesRecords側にフェーズ8レコードが
+ * 残ったまま新しくsalesRecords側にも作られるケースがあり、両方を見ると二重計上になるため
  */
 const fetchRealizedRecords = async (repName) => {
   const dealsSnap = await getDocs(collection(db, 'progressDashboard'));
@@ -137,27 +140,26 @@ const fetchRealizedRecords = async (repName) => {
 
   const records = [];
   await Promise.all(deals.map(async (deal) => {
-    await Promise.all(['salesRecords', 'newCaseSalesRecords'].map(async (subCol) => {
-      try {
-        const recSnap = await getDocs(collection(db, 'progressDashboard', deal.id, subCol));
-        recSnap.forEach((r) => {
-          const rd = r.data();
-          if (rd.phase !== 'フェーズ8') return;
-          const dateStr = rd.confirmedDate || rd.date;
-          if (!dateStr) return;
-          records.push({
-            dealId: deal.id,
-            companyName: deal.companyName || deal.productName || '(社名未設定)',
-            productName: deal.productName || '',
-            recordType: rd.recordType,
-            budget: typeof rd.budget === 'string' ? Number(rd.budget) || 0 : rd.budget || 0,
-            date: new Date(dateStr)
-          });
+    const subCol = deal.isExistingProject === true ? 'salesRecords' : 'newCaseSalesRecords';
+    try {
+      const recSnap = await getDocs(collection(db, 'progressDashboard', deal.id, subCol));
+      recSnap.forEach((r) => {
+        const rd = r.data();
+        if (rd.phase !== 'フェーズ8') return;
+        const dateStr = rd.confirmedDate || rd.date;
+        if (!dateStr) return;
+        records.push({
+          dealId: deal.id,
+          companyName: deal.companyName || deal.productName || '(社名未設定)',
+          productName: deal.productName || '',
+          recordType: rd.recordType,
+          budget: typeof rd.budget === 'string' ? Number(rd.budget) || 0 : rd.budget || 0,
+          date: new Date(dateStr)
         });
-      } catch (error) {
-        // 権限やデータ不整合でこの案件だけ読めない場合はスキップ
-      }
-    }));
+      });
+    } catch (error) {
+      // 権限やデータ不整合でこの案件だけ読めない場合はスキップ
+    }
   }));
   return records;
 };
