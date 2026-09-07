@@ -180,5 +180,5 @@ export const MALLS = ['Amazon', '楽天', 'Qoo10'];
 export const MALL_COLORS = {
   'Amazon': '#FF9900',
   '楽天': '#BF0000',
-  'Qoo10': '#7B2D8E'
+  'Qoo10': '#2980b9'
 };
