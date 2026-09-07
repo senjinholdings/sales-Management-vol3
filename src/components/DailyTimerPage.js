@@ -7,8 +7,6 @@ import {
   FiSquare,
   FiChevronLeft,
   FiChevronRight,
-  FiChevronDown,
-  FiChevronUp,
   FiClock,
   FiUser,
   FiCalendar,
@@ -34,7 +32,8 @@ import {
   confirmDayPlan,
   planNextDayTasks,
   completeNightReview,
-  reportUrgentTaskComplete
+  reportUrgentTaskComplete,
+  updateTaskFields
 } from '../services/dailyTimerService.js';
 import {
   computeScheduleGaps,
@@ -873,34 +872,7 @@ const TimelinePlaceholder = styled.div`
   padding: 1rem;
 `;
 
-// ---- 振り返り（アコーディオン） ----
-
-const ReviewHeaderButton = styled.button`
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  border: none;
-  background: none;
-  padding: 0;
-  cursor: pointer;
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: #2c3e50;
-`;
-
-const ReviewHeaderLeft = styled.span`
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-`;
-
-const ReviewHeaderRight = styled.span`
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: #7f8c8d;
-`;
+// ---- 振り返り ----
 
 const ReviewSavedBadge = styled.span`
   font-size: 0.75rem;
@@ -951,10 +923,44 @@ const ReviewFooter = styled.div`
   gap: 0.75rem;
 `;
 
-const UnsavedText = styled.span`
-  font-size: 0.8rem;
-  color: #e67e22;
-  font-weight: 500;
+// ---- 振り返りウィザード（手順表示） ----
+
+const WizardStepBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #7f8c8d;
+`;
+
+const WizardIntro = styled.p`
+  font-size: 0.85rem;
+  color: #5a6b7a;
+  margin: 0 0 0.75rem;
+`;
+
+const WizardItemCard = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: #fafbfc;
+`;
+
+const WizardChoiceRow = styled.label`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #2c3e50;
+  cursor: pointer;
+`;
+
+const WizardInputsRow = styled.div`
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
 `;
 
 // ---- 振り返り内のタスク一覧（未完了・超過） ----
@@ -1195,35 +1201,22 @@ const REPRESENTATIVE_FILTER = '荒幡';
 // 振り返りヘルパー
 // ============================================
 
-// NA（次のアクション）は自由文ではなく、下の「NA」タスク一覧（名前・時間・対象日を
-// 入力できる、通常のタスクと同じ形式）に一本化した。nextActionは過去データ互換のため
-// normalizeReview等には残すが、入力欄としては出さない
-const REVIEW_FIELDS = [
-  { key: 'notAchieved', label: '達成できなかったことはないか？なぜか？どう組み直すか？' },
-  { key: 'timeImprovement', label: '時間の使い方をもっとよくすることはできないか？' },
-  { key: 'reflection', label: '振り返り' }
-];
-
-// 未完了タスクの予定時間合計が2時間以上の日だけ表示する追加欄
-const CONDITIONAL_REVIEW_FIELDS = [
-  { key: 'scheduleGapReason', label: 'なぜこんなに予定とズレたのか' }
-];
-
-const ALL_REVIEW_FIELDS = [...REVIEW_FIELDS, ...CONDITIONAL_REVIEW_FIELDS];
-
+// 夜の振り返りウィザードの手順0・3・4の「確認しました」フラグ
 const normalizeReview = (review = {}) => ({
-  notAchieved: review.notAchieved || '',
-  timeImprovement: review.timeImprovement || '',
-  reflection: review.reflection || '',
-  nextAction: review.nextAction || '',
-  scheduleGapReason: review.scheduleGapReason || ''
+  reminderAcked: !!review.reminderAcked,
+  pipelineStatusChecked: !!review.pipelineStatusChecked,
+  pipelineWeekChecked: !!review.pipelineWeekChecked
 });
 
-const hasReviewContent = (review) =>
-  ALL_REVIEW_FIELDS.some((f) => (review[f.key] || '').trim() !== '');
-
-const isSameReview = (a, b) =>
-  ALL_REVIEW_FIELDS.every((f) => a[f.key] === b[f.key]);
+// リマインドが飛ぶ基準と同じ「大幅な超過」判定（functions/dailyReportGuard.jsのisOverrunと同じ式）
+const OVERRUN_BUFFER_MINUTES = 20;
+const OVERRUN_RATIO = 1.3;
+const isSignificantOverrun = (task, timing) => {
+  if (timing.status !== 'done' || task.plannedMinutes == null) return false;
+  const actualMinutes = Math.round(timing.actualMs / 60000);
+  return actualMinutes > task.plannedMinutes + OVERRUN_BUFFER_MINUTES
+    && actualMinutes > task.plannedMinutes * OVERRUN_RATIO;
+};
 
 /** カレンダーのセル（月初までの空セルはnull） */
 const buildCalendarCells = ({ year, month }) => {
@@ -1272,22 +1265,24 @@ const DailyTimerPage = () => {
   // 空き時間の行の「ここにタスクを追加」から、上の「タスクを追加」フォームへフォーカスを移すための参照
   const taskNameInputRef = useRef(null);
 
-  // 振り返り
-  const [reviewDraft, setReviewDraft] = useState(normalizeReview());
-  const [savedReview, setSavedReview] = useState(normalizeReview());
-  const [reviewOpen, setReviewOpen] = useState(false);
-  const reviewKeyRef = useRef(null);
-  // NA（次のアクション）タスク一覧（振り返り保存時にまとめて登録する）。
+  // 振り返りウィザード（null=未開始、0〜5=手順番号）
+  // 0:リマインド確認 1:時間の使い方 2:未完了タスク 3:各案件ステータス 4:今週確定予定 5:翌日の予定作り
+  const [reviewStep, setReviewStep] = useState(null);
+  // 手順1: 大幅超過タスクごとの入力 { [taskId]: { reflection, actionName, actionMinutes, actionDueDate } }
+  const [overrunInputs, setOverrunInputs] = useState({});
+  // 手順2: 未完了タスクごとの選択 { [taskId]: { mode: 'reschedule'|'earlyMorning', newDate } }
+  const [unfinishedInputs, setUnfinishedInputs] = useState({});
+
+  // NA（次のアクション）タスク一覧（手順1・2の記入や案件NAの追加でここに積まれ、手順5で登録する）。
   // ローカルidは編集用の一時キー。基本は翌日だが、タスクごとに対象日を変えられる
   const [nextDayPlan, setNextDayPlan] = useState([]);
   const [nextDayTaskName, setNextDayTaskName] = useState('');
   const [nextDayPlannedMinutes, setNextDayPlannedMinutes] = useState('');
   const [nextDayPlannedStartTime, setNextDayPlannedStartTime] = useState('');
   const [nextDayTaskDate, setNextDayTaskDate] = useState('');
-  const [initialNextDayPlan, setInitialNextDayPlan] = useState([]);
 
-  // 期日が3日以内の案件ネクストアクション（振り返りを開いた時に取得し、ワンクリックでNAタスク一覧に追加できる）。
-  // 明日が期日のもの(mandatory:true)は、夜の振り返りを完了する前に必ず追加する必要がある
+  // 期日が3日以内の案件ネクストアクション（ウィザード開始時に取得し、手順5でワンクリックでNAタスク一覧に追加できる）。
+  // 明日が期日のもの(mandatory:true)は、翌日の予定作りを完了する前に必ず追加する必要がある
   const [upcomingDueNas, setUpcomingDueNas] = useState([]);
 
   // 案件のネクストアクションから来たタスクを終了する時の「次のNA」入力モーダル
@@ -1349,22 +1344,6 @@ const DailyTimerPage = () => {
     loadDayDocs(selectedDate);
   }, [selectedDate, loadDayDocs]);
 
-  // 表示中の「担当者×日付」が変わったら振り返りを読み込み直す
-  // （タスク操作による再読み込みではキーが同じなので入力中の下書きを保持する）
-  useEffect(() => {
-    if (!loadedDate || loadedDate !== selectedDate) return;
-    const key = `${representative}_${loadedDate}`;
-    if (reviewKeyRef.current === key) return;
-    reviewKeyRef.current = key;
-
-    const dayDoc = dayDocs.find((d) => d.representative === representative);
-    const review = normalizeReview(dayDoc?.review);
-    setReviewDraft(review);
-    setSavedReview(review);
-    // 保存済みの振り返りがある日は初期状態で展開する
-    setReviewOpen(hasReviewContent(review));
-  }, [dayDocs, loadedDate, selectedDate, representative]);
-
   // 振り返り用の未完了・超過タスク一覧（選択中の担当者のみ、表示専用の派生データ）
   // 実行中で予定超過中のタスクは実績未確定のため超過一覧には含めず、未完了一覧に載せる
   const { unfinishedTasks, overdueTasks } = useMemo(() => {
@@ -1383,34 +1362,30 @@ const DailyTimerPage = () => {
     return { unfinishedTasks: unfinished, overdueTasks: over };
   }, [dayDocs, representative]);
 
-  // NAタスクの初期候補：今日の未完了タスクを自動で繰越候補にする（対象日はデフォルトで翌日）
-  // （担当者×日付が変わった時だけ再セットし、以後の追加・削除はそのまま保持する）
-  const nextDayPlanKeyRef = useRef(null);
-  useEffect(() => {
-    const key = `${representative}_${loadedDate}`;
-    if (nextDayPlanKeyRef.current === key) return;
-    nextDayPlanKeyRef.current = key;
-    const defaultDate = loadedDate ? shiftDateKey(loadedDate, 1) : '';
-    setNextDayTaskDate(defaultDate);
-    const seeded = unfinishedTasks
-      .filter(({ task }) => !task.isReviewTask) // 「振り返り」枠は毎日自動で作られるため繰越候補には出さない
-      .map(({ task }) => ({
-        localId: `carry_${task.id}`,
-        name: task.name,
-        plannedMinutes: task.plannedMinutes,
-        plannedStartTime: null,
-        fromCarryover: true,
-        date: defaultDate
-      }));
-    setNextDayPlan(seeded);
-    setInitialNextDayPlan(seeded);
-  }, [unfinishedTasks, loadedDate, representative]);
+  // 超過タスクのうち、リマインドが飛ぶ基準を満たす「大幅な超過」だけを手順1の対象にする
+  const { significantOverdueTasks, minorOverdueTasks } = useMemo(() => {
+    const sig = [];
+    const minor = [];
+    overdueTasks.forEach(({ task, timing }) => {
+      (isSignificantOverrun(task, timing) ? sig : minor).push({ task, timing });
+    });
+    return { significantOverdueTasks: sig, minorOverdueTasks: minor };
+  }, [overdueTasks]);
 
-  // 振り返りを開いた時に、3日以内が期日の案件ネクストアクションを拾ってくる（NAタスク一覧にワンクリックで追加できるように）。
-  // 明日が期日のものはmandatory:trueにする（夜の振り返り完了の必須条件になる）
+  // 未完了タスクのうち、手順2で新しい期日・早起きを決めてもらう対象
+  // （「振り返り」枠は毎日自動で作られるため対象に含めない）
+  const unfinishedForRecovery = useMemo(
+    () => unfinishedTasks.filter(({ task }) => !task.isReviewTask),
+    [unfinishedTasks]
+  );
+
+  // ウィザードを開始した時に、3日以内が期日の案件ネクストアクションを拾ってくる
+  // （手順5でワンクリックでNAタスク一覧に追加できるように）。
+  // 明日が期日のものはmandatory:trueにする（翌日の予定作り完了の必須条件になる）
   // ステージ連動の特殊なNA（完了すると自動で次のステージNAが生成される）は対象から除く
+  const wizardActive = reviewStep !== null;
   useEffect(() => {
-    if (!reviewOpen || !loadedDate) return;
+    if (!wizardActive || !loadedDate) return;
     const tomorrowDate = shiftDateKey(loadedDate, 1);
     const withinDates = new Set([tomorrowDate, shiftDateKey(loadedDate, 2), shiftDateKey(loadedDate, 3)]);
     let cancelled = false;
@@ -1432,7 +1407,7 @@ const DailyTimerPage = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, [reviewOpen, loadedDate]);
+  }, [wizardActive, loadedDate]);
 
   // 明日が期日（必須）/ 2〜3日以内が期日（任意）に分けて表示する
   const tomorrowMandatoryNas = useMemo(
@@ -1464,20 +1439,11 @@ const DailyTimerPage = () => {
     setUpcomingDueNas((prev) => prev.filter((n) => n.id !== na.id));
   };
 
-  // NAタスク一覧を、繰越で自動セットされた時点から変更したかどうか
-  // （文字での識別のため区切り文字を含む値が来ても壊れないよう配列長も合わせて見る）
-  const planSignature = (plan) =>
-    `${plan.length}:${plan.map((t) => [t.localId, t.name, t.plannedMinutes, t.plannedStartTime, t.date].join('')).join('')}`;
-  const nextDayPlanDirty = planSignature(nextDayPlan) !== planSignature(initialNextDayPlan);
-  const reviewDirty = !isSameReview(reviewDraft, savedReview) || nextDayPlanDirty;
+  // nextDayPlanの各行の予定開始時刻をその場で編集する（早起き候補の時刻指定にも使う）
+  const updateNextDayPlanStartTime = (localId, time) => {
+    setNextDayPlan((prev) => prev.map((t) => (t.localId === localId ? { ...t, plannedStartTime: time || null } : t)));
+  };
 
-  // 未完了タスク（振り返り枠を除く）の予定時間合計。2時間以上ズレていたら
-  // 振り返り欄に「なぜズレたのか」の入力欄を追加で出す
-  const unfinishedPlannedMinutesTotal = useMemo(() => (
-    unfinishedTasks
-      .filter(({ task }) => !task.isReviewTask)
-      .reduce((sum, { task }) => sum + (task.plannedMinutes || 0), 0)
-  ), [unfinishedTasks]);
   // 夜の振り返りが完了したかどうかは、この記録の有無だけで判定する
   // （振り返り欄に文字が入っているかどうかでは判定しない）
   const reviewCompleted = !!dayDocs.find((d) => d.representative === representative)?.reviewCompletedAt;
@@ -1532,25 +1498,6 @@ const DailyTimerPage = () => {
   );
   const freeGapMinutesTotal = freeGaps.reduce((sum, g) => sum + g.minutes, 0);
 
-  // 予定確定後に追加されたタスク（「後から追加」）の一覧と、それに使った合計時間
-  const addedAfterConfirmTasks = useMemo(
-    () => (selectedDayDoc?.tasks || []).filter((t) => t.addedAfterConfirm),
-    [selectedDayDoc]
-  );
-  const addedAfterConfirmMinutesTotal = useMemo(() => (
-    addedAfterConfirmTasks.reduce((sum, t) => {
-      const timing = getTaskTiming(t);
-      const ms = timing.status === 'running'
-        ? timing.closedMs + (now - timing.runningStartMs)
-        : (timing.actualMs || 0);
-      return sum + Math.round(ms / 60000);
-    }, 0)
-  ), [addedAfterConfirmTasks, now]);
-
-  // 未完了タスクの予定ズレ（120分以上）、または実績側の空白（60分以上）のどちらかがあれば
-  // 振り返り欄に「なぜズレたのか」の入力欄を追加で出す（同じ仕組みを共用する）
-  const showScheduleGapField = unfinishedPlannedMinutesTotal >= 120 || freeGapMinutesTotal >= 60;
-
   const handleConfirmPlan = () => {
     if (!representative) return;
     if (!window.confirm('この内容で今日の予定を確定します。確定後に開始ボタンが押せるようになります。よろしいですか？')) return;
@@ -1578,9 +1525,11 @@ const DailyTimerPage = () => {
     setNextDayPlan((prev) => prev.filter((t) => t.localId !== localId));
   };
 
+  // ウィザードの途中（手順5の完了前）に日付を切り替えようとしたら確認する
+  // （各手順の記入は都度保存済みだが、翌日の予定作りが途中で失われることを防ぐ）
   const confirmLeaveReview = () =>
-    !reviewDirty ||
-    window.confirm('振り返りに未保存の変更があります。破棄して移動しますか？');
+    !wizardActive ||
+    window.confirm('振り返りの途中です。中断して移動しますか？');
 
   const changeDate = (dateKey) => {
     if (!confirmLeaveReview()) return;
@@ -1783,20 +1732,146 @@ const DailyTimerPage = () => {
     });
   };
 
-  const handleSaveReview = () => {
+  // ---- 振り返りウィザード ----
+
+  const currentReview = () => normalizeReview(dayDocs.find((d) => d.representative === representative)?.review);
+
+  const handleStartReview = () => {
     if (!representative) {
       window.alert('担当者を選択してください');
       return;
     }
+    setOverrunInputs({});
+    setUnfinishedInputs({});
+    setNextDayPlan([]);
+    setReviewStep(0);
+  };
+
+  // 手順0: リマインド確認
+  const handleAckReminders = () => {
     runMutation(async () => {
-      await saveReview(representative, selectedDate, reviewDraft);
-      setSavedReview({ ...reviewDraft });
+      await saveReview(representative, selectedDate, { ...currentReview(), reminderAcked: true });
+      setReviewStep(1);
+    });
+  };
+
+  // 手順1: 時間の使い方の振り返り（大幅超過タスクごとの記入）
+  const updateOverrunInput = (taskId, field, value) => {
+    setOverrunInputs((prev) => ({ ...prev, [taskId]: { ...prev[taskId], [field]: value } }));
+  };
+
+  const overrunStepReady = significantOverdueTasks.every(({ task }) => {
+    const input = overrunInputs[task.id] || {};
+    const minutesNum = Number(input.actionMinutes);
+    return (input.reflection || '').trim() !== ''
+      && (input.actionName || '').trim() !== ''
+      && Number.isInteger(minutesNum) && minutesNum > 0
+      && !!input.actionDueDate;
+  });
+
+  const handleAdvanceOverrunStep = () => {
+    if (!overrunStepReady) return;
+    runMutation(async () => {
+      await Promise.all(significantOverdueTasks.map(({ task }) =>
+        updateTaskFields(representative, selectedDate, task.id, {
+          overrunReflection: overrunInputs[task.id].reflection.trim()
+        })
+      ));
+      setNextDayPlan((prev) => [
+        ...prev,
+        ...significantOverdueTasks.map(({ task }) => {
+          const input = overrunInputs[task.id];
+          return {
+            localId: `overrun_${task.id}`,
+            name: input.actionName.trim(),
+            plannedMinutes: Number(input.actionMinutes),
+            plannedStartTime: null,
+            fromCarryover: false,
+            date: input.actionDueDate
+          };
+        })
+      ]);
+      setReviewStep(2);
+    });
+  };
+
+  // 手順2: 今日終わらなかったタスクの振り返り（新しい期日 or 早起き）
+  const updateUnfinishedInput = (taskId, field, value) => {
+    setUnfinishedInputs((prev) => ({ ...prev, [taskId]: { ...prev[taskId], [field]: value } }));
+  };
+
+  const unfinishedStepReady = unfinishedForRecovery.every(({ task }) => {
+    const input = unfinishedInputs[task.id] || {};
+    if (input.mode === 'earlyMorning') return true;
+    return input.mode === 'reschedule' && !!input.newDate;
+  });
+
+  const handleAdvanceUnfinishedStep = () => {
+    if (!unfinishedStepReady) return;
+    const tomorrowDate = shiftDateKey(selectedDate, 1);
+    runMutation(async () => {
+      await Promise.all(unfinishedForRecovery.map(({ task }) =>
+        updateTaskFields(representative, selectedDate, task.id, { recoveryPlanned: true })
+      ));
+      setNextDayPlan((prev) => [
+        ...prev,
+        ...unfinishedForRecovery.map(({ task }) => {
+          const input = unfinishedInputs[task.id];
+          const isEarly = input.mode === 'earlyMorning';
+          return {
+            localId: `unfinished_${task.id}`,
+            name: task.name,
+            plannedMinutes: task.plannedMinutes,
+            plannedStartTime: null,
+            fromCarryover: true,
+            date: isEarly ? tomorrowDate : input.newDate,
+            ...(isEarly ? { earlyMorningCandidate: true } : {})
+          };
+        })
+      ]);
+      setReviewStep(3);
+    });
+  };
+
+  // 手順3・4: 週次パイプライン振り返り（リンクを開いて目視確認するだけ）
+  const handleConfirmPipelineStatus = () => {
+    runMutation(async () => {
+      await saveReview(representative, selectedDate, { ...currentReview(), pipelineStatusChecked: true });
+      setReviewStep(4);
+    });
+  };
+
+  const handleConfirmPipelineWeek = () => {
+    runMutation(async () => {
+      await saveReview(representative, selectedDate, { ...currentReview(), pipelineWeekChecked: true });
+      await completeNightReview(representative, selectedDate);
+      setReviewStep(5);
+    });
+  };
+
+  // 手順5: 翌日の予定作り
+  const tomorrowDateForPlan = shiftDateKey(selectedDate, 1);
+  const tomorrowPlanItems = useMemo(
+    () => nextDayPlan.filter((t) => (t.date || tomorrowDateForPlan) === tomorrowDateForPlan),
+    [nextDayPlan, tomorrowDateForPlan]
+  );
+  const tomorrowPlanGapCheck = useMemo(
+    () => computeScheduleGaps(tomorrowPlanItems),
+    [tomorrowPlanItems]
+  );
+  const hasUnsetEarlyMorning = nextDayPlan.some((t) => t.earlyMorningCandidate && !t.plannedStartTime);
+  const canFinalizeTomorrowPlan = tomorrowMandatoryNas.length === 0
+    && !hasUnsetEarlyMorning
+    && tomorrowPlanGapCheck.isFilled;
+
+  const handleFinalizeTomorrowPlan = () => {
+    if (!canFinalizeTomorrowPlan) return;
+    runMutation(async () => {
       // NAタスクは対象日ごとにグループ化し、日付ごとのドキュメントへ分けて登録する
       // （基本は翌日だが、タスクごとに別の日を指定できるため）
-      const defaultDate = shiftDateKey(selectedDate, 1);
       const byDate = new Map();
       nextDayPlan.forEach((t) => {
-        const date = t.date || defaultDate;
+        const date = t.date || tomorrowDateForPlan;
         if (!byDate.has(date)) byDate.set(date, []);
         byDate.get(date).push({
           name: t.name,
@@ -1805,28 +1880,15 @@ const DailyTimerPage = () => {
           ...(t.naLink ? { naLink: t.naLink } : {})
         });
       });
-      // 今回のNA一覧に1件も無い日は変更しない。デフォルト日（翌日）だけは、
-      // 全部消して空にした場合でも反映されるよう常に呼ぶ
-      if (!byDate.has(defaultDate)) byDate.set(defaultDate, []);
+      if (!byDate.has(tomorrowDateForPlan)) byDate.set(tomorrowDateForPlan, []);
       for (const [date, tasksForDate] of byDate) {
         await planNextDayTasks(representative, date, tasksForDate);
       }
-      setInitialNextDayPlan(nextDayPlan);
-    });
-  };
-
-  const handleCompleteReview = () => {
-    if (!representative) {
-      window.alert('担当者を選択してください');
-      return;
-    }
-    if (tomorrowMandatoryNas.length > 0) {
-      window.alert('明日が期日の案件ネクストアクションが、まだNAタスクに追加されていません。すべて追加してから完了してください');
-      return;
-    }
-    if (!window.confirm('夜の振り返りを完了として記録します。よろしいですか？')) return;
-    runMutation(async () => {
-      await completeNightReview(representative, selectedDate);
+      setReviewStep(null);
+      setNextDayPlan([]);
+      setOverrunInputs({});
+      setUnfinishedInputs({});
+      setSelectedDate(tomorrowDateForPlan);
     });
   };
 
@@ -2286,236 +2348,340 @@ const DailyTimerPage = () => {
       </Section>
 
       <Section>
-        <ReviewHeaderButton onClick={() => setReviewOpen((open) => !open)}>
-          <ReviewHeaderLeft>
-            <FiEdit3 /> 振り返り{representative ? `（${representative}）` : ''}
-          </ReviewHeaderLeft>
-          <ReviewHeaderRight>
-            {reviewCompleted && <ReviewSavedBadge>✅ 完了済み</ReviewSavedBadge>}
-            {!reviewCompleted && hasReviewContent(savedReview) && <ReviewSavedBadge>記入済み</ReviewSavedBadge>}
-            {reviewOpen ? <FiChevronUp size={18} /> : <FiChevronDown size={18} />}
-          </ReviewHeaderRight>
-        </ReviewHeaderButton>
-        {reviewOpen && (
+        <SectionTitle><FiEdit3 /> 振り返り{representative ? `（${representative}）` : ''}</SectionTitle>
+        {!wizardActive ? (
           <ReviewBody>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>未完了タスク</ReviewSummaryTitle>
-              {unfinishedTasks.length === 0 ? (
-                <ReviewSummaryEmpty>未完了タスクはありません</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {unfinishedTasks.map(({ task, timing }) => (
-                    <TaskRow key={task.id}>
-                      <TaskName>{task.name}</TaskName>
-                      {task.plannedMinutes != null && (
-                        <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>
-                      )}
-                      <StateBadge $running={timing.status === 'running'}>
-                        {timing.status === 'running' ? '実行中' : '未開始'}
-                      </StateBadge>
-                    </TaskRow>
-                  ))}
-                </TaskList>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>超過タスク</ReviewSummaryTitle>
-              {overdueTasks.length === 0 ? (
-                <ReviewSummaryEmpty>超過タスクはありません</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {overdueTasks.map(({ task, timing }) => (
-                    <TaskRow key={task.id} $overdue>
-                      <TaskName>{task.name}</TaskName>
-                      <ResultText $overdue>
-                        予定{task.plannedMinutes}分 / 実績{formatActual(timing.actualMs)}
-                      </ResultText>
-                      <OverdueBadge>超過{timing.diffMinutes}分</OverdueBadge>
-                    </TaskRow>
-                  ))}
-                </TaskList>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>本日の記入漏れ状況</ReviewSummaryTitle>
-              {!timeAccuracy || (!timeAccuracy.inaccurateMinutes && !timeAccuracy.reminderCount) ? (
-                <ReviewSummaryEmpty>タイマーの止め忘れ・つけ忘れはありませんでした</ReviewSummaryEmpty>
-              ) : (
-                <ReviewSummaryEmpty>
-                  不正確な時間 合計{timeAccuracy.inaccurateMinutes || 0}分（超過分＋タイマー未開始で空いていた時間） /
-                  リマインド{timeAccuracy.reminderCount || 0}回
-                </ReviewSummaryEmpty>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>空白だった時間（何も動いていなかった時間）</ReviewSummaryTitle>
-              {freeGaps.length === 0 ? (
-                <ReviewSummaryEmpty>空白の時間はありませんでした</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {freeGaps.map((g) => (
-                    <TaskRow key={`free_${g.start}`}>
-                      <TaskName>{minutesToTime(g.start)}〜{minutesToTime(g.end)}</TaskName>
-                      <ResultText>{g.minutes}分</ResultText>
-                    </TaskRow>
-                  ))}
-                  <ReviewSummaryEmpty>合計 {freeGapMinutesTotal}分</ReviewSummaryEmpty>
-                </TaskList>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>後から追加されたタスク（朝の予定確定後に追加したもの）</ReviewSummaryTitle>
-              {addedAfterConfirmTasks.length === 0 ? (
-                <ReviewSummaryEmpty>後から追加したタスクはありません</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {addedAfterConfirmTasks.map((task) => (
-                    <TaskRow key={task.id}>
-                      <TaskName>{task.name}</TaskName>
-                      <AddedLaterBadge>後から追加</AddedLaterBadge>
-                    </TaskRow>
-                  ))}
-                  <ReviewSummaryEmpty>合計 {addedAfterConfirmMinutesTotal}分使用</ReviewSummaryEmpty>
-                </TaskList>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>期日が明日の案件ネクストアクション（必須・すべて追加しないと完了できません）</ReviewSummaryTitle>
-              {tomorrowMandatoryNas.length === 0 ? (
-                <ReviewSummaryEmpty>期日が明日の案件ネクストアクションはありません</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {tomorrowMandatoryNas.map((na) => (
-                    <TaskRow key={na.id} $urgent>
-                      <TaskName>
-                        {na.companyName || na.productName || '(案件)'}: {na.actionContent}
-                      </TaskName>
-                      <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
-                        <FiPlus size={14} /> 追加
-                      </AddButton>
-                    </TaskRow>
-                  ))}
-                </TaskList>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>期日が2〜3日以内の案件ネクストアクション（任意・先取りして追加できます）</ReviewSummaryTitle>
-              {soonOptionalNas.length === 0 ? (
-                <ReviewSummaryEmpty>期日が2〜3日以内の案件ネクストアクションはありません</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {soonOptionalNas.map((na) => (
-                    <TaskRow key={na.id}>
-                      <TaskName>
-                        {na.companyName || na.productName || '(案件)'}: {na.actionContent}
-                      </TaskName>
-                      <PlannedBadge>期日 {na.actionDueDate}</PlannedBadge>
-                      <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
-                        <FiPlus size={14} /> 追加
-                      </AddButton>
-                    </TaskRow>
-                  ))}
-                </TaskList>
-              )}
-            </ReviewSummaryBlock>
-            <ReviewSummaryBlock>
-              <ReviewSummaryTitle>NA（次のアクション・保存時にまとめて登録されます）</ReviewSummaryTitle>
-              {nextDayPlan.length === 0 ? (
-                <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
-              ) : (
-                <TaskList>
-                  {nextDayPlan.map((t) => (
-                    <TaskRow key={t.localId}>
-                      <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
-                      {t.naLink && <NaLinkBadge>案件NA</NaLinkBadge>}
-                      <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
-                      {t.plannedMinutes != null && (
-                        <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
-                      )}
-                      <DeleteButton onClick={() => removeNextDayTask(t.localId)}>
-                        <FiTrash2 size={14} />
-                      </DeleteButton>
-                    </TaskRow>
-                  ))}
-                </TaskList>
-              )}
-              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                <Input
-                  placeholder="タスク名を追加"
-                  value={nextDayTaskName}
-                  onChange={(e) => setNextDayTaskName(e.target.value)}
-                />
-                <DateInput
-                  type="date"
-                  value={nextDayTaskDate}
-                  onChange={(e) => setNextDayTaskDate(e.target.value)}
-                  title="対象日（基本は翌日）"
-                />
-                <MinutesInput
-                  type="number"
-                  min="1"
-                  placeholder="分"
-                  value={nextDayPlannedMinutes}
-                  onChange={(e) => setNextDayPlannedMinutes(e.target.value)}
-                />
-                <TimeInput
-                  type="time"
-                  value={nextDayPlannedStartTime}
-                  onChange={(e) => setNextDayPlannedStartTime(e.target.value)}
-                />
-                <AddButton type="button" onClick={addNextDayTask} disabled={!nextDayTaskName.trim()}>
-                  <FiPlus size={14} /> 追加
-                </AddButton>
-              </div>
-            </ReviewSummaryBlock>
-            {REVIEW_FIELDS.map((field) => (
-              <ReviewField key={field.key}>
-                <ReviewLabel htmlFor={`review-${field.key}`}>{field.label}</ReviewLabel>
-                <ReviewTextarea
-                  id={`review-${field.key}`}
-                  value={reviewDraft[field.key]}
-                  onChange={(e) =>
-                    setReviewDraft((prev) => ({ ...prev, [field.key]: e.target.value }))
-                  }
-                />
-              </ReviewField>
-            ))}
-            {showScheduleGapField && CONDITIONAL_REVIEW_FIELDS.map((field) => (
-              <ReviewField key={field.key}>
-                <ReviewLabel htmlFor={`review-${field.key}`}>
-                  {field.label}
-                  （
-                  {unfinishedPlannedMinutesTotal >= 120 && `未完了タスクの予定時間合計が${unfinishedPlannedMinutesTotal}分`}
-                  {unfinishedPlannedMinutesTotal >= 120 && freeGapMinutesTotal >= 60 && '、'}
-                  {freeGapMinutesTotal >= 60 && `空白の時間が合計${freeGapMinutesTotal}分`}
-                  あります
-                  ）
-                </ReviewLabel>
-                <ReviewTextarea
-                  id={`review-${field.key}`}
-                  value={reviewDraft[field.key]}
-                  onChange={(e) =>
-                    setReviewDraft((prev) => ({ ...prev, [field.key]: e.target.value }))
-                  }
-                />
-              </ReviewField>
-            ))}
-            <ReviewFooter>
-              {reviewDirty && <UnsavedText>未保存の変更があります</UnsavedText>}
-              <AddButton
-                onClick={handleSaveReview}
-                disabled={saving || !representative || !reviewDirty}
-              >
-                <FiSave size={14} /> 保存
+            {reviewCompleted ? (
+              <ReviewSavedBadge>✅ 今日の振り返りは完了しています</ReviewSavedBadge>
+            ) : (
+              <AddButton type="button" onClick={handleStartReview} disabled={!representative}>
+                <FiPlay size={14} /> 振り返りを始める
               </AddButton>
-              <AddButton
-                onClick={handleCompleteReview}
-                disabled={saving || !representative || reviewCompleted || tomorrowMandatoryNas.length > 0}
-                title={tomorrowMandatoryNas.length > 0 ? '明日が期日の案件ネクストアクションをすべてNAタスクに追加してください' : undefined}
-              >
-                <FiCheck size={14} /> {reviewCompleted ? '完了済み' : '完了'}
-              </AddButton>
-            </ReviewFooter>
+            )}
+          </ReviewBody>
+        ) : (
+          <ReviewBody>
+            <WizardStepBadge>手順 {reviewStep + 1} / 6</WizardStepBadge>
+
+            {reviewStep === 0 && (
+              <>
+                <WizardIntro>日報に基づく振り返り（1/2）: リマインドされた頻度を確認してください。</WizardIntro>
+                <ReviewSummaryBlock>
+                  <ReviewSummaryEmpty>
+                    リマインド回数（合計） {timeAccuracy?.reminderCount || 0}回 /
+                    タイマーが止まっていた回数 {freeGaps.length}回 /
+                    止まっていた時間 合計{freeGapMinutesTotal}分
+                  </ReviewSummaryEmpty>
+                </ReviewSummaryBlock>
+                <ReviewFooter>
+                  <AddButton onClick={handleAckReminders} disabled={saving}>
+                    <FiCheck size={14} /> 確認しました
+                  </AddButton>
+                </ReviewFooter>
+              </>
+            )}
+
+            {reviewStep === 1 && (
+              <>
+                <WizardIntro>日報に基づく振り返り（2/2）: 時間の使い方を振り返ってください。大幅に超過したタスクは振り返り・次のアクションの記入が必須です。</WizardIntro>
+                {significantOverdueTasks.length === 0 ? (
+                  <ReviewSummaryEmpty>大幅に超過したタスクはありません</ReviewSummaryEmpty>
+                ) : (
+                  <ReviewSummaryBlock>
+                    {significantOverdueTasks.map(({ task, timing }) => (
+                      <WizardItemCard key={task.id}>
+                        <TaskRow $overdue>
+                          <TaskName>{task.name}</TaskName>
+                          <ResultText $overdue>
+                            予定{task.plannedMinutes}分 / 実績{formatActual(timing.actualMs)}
+                          </ResultText>
+                          <OverdueBadge>超過{timing.diffMinutes}分</OverdueBadge>
+                        </TaskRow>
+                        <ReviewField>
+                          <ReviewLabel htmlFor={`overrun-reflection-${task.id}`}>振り返り</ReviewLabel>
+                          <ReviewTextarea
+                            id={`overrun-reflection-${task.id}`}
+                            value={overrunInputs[task.id]?.reflection || ''}
+                            onChange={(e) => updateOverrunInput(task.id, 'reflection', e.target.value)}
+                          />
+                        </ReviewField>
+                        <WizardInputsRow>
+                          <Input
+                            placeholder="次のアクション名"
+                            value={overrunInputs[task.id]?.actionName || ''}
+                            onChange={(e) => updateOverrunInput(task.id, 'actionName', e.target.value)}
+                          />
+                          <MinutesInput
+                            type="number"
+                            min="1"
+                            placeholder="予定時間（分）"
+                            value={overrunInputs[task.id]?.actionMinutes || ''}
+                            onChange={(e) => updateOverrunInput(task.id, 'actionMinutes', e.target.value)}
+                          />
+                          <DateInput
+                            type="date"
+                            value={overrunInputs[task.id]?.actionDueDate || ''}
+                            onChange={(e) => updateOverrunInput(task.id, 'actionDueDate', e.target.value)}
+                            title="期日"
+                          />
+                        </WizardInputsRow>
+                      </WizardItemCard>
+                    ))}
+                  </ReviewSummaryBlock>
+                )}
+                {minorOverdueTasks.length > 0 && (
+                  <ReviewSummaryBlock>
+                    <ReviewSummaryTitle>少し超過したタスク（記入不要）</ReviewSummaryTitle>
+                    <TaskList>
+                      {minorOverdueTasks.map(({ task, timing }) => (
+                        <TaskRow key={task.id}>
+                          <TaskName>{task.name}</TaskName>
+                          <ResultText>
+                            予定{task.plannedMinutes}分 / 実績{formatActual(timing.actualMs)}
+                          </ResultText>
+                          <OverdueBadge>超過{timing.diffMinutes}分</OverdueBadge>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  </ReviewSummaryBlock>
+                )}
+                <ReviewFooter>
+                  <AddButton onClick={handleAdvanceOverrunStep} disabled={saving || !overrunStepReady}>
+                    <FiCheck size={14} /> 次へ
+                  </AddButton>
+                </ReviewFooter>
+              </>
+            )}
+
+            {reviewStep === 2 && (
+              <>
+                <WizardIntro>今日終わらなかったタスクについて、どうリカバリーするか決めてください（新しい期日を切るか、翌朝早起きして片付けるか）。</WizardIntro>
+                {unfinishedForRecovery.length === 0 ? (
+                  <ReviewSummaryEmpty>今日終わらなかったタスクはありません</ReviewSummaryEmpty>
+                ) : (
+                  <ReviewSummaryBlock>
+                    {unfinishedForRecovery.map(({ task, timing }) => {
+                      const input = unfinishedInputs[task.id] || {};
+                      return (
+                        <WizardItemCard key={task.id}>
+                          <TaskRow>
+                            <TaskName>{task.name}</TaskName>
+                            {task.plannedMinutes != null && (
+                              <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>
+                            )}
+                            <StateBadge $running={timing.status === 'running'}>
+                              {timing.status === 'running' ? '実行中' : '未開始'}
+                            </StateBadge>
+                          </TaskRow>
+                          <WizardChoiceRow>
+                            <input
+                              type="radio"
+                              name={`unfinished-${task.id}`}
+                              checked={input.mode === 'reschedule'}
+                              onChange={() => updateUnfinishedInput(task.id, 'mode', 'reschedule')}
+                            />
+                            新しい期日にする
+                            {input.mode === 'reschedule' && (
+                              <DateInput
+                                type="date"
+                                value={input.newDate || ''}
+                                onChange={(e) => updateUnfinishedInput(task.id, 'newDate', e.target.value)}
+                              />
+                            )}
+                          </WizardChoiceRow>
+                          <WizardChoiceRow>
+                            <input
+                              type="radio"
+                              name={`unfinished-${task.id}`}
+                              checked={input.mode === 'earlyMorning'}
+                              onChange={() => updateUnfinishedInput(task.id, 'mode', 'earlyMorning')}
+                            />
+                            明日早起きして片付ける
+                          </WizardChoiceRow>
+                        </WizardItemCard>
+                      );
+                    })}
+                  </ReviewSummaryBlock>
+                )}
+                <ReviewFooter>
+                  <AddButton onClick={handleAdvanceUnfinishedStep} disabled={saving || !unfinishedStepReady}>
+                    <FiCheck size={14} /> 次へ
+                  </AddButton>
+                </ReviewFooter>
+              </>
+            )}
+
+            {reviewStep === 3 && (
+              <>
+                <WizardIntro>
+                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（1/2）: パイプライン振り返りページを開き、各案件のフェーズ・ネクストアクションの内容が正しいか確認してください。
+                </WizardIntro>
+                <ReviewFooter style={{ justifyContent: 'flex-start' }}>
+                  <AddButton type="button" onClick={() => window.open('/pipeline-forecast', '_blank')}>
+                    <FiLink size={14} /> パイプライン振り返りページを開く
+                  </AddButton>
+                </ReviewFooter>
+                <ReviewFooter>
+                  <AddButton onClick={handleConfirmPipelineStatus} disabled={saving}>
+                    <FiCheck size={14} /> 確認しました
+                  </AddButton>
+                </ReviewFooter>
+              </>
+            )}
+
+            {reviewStep === 4 && (
+              <>
+                <WizardIntro>
+                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（2/2）: 今週確定予定の案件について、ヨミの確度が変わっていないか、追加で取るべきアクションがないか確認してください。
+                </WizardIntro>
+                <ReviewFooter style={{ justifyContent: 'flex-start' }}>
+                  <AddButton type="button" onClick={() => window.open('/pipeline-forecast', '_blank')}>
+                    <FiLink size={14} /> パイプライン振り返りページを開く
+                  </AddButton>
+                </ReviewFooter>
+                <ReviewFooter>
+                  <AddButton onClick={handleConfirmPipelineWeek} disabled={saving}>
+                    <FiCheck size={14} /> 確認しました（振り返りを完了する）
+                  </AddButton>
+                </ReviewFooter>
+              </>
+            )}
+
+            {reviewStep === 5 && (
+              <>
+                <WizardIntro>翌日の予定を作りましょう。空いている時間がなくなるまで埋めると完了できます。</WizardIntro>
+                <ReviewSummaryBlock>
+                  <ReviewSummaryTitle>期日が明日の案件ネクストアクション（必須・すべて追加しないと完了できません）</ReviewSummaryTitle>
+                  {tomorrowMandatoryNas.length === 0 ? (
+                    <ReviewSummaryEmpty>期日が明日の案件ネクストアクションはありません</ReviewSummaryEmpty>
+                  ) : (
+                    <TaskList>
+                      {tomorrowMandatoryNas.map((na) => (
+                        <TaskRow key={na.id} $urgent>
+                          <TaskName>
+                            {na.companyName || na.productName || '(案件)'}: {na.actionContent}
+                          </TaskName>
+                          <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
+                            <FiPlus size={14} /> 追加
+                          </AddButton>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  )}
+                </ReviewSummaryBlock>
+                <ReviewSummaryBlock>
+                  <ReviewSummaryTitle>期日が2〜3日以内の案件ネクストアクション（任意・先取りして追加できます）</ReviewSummaryTitle>
+                  {soonOptionalNas.length === 0 ? (
+                    <ReviewSummaryEmpty>期日が2〜3日以内の案件ネクストアクションはありません</ReviewSummaryEmpty>
+                  ) : (
+                    <TaskList>
+                      {soonOptionalNas.map((na) => (
+                        <TaskRow key={na.id}>
+                          <TaskName>
+                            {na.companyName || na.productName || '(案件)'}: {na.actionContent}
+                          </TaskName>
+                          <PlannedBadge>期日 {na.actionDueDate}</PlannedBadge>
+                          <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
+                            <FiPlus size={14} /> 追加
+                          </AddButton>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  )}
+                </ReviewSummaryBlock>
+                {nextDayPlan.some((t) => t.earlyMorningCandidate && !t.plannedStartTime) && (
+                  <ReviewSummaryBlock>
+                    <ReviewSummaryTitle>早起き候補（開始時刻を指定してください）</ReviewSummaryTitle>
+                    <TaskList>
+                      {nextDayPlan.filter((t) => t.earlyMorningCandidate && !t.plannedStartTime).map((t) => (
+                        <TaskRow key={t.localId}>
+                          <TaskName>{t.name}</TaskName>
+                          {t.plannedMinutes != null && <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>}
+                          <TimeInput
+                            type="time"
+                            value={t.plannedStartTime || ''}
+                            onChange={(e) => updateNextDayPlanStartTime(t.localId, e.target.value)}
+                          />
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  </ReviewSummaryBlock>
+                )}
+                <ReviewSummaryBlock>
+                  <ReviewSummaryTitle>NA（次のアクション・完了時にまとめて登録されます）</ReviewSummaryTitle>
+                  {nextDayPlan.length === 0 ? (
+                    <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
+                  ) : (
+                    <TaskList>
+                      {nextDayPlan.map((t) => (
+                        <TaskRow key={t.localId}>
+                          <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
+                          {t.naLink && <NaLinkBadge>案件NA</NaLinkBadge>}
+                          <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
+                          {t.plannedMinutes != null && (
+                            <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
+                          )}
+                          <DeleteButton onClick={() => removeNextDayTask(t.localId)}>
+                            <FiTrash2 size={14} />
+                          </DeleteButton>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  )}
+                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <Input
+                      placeholder="タスク名を追加"
+                      value={nextDayTaskName}
+                      onChange={(e) => setNextDayTaskName(e.target.value)}
+                    />
+                    <DateInput
+                      type="date"
+                      value={nextDayTaskDate}
+                      onChange={(e) => setNextDayTaskDate(e.target.value)}
+                      title="対象日（基本は翌日）"
+                    />
+                    <MinutesInput
+                      type="number"
+                      min="1"
+                      placeholder="分"
+                      value={nextDayPlannedMinutes}
+                      onChange={(e) => setNextDayPlannedMinutes(e.target.value)}
+                    />
+                    <TimeInput
+                      type="time"
+                      value={nextDayPlannedStartTime}
+                      onChange={(e) => setNextDayPlannedStartTime(e.target.value)}
+                    />
+                    <AddButton type="button" onClick={addNextDayTask} disabled={!nextDayTaskName.trim()}>
+                      <FiPlus size={14} /> 追加
+                    </AddButton>
+                  </div>
+                </ReviewSummaryBlock>
+                {tomorrowPlanItems.length > 0 && (tomorrowPlanGapCheck.gaps.length > 0 || tomorrowPlanGapCheck.overlaps.length > 0) && (
+                  <GapWarningList>
+                    {tomorrowPlanGapCheck.gaps.map((g) => (
+                      <GapWarningItem key={`plan_gap_${g.start}`}>
+                        空いています：{minutesToTime(g.start)}〜{minutesToTime(g.end)}（{g.minutes}分）
+                      </GapWarningItem>
+                    ))}
+                    {tomorrowPlanGapCheck.overlaps.map((o, i) => (
+                      <GapWarningItem key={`plan_overlap_${i}`}>
+                        時刻が重なっています：「{o.a.name}」と「{o.b.name}」
+                      </GapWarningItem>
+                    ))}
+                  </GapWarningList>
+                )}
+                <ReviewFooter>
+                  <AddButton
+                    onClick={handleFinalizeTomorrowPlan}
+                    disabled={saving || !canFinalizeTomorrowPlan}
+                    title={!canFinalizeTomorrowPlan ? '必須のネクストアクションの追加・早起き候補の時刻指定・予定の空き時間の解消が必要です' : undefined}
+                  >
+                    <FiCheck size={14} /> 完了
+                  </AddButton>
+                </ReviewFooter>
+              </>
+            )}
           </ReviewBody>
         )}
       </Section>

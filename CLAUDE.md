@@ -190,15 +190,21 @@ dailyTimers: {
       startedAt: timestamp,    // 区間の開始（開始/再開ボタン押下時刻）
       endedAt: timestamp       // 区間の終了（実行中はnull。開いている区間は常に最後の1つのみ）
     }],
-    outputUrls: [string]       // アウトプットのリンク（任意。なしは未定義/空配列。https://を自動補完して保存）
+    outputUrls: [string],      // アウトプットのリンク（任意。なしは未定義/空配列。https://を自動補完して保存）
+    overrunReflection: string, // 振り返りウィザード手順1で記入した「大幅超過の振り返り」（任意フィールドなので未記入行は未定義）
+    recoveryPlanned: boolean   // 振り返りウィザード手順2でリカバリー方法（新期日/早起き）を決定済みかのフラグ
     // 旧形式はstartedAt/endedAt直持ち（区間1つとして解釈し、いずれかの操作時に新形式へ変換）
   }],
   manualSort: boolean,         // trueならtasks配列の並びが表示順の正（D&Dで初めて並び替えた時に立つ。未設定は予定開始時刻ソート表示）
-  review: {                    // 1日1件の振り返り（tasksとは独立、担当者×日付ごと）
-    notAchieved: string,       // 達成できなかったことはないか？なぜか？どう組み直すか？
-    timeImprovement: string,   // 時間の使い方をもっとよくすることはできないか？
-    reflection: string,        // 振り返り
-    nextAction: string         // NA（明日のネクストアクション）
+  review: {                    // 1日1件の振り返り（tasksとは独立、担当者×日付ごと）。振り返りウィザードの手順0・3・4の「確認しました」フラグのみを持つ
+    reminderAcked: boolean,        // 手順0: リマインド頻度を確認した
+    pipelineStatusChecked: boolean,// 手順3: 各案件のステータス確認をした
+    pipelineWeekChecked: boolean   // 手順4: 今週確定予定の案件確認をした
+  },
+  reviewCompletedAt: timestamp,// 夜の振り返り完了の正（Cloud Function POST /api/staff/night-review-complete が設定）。存在有無のみで完了判定
+  timeAccuracy: {               // タイマー止め忘れ・つけ忘れの記録（functions/dailyReportGuard.jsが日々積み上げ）
+    reminderCount: number,          // リマインド回数（超過・放置リマインドの合算。種別は分けていない）
+    inaccurateMinutes: number       // 不正確だった時間（超過分＋タイマー未開始で空いていた時間）
   },
   updatedAt: timestamp
   // 実績時間は保存しない（閉じた作業区間の合算を都度計算する）
@@ -220,9 +226,20 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.41.0
-- **最終更新**: 2026年8月11日
+- **現在バージョン**: v2.42.0
+- **最終更新**: 2026年9月7日
 - **直近の更新内容**:
+  - 日報: 23:20からの振り返りを、案内に沿って進める6手順のウィザードに作り直し
+    - 「振り返りを始める」ボタンを押すと自動で手順0→5に案内され、全部終わるとその日の振り返り完了→翌日の予定記入→ページが翌日に進む、まで一続きで進行
+    - 手順0（リマインド確認）: `timeAccuracy.reminderCount`（合計回数）とタイマー停止回数・時間（`freeGaps`から算出、表示専用）を見て「確認しました」を押すだけ
+    - 手順1（時間の使い方の振り返り）: 超過タスクのうち`functions/dailyReportGuard.js`の`isOverrun`と同じ基準で「大幅に超過」したものだけ、振り返り・次のアクション名・予定時間・期日の入力を必須化（軽微な超過は一覧表示のみ）。振り返りはタスク行の`overrunReflection`に保存、アクションは案件に紐づかないタスクとして翌日プランに追加
+    - 手順2（未完了タスクの振り返り）: 未完了タスクごとに「新しい期日にする」か「明日早起きして片付ける」を選択必須（早起きの時刻はここでは決めず手順5で指定）。決定済みフラグを`recoveryPlanned`に保存
+    - 手順3・4（週次パイプライン振り返り）: パイプライン振り返りページを別タブで開いて目視確認する方式（重い埋め込みは行わない）。確認で`review.pipelineStatusChecked`/`pipelineWeekChecked`を記録、手順4の確認で夜の振り返り自体も完了（`completeNightReview`）
+    - 手順5（翌日の予定作り）: 期日が明日の案件NA（必須）・2〜3日以内の案件NA（任意）・手順1/2で作ったアクションを表示。早起き候補は開始時刻の指定が必須。翌日プランの予定に空きがあると完了できない（`computeScheduleGaps`を流用）。完了で`planNextDayTasks`を実行しページが翌日に切り替わる
+    - `review`のスキーマを`{reminderAcked, pipelineStatusChecked, pipelineWeekChecked}`の3フラグに簡素化し、旧来の自由記述4項目（達成できなかったこと/時間の使い方/振り返り/NA）は廃止
+    - リマインド回数は種別（超過起因/放置起因）を分けず合計のみ表示（バックエンドの`functions/dailyReportGuard.js`は変更なし）
+    - 調査のみ実施・今回は未修正: 緊急クエスト（🚨）まわりに複数の改善余地あり（予定確定時のタイムライン描画・リアルタイム反映・完了報告の二重防止・繰越時のバッジ引き継ぎ等）
+  - パイプライン振り返り: 月別実績の重複表示バグを修正（案件ごとに`isExistingProject`に対応する片方の営業記録サブコレクションのみを読むように統一）。保有中の案件をフェーズが大きい（成約に近い）順に表示。週選択に常に「来週」まで表示されるよう追加
   - 成約案件一覧の重複行バグを修正（受注保存処理を`saveReceivedOrder`（`projectService.js`）に共通化）
     - 成約案件一覧は「phase=フェーズ8の営業レコード1件=1行」。受注時に①営業記録タブが現在レコードのphaseをフェーズ8に更新②受注モーダルが成約レコードを無条件追加、の2系統からレコードが生まれ、既存案件では一度の受注で2行になっていた（7に戻して再受注すると+1）
     - 修正: モーダル保存時、salesRecords内に「confirmedDateを持たないフェーズ8レコード」（タブ由来）があれば最新1件に受注情報を上書きして成約レコードへ昇格（date・recordTypeは元レコードを維持）。confirmedDate付きの確定済み成約は保護し新規追加

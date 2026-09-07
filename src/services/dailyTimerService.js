@@ -29,7 +29,13 @@ import { computeScheduleGaps } from '../utils/dailyTimerSchedule.js';
  *     「予定を確定する」ボタン押下時点のtasksのスナップショット（confirmDayPlan参照）。
  *     以後に追加したタスクはaddedAfterConfirmが立ち、確定前の朝の姿と区別できる。
  *     この日の予定が確定済みかどうかの判定はこのフィールドの有無のみで行う
- *   review: { notAchieved, timeImprovement, reflection, nextAction }（1日1件の振り返り。tasksとは独立）
+ *   review: { reminderAcked, pipelineStatusChecked, pipelineWeekChecked }（1日1件、tasksとは独立。
+ *     夜の振り返りウィザードの手順0・3・4を確認済みかどうかの目印。すべて確認するとreviewCompletedAtが立つ）
+ *
+ * tasks[].overrunReflection(string、任意): 夜の振り返りで「大幅に超過した」と判定されたタスクに
+ *   記入した振り返りコメント（手順1）。一度記入したタスクは同じ日に再度は求めない
+ * tasks[].recoveryPlanned(boolean、任意): 夜の振り返りで、未完了タスクの新しい期日（または翌朝早起き）を
+ *   決め終えた目印（手順2）。一度立てたタスクは同じ日に再度は求めない
  *
  * sessionsは作業区間の配列（時系列順）。終了したタスクは「再開」で区間を追加できる。
  * 開いている区間（endedAt=null）は常に最後の1つのみ。
@@ -411,10 +417,10 @@ export const confirmDayPlan = async (representative, date) => {
 };
 
 /**
- * 1日1件の振り返りを保存する（tasksには一切触れない）
+ * 1日1件の振り返り（手順0・3・4の確認済みフラグ）を保存する（tasksには一切触れない）
  * @param {string} representative - 担当者名
  * @param {string} date - "YYYY-MM-DD"
- * @param {{notAchieved: string, timeImprovement: string, reflection: string, nextAction: string, scheduleGapReason: string}} review
+ * @param {{reminderAcked: boolean, pipelineStatusChecked: boolean, pipelineWeekChecked: boolean}} review
  */
 export const saveReview = async (representative, date, review) => {
   try {
@@ -423,16 +429,39 @@ export const saveReview = async (representative, date, review) => {
       representative,
       date,
       review: {
-        notAchieved: review.notAchieved || '',
-        timeImprovement: review.timeImprovement || '',
-        reflection: review.reflection || '',
-        nextAction: review.nextAction || '',
-        scheduleGapReason: review.scheduleGapReason || ''
+        reminderAcked: !!review.reminderAcked,
+        pipelineStatusChecked: !!review.pipelineStatusChecked,
+        pipelineWeekChecked: !!review.pipelineWeekChecked
       },
       updatedAt: Timestamp.now()
     }, { merge: true });
   } catch (error) {
     console.error('Failed to save review:', error);
+    throw error;
+  }
+};
+
+/**
+ * タスクの任意フィールドを部分更新する（振り返りウィザードでの
+ * overrunReflection/recoveryPlannedの記録に使う。汎用の差分マージ）
+ * @param {string} representative - 担当者名
+ * @param {string} date - "YYYY-MM-DD"
+ * @param {string} taskId - タスクID
+ * @param {Object} fields - マージするフィールド
+ */
+export const updateTaskFields = async (representative, date, taskId, fields) => {
+  try {
+    const { ref, data } = await getDayDoc(representative, date);
+    if (!data) throw new Error('対象の日報データが見つかりません');
+
+    const tasks = (data.tasks || []).map(normalizeTask);
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target) throw new Error('対象のタスクが見つかりません');
+
+    const updated = tasks.map((t) => (t.id === taskId ? { ...t, ...fields } : t));
+    await saveTasks(ref, representative, date, updated);
+  } catch (error) {
+    console.error('Failed to update task fields:', error);
     throw error;
   }
 };
