@@ -1228,6 +1228,122 @@ export const upsertClientMeetingSettings = async (companyName, data) => {
 };
 
 /**
+ * 指定した担当者の案件を全件取得する（フェーズ問わず）。
+ * 夜の振り返りウィザード（パイプライン確認・翌日のMTG候補抽出）で使う軽量な読み取り
+ * @param {string} representative - 担当者名
+ */
+export const fetchDealsForRep = async (representative) => {
+  try {
+    const snap = await getDocs(collection(db, 'progressDashboard'));
+    return snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((d) => d.representative === representative);
+  } catch (error) {
+    console.error('Failed to fetch deals for representative:', error);
+    throw error;
+  }
+};
+
+/**
+ * clientMeetingSettingsを全件取得する（会社名ごとに1件）。
+ * 夜の振り返りウィザードで、翌日が定例ミーティングの曜日にあたる案件を洗い出すために使う
+ */
+export const fetchAllClientMeetingSettings = async () => {
+  try {
+    const snap = await getDocs(collection(db, 'clientMeetingSettings'));
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (error) {
+    console.error('Failed to fetch all client meeting settings:', error);
+    throw error;
+  }
+};
+
+/**
+ * 案件の指定日の単発MTGスロット（progressDashboard/{dealId}/materials/slot_{date}）を取得する。
+ * 無ければnull（その日に単発ミーティングは登録されていない、の意味）
+ * @param {string} dealId - 案件ID
+ * @param {string} dateKey - "YYYY-MM-DD"
+ */
+export const fetchMaterialSlot = async (dealId, dateKey) => {
+  try {
+    const snap = await getDoc(doc(db, 'progressDashboard', dealId, 'materials', `slot_${dateKey}`));
+    return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  } catch (error) {
+    console.error('Failed to fetch material slot:', error);
+    return null;
+  }
+};
+
+/**
+ * 夜の振り返りウィザードの手順3・4用: 指定担当者の保有中案件（フェーズ1〜7、新規・既存の両方、
+ * 今期対象外を除く）と、今週成約予定にマークされている案件を、読み取り専用の軽量な形でまとめて
+ * 取得する。PipelineForecastPage.jsの読み取りロジック（activeDeals・predictedDeals）と
+ * 同じ考え方だが、案件ごとのネクストアクションはfetchAllNextActionsの結果から突き合わせる
+ * （案件ごとの個別フェッチはしない）
+ * @param {string} representative - 担当者名
+ */
+export const fetchPipelineReviewSnapshot = async (representative) => {
+  const OPEN_PHASES = ['フェーズ1', 'フェーズ2', 'フェーズ3', 'フェーズ4', 'フェーズ5', 'フェーズ6', 'フェーズ7'];
+  const PHASE_PROBABILITY = {
+    'フェーズ1': 5, 'フェーズ2': 15, 'フェーズ3': 25, 'フェーズ4': 50,
+    'フェーズ5': 70, 'フェーズ6': 90, 'フェーズ7': 95
+  };
+  try {
+    const [deals, allNas] = await Promise.all([
+      fetchDealsForRep(representative),
+      fetchAllNextActions()
+    ]);
+
+    // 案件ごとの現在のネクストアクションを、期日が近い順に1件選ぶ
+    const naByDealId = new Map();
+    allNas
+      .filter((na) => (na.actionStatus || 'active') !== 'done')
+      .forEach((na) => {
+        const existing = naByDealId.get(na.projectId);
+        if (!existing || (na.actionDueDate || '9999-99-99') < (existing.actionDueDate || '9999-99-99')) {
+          naByDealId.set(na.projectId, na);
+        }
+      });
+
+    const activeDeals = deals
+      .filter((d) => OPEN_PHASES.includes(d.status) && !d.excludedFromForecast)
+      .map((d) => ({
+        id: d.id,
+        companyName: d.companyName || d.productName || '(社名未設定)',
+        productName: d.productName || '',
+        status: d.status,
+        naContent: naByDealId.get(d.id)?.actionContent || ''
+      }))
+      .sort((a, b) => OPEN_PHASES.indexOf(b.status) - OPEN_PHASES.indexOf(a.status));
+
+    // 今週（月曜始まり）のweekId。PipelineForecastPage.jsのgetWeekIdと同じ考え方
+    const now = new Date();
+    const day = now.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + diff);
+    const weekId = `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+
+    const predictedDeals = (await Promise.all(deals.map(async (d) => {
+      const weeklySnap = await getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', weekId)).catch(() => null);
+      const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
+      if (!weekly?.predictedToClose) return null;
+      return {
+        id: d.id,
+        companyName: d.companyName || d.productName || '(社名未設定)',
+        productName: d.productName || '',
+        probability: weekly.probability != null ? weekly.probability : (PHASE_PROBABILITY[d.status] || 0)
+      };
+    }))).filter(Boolean);
+
+    return { activeDeals, predictedDeals };
+  } catch (error) {
+    console.error('Failed to fetch pipeline review snapshot:', error);
+    throw error;
+  }
+};
+
+/**
  * MTGで使う資料（提案資料等）のリンクを登録する。MTG前に登録しておくことで、
  * MTG後のお礼メッセージにこの資料へのリンクを自動で付けられる。
  * コレクション: progressDashboard/{dealId}/materials

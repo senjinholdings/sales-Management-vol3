@@ -41,7 +41,15 @@ import {
   timeToMinutes,
   PLAN_WINDOW_START
 } from '../utils/dailyTimerSchedule.js';
-import { fetchAllNextActions, addSalesEntry, updateSalesEntryStatus } from '../services/projectService.js';
+import {
+  fetchAllNextActions,
+  addSalesEntry,
+  updateSalesEntryStatus,
+  fetchPipelineReviewSnapshot,
+  fetchDealsForRep,
+  fetchAllClientMeetingSettings,
+  fetchMaterialSlot
+} from '../services/projectService.js';
 import { isStageTargetProject } from '../utils/stageProgress.js';
 
 // ============================================
@@ -772,6 +780,18 @@ const NaLinkBadge = styled.span`
   white-space: nowrap;
 `;
 
+// 議事録が自動記録されるミーティング（clientMeetingSettingsにmeetUrl登録済み）の目印。
+// 「ダッシュボードに登録されていない社外ミーティングがないか」を見つけやすくするための表示
+const MeetingLinkBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #16a085;
+  background: #e8f8f5;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
 // ---- タイムライン（左＝朝の予定 / 右＝実績） ----
 
 const TimelineGrid = styled.div`
@@ -988,6 +1008,33 @@ const WizardStatLabel = styled.span`
   color: #7f8c8d;
 `;
 
+// 手順3・4: 自由記述と、横に表示するパイプラインの状況（読み取り専用）
+const WizardSideBySide = styled.div`
+  display: flex;
+  gap: 1.25rem;
+  align-items: flex-start;
+  flex-wrap: wrap;
+`;
+
+const WizardMainColumn = styled.div`
+  flex: 1 1 320px;
+  min-width: 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+`;
+
+const WizardSideColumn = styled.div`
+  flex: 1 1 280px;
+  min-width: 260px;
+  max-height: 420px;
+  overflow-y: auto;
+  background: #fafbfc;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 0.75rem;
+`;
+
 // ---- 振り返り内のタスク一覧（未完了・超過） ----
 
 const ReviewSummaryBlock = styled.div`
@@ -1025,6 +1072,9 @@ const StateBadge = styled.span`
 // ============================================
 
 const WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+
+// 振り返りウィザードの手順番号 → その手順が始まったら自動開始する固定タスク名
+const REVIEW_TASK_NAME_BY_PHASE_START = { 0: '日報に基づく振り返り', 3: '週次パイプライン振り返り', 5: '翌日の予定の記入' };
 const PRESET_MINUTES = [15, 30, 60, 90];
 
 /** ローカルタイムで "YYYY-MM-DD" を返す（toISOStringはUTCになるため使わない） */
@@ -1228,11 +1278,13 @@ const REPRESENTATIVE_FILTER = '荒幡';
 // 振り返りヘルパー
 // ============================================
 
-// 夜の振り返りウィザードの手順0・3・4の「確認しました」フラグ
+// 夜の振り返りウィザードの手順0・3・4の「確認しました」フラグ・任意の自由記述
 const normalizeReview = (review = {}) => ({
   reminderAcked: !!review.reminderAcked,
   pipelineStatusChecked: !!review.pipelineStatusChecked,
-  pipelineWeekChecked: !!review.pipelineWeekChecked
+  pipelineWeekChecked: !!review.pipelineWeekChecked,
+  pipelineStatusNote: review.pipelineStatusNote || '',
+  pipelineWeekNote: review.pipelineWeekNote || ''
 });
 
 // リマインドが飛ぶ基準と同じ「大幅な超過」判定（functions/dailyReportGuard.jsのisOverrunと同じ式）
@@ -1300,6 +1352,15 @@ const DailyTimerPage = () => {
   const [overrunInputs, setOverrunInputs] = useState({});
   // 手順2: 未完了タスクごとの選択 { [taskId]: { mode: 'reschedule'|'earlyMorning', newDate } }
   const [unfinishedInputs, setUnfinishedInputs] = useState({});
+
+  // 手順3・4: 自由記述（任意）と、画面内に読み取り専用で表示するパイプラインの状況
+  const [pipelineStatusNoteInput, setPipelineStatusNoteInput] = useState('');
+  const [pipelineWeekNoteInput, setPipelineWeekNoteInput] = useState('');
+  const [pipelineReviewSnapshot, setPipelineReviewSnapshot] = useState({ activeDeals: [], predictedDeals: [] });
+  const [pipelineReviewLoading, setPipelineReviewLoading] = useState(false);
+
+  // 手順5: 翌日が定例/単発ミーティングの予定にあたる案件の候補（任意・追加しなくても完了できる）
+  const [meetingCandidates, setMeetingCandidates] = useState([]);
 
   // NA（次のアクション）タスク一覧（手順1・2の記入や案件NAの追加でここに積まれ、手順5で登録する）。
   // ローカルidは編集用の一時キー。基本は翌日だが、タスクごとに対象日を変えられる
@@ -1437,6 +1498,79 @@ const DailyTimerPage = () => {
     return () => { cancelled = true; };
   }, [wizardActive, loadedDate]);
 
+  // 手順3・4に入ったら、パイプラインの状況（保有中案件・今週成約予定案件）を読み取り専用で取得する
+  // （パイプライン振り返りページに遷移せず、この画面内で確認できるようにするため）
+  useEffect(() => {
+    if (!wizardActive || (reviewStep !== 3 && reviewStep !== 4) || !representative) return;
+    let cancelled = false;
+    (async () => {
+      setPipelineReviewLoading(true);
+      try {
+        const snapshot = await fetchPipelineReviewSnapshot(representative);
+        if (!cancelled) setPipelineReviewSnapshot(snapshot);
+      } catch (error) {
+        console.error('パイプライン状況の取得エラー:', error);
+      } finally {
+        if (!cancelled) setPipelineReviewLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [wizardActive, reviewStep, representative]);
+
+  // ウィザードを開始した時に、翌日が定例/単発ミーティングの予定にあたる案件を洗い出す
+  // （議事録が自動記録される＝ダッシュボードに登録済みのミーティングのみが対象。任意の候補表示）
+  useEffect(() => {
+    if (!wizardActive || !loadedDate) return;
+    const tomorrowDate = shiftDateKey(loadedDate, 1);
+    let cancelled = false;
+    (async () => {
+      try {
+        const [deals, clientSettings] = await Promise.all([
+          fetchDealsForRep(REPRESENTATIVE_FILTER),
+          fetchAllClientMeetingSettings()
+        ]);
+        if (cancelled) return;
+        const [ty, tm, td] = tomorrowDate.split('-').map(Number);
+        const tomorrowWeekday = WEEKDAYS[new Date(ty, tm - 1, td).getDay()];
+        const settingsByCompany = new Map(clientSettings.map((s) => [s.companyName, s]));
+
+        const recurringCandidates = deals
+          .filter((deal) => {
+            const setting = settingsByCompany.get(deal.companyName);
+            return setting && setting.meetUrl && setting.recurringDayOfWeek === tomorrowWeekday;
+          })
+          .map((deal) => ({
+            dealId: deal.id,
+            companyName: deal.companyName || deal.productName || '(社名未設定)',
+            meetUrl: settingsByCompany.get(deal.companyName).meetUrl,
+            meetingType: '定例',
+            scheduledDate: tomorrowDate,
+            startTime: settingsByCompany.get(deal.companyName).recurringTime || null
+          }));
+
+        const adhocCandidates = (await Promise.all(deals.map(async (deal) => {
+          const slot = await fetchMaterialSlot(deal.id, tomorrowDate);
+          if (!slot || slot.meetingType !== '臨時') return null;
+          const setting = settingsByCompany.get(deal.companyName);
+          if (!setting?.meetUrl) return null;
+          return {
+            dealId: deal.id,
+            companyName: deal.companyName || deal.productName || '(社名未設定)',
+            meetUrl: setting.meetUrl,
+            meetingType: '臨時',
+            scheduledDate: tomorrowDate,
+            startTime: null
+          };
+        }))).filter(Boolean);
+
+        if (!cancelled) setMeetingCandidates([...recurringCandidates, ...adhocCandidates]);
+      } catch (error) {
+        console.error('翌日のミーティング候補取得エラー:', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [wizardActive, loadedDate]);
+
   // 明日が期日（必須）/ 2〜3日以内が期日（任意）に分けて表示する
   const tomorrowMandatoryNas = useMemo(
     () => upcomingDueNas.filter((na) => na.mandatory),
@@ -1467,6 +1601,28 @@ const DailyTimerPage = () => {
     setUpcomingDueNas((prev) => prev.filter((n) => n.id !== na.id));
   };
 
+  // 翌日のミーティング候補をNAタスク一覧に追加する（追加後は候補一覧から消す）。
+  // 定例は設定済みの時刻を予定開始時刻にそのまま使う。単発は時刻未設定のため、他の予定と同様に手動で入れてもらう
+  const addMeetingToNextDayPlan = (meeting) => {
+    setNextDayPlan((prev) => [...prev, {
+      localId: `meeting_${meeting.dealId}_${meeting.scheduledDate}`,
+      name: `${meeting.companyName}: ${meeting.meetingType}MTG`,
+      plannedMinutes: null,
+      plannedStartTime: meeting.startTime || null,
+      fromCarryover: false,
+      date: meeting.scheduledDate,
+      meetingLink: {
+        dealId: meeting.dealId,
+        companyName: meeting.companyName,
+        meetUrl: meeting.meetUrl,
+        meetingType: meeting.meetingType,
+        scheduledDate: meeting.scheduledDate,
+        startTime: meeting.startTime || null
+      }
+    }]);
+    setMeetingCandidates((prev) => prev.filter((m) => !(m.dealId === meeting.dealId && m.meetingType === meeting.meetingType)));
+  };
+
   // nextDayPlanの各行の予定開始時刻をその場で編集する（早起き候補の時刻指定にも使う）
   const updateNextDayPlanStartTime = (localId, time) => {
     setNextDayPlan((prev) => prev.map((t) => (t.localId === localId ? { ...t, plannedStartTime: time || null } : t)));
@@ -1486,6 +1642,32 @@ const DailyTimerPage = () => {
     () => dayDocs.find((d) => d.representative === representative) || null,
     [dayDocs, representative]
   );
+
+  // 手順が該当フェーズに入ったら、対応する振り返り固定タスク（isReviewTask）のタイマーを
+  // 自動で動かす。startTaskは「同時実行は1タスクのみ、別タスクの開始で実行中のタスクを
+  // 自動終了する」という不変条件を持つため、次のフェーズを開始するだけで前のフェーズの
+  // タイマーは自動的に止まる（endTaskを明示的に呼ぶ必要はない）。
+  // 同じ手順のままselectedDayDocが更新されるたびに再実行されないよう、
+  // 「そのreviewStepで既に自動開始を試みたか」をrefで記録する（手動で早めに終了させた場合に
+  // 勝手に再開してしまうのを防ぐ）
+  const autoStartedReviewStepRef = useRef(null);
+  useEffect(() => {
+    if (!wizardActive) {
+      autoStartedReviewStepRef.current = null;
+      return;
+    }
+    const taskName = REVIEW_TASK_NAME_BY_PHASE_START[reviewStep];
+    if (!taskName) return;
+    if (autoStartedReviewStepRef.current === reviewStep) return;
+    const task = selectedDayDoc?.tasks?.find((t) => t.isReviewTask && t.name === taskName);
+    if (!task) return; // 固定タスクがまだ見つからない場合は次のデータ更新時に再試行する
+    autoStartedReviewStepRef.current = reviewStep;
+    if (getTaskTiming(task).status === 'running') return;
+    startTask(representative, selectedDate, task.id)
+      .then(() => loadDayDocs(selectedDate))
+      .catch((error) => console.error('振り返りタイマー自動開始エラー:', error));
+  }, [reviewStep, wizardActive, selectedDayDoc, representative, selectedDate]);
+
   const planConfirmed = !!selectedDayDoc?.planSnapshot;
   const scheduleCheck = useMemo(
     () => computeScheduleGaps(selectedDayDoc?.tasks || []),
@@ -1778,6 +1960,9 @@ const DailyTimerPage = () => {
     setOverrunInputs({});
     setUnfinishedInputs({});
     setNextDayPlan([]);
+    setPipelineStatusNoteInput('');
+    setPipelineWeekNoteInput('');
+    setMeetingCandidates([]);
     setReviewStep(0);
   };
 
@@ -1905,14 +2090,22 @@ const DailyTimerPage = () => {
   // 手順3・4: 週次パイプライン振り返り（リンクを開いて目視確認するだけ）
   const handleConfirmPipelineStatus = () => {
     runMutation(async () => {
-      await saveReview(representative, selectedDate, { ...currentReview(), pipelineStatusChecked: true });
+      await saveReview(representative, selectedDate, {
+        ...currentReview(),
+        pipelineStatusChecked: true,
+        pipelineStatusNote: pipelineStatusNoteInput.trim()
+      });
       setReviewStep(4);
     });
   };
 
   const handleConfirmPipelineWeek = () => {
     runMutation(async () => {
-      await saveReview(representative, selectedDate, { ...currentReview(), pipelineWeekChecked: true });
+      await saveReview(representative, selectedDate, {
+        ...currentReview(),
+        pipelineWeekChecked: true,
+        pipelineWeekNote: pipelineWeekNoteInput.trim()
+      });
       await completeNightReview(representative, selectedDate);
       setReviewStep(5);
     });
@@ -1936,6 +2129,13 @@ const DailyTimerPage = () => {
   const handleFinalizeTomorrowPlan = () => {
     if (!canFinalizeTomorrowPlan) return;
     runMutation(async () => {
+      // 振り返り完了時、動いている振り返り固定タスクがあれば終了する
+      const runningReviewTask = (selectedDayDoc?.tasks || [])
+        .find((t) => t.isReviewTask && getTaskTiming(t).status === 'running');
+      if (runningReviewTask) {
+        await endTask(representative, selectedDate, runningReviewTask.id);
+      }
+
       // NAタスクは対象日ごとにグループ化し、日付ごとのドキュメントへ分けて登録する
       // （基本は翌日だが、タスクごとに別の日を指定できるため）
       const byDate = new Map();
@@ -1946,7 +2146,8 @@ const DailyTimerPage = () => {
           name: t.name,
           plannedMinutes: t.plannedMinutes,
           plannedStartTime: t.plannedStartTime,
-          ...(t.naLink ? { naLink: t.naLink } : {})
+          ...(t.naLink ? { naLink: t.naLink } : {}),
+          ...(t.meetingLink ? { meetingLink: t.meetingLink } : {})
         });
       });
       if (!byDate.has(tomorrowDateForPlan)) byDate.set(tomorrowDateForPlan, []);
@@ -2105,6 +2306,7 @@ const DailyTimerPage = () => {
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
+          {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
           {scheduleLabel && <PlannedBadge>{scheduleLabel}</PlannedBadge>}
           <ActionButton
             onClick={() => handleStart(rep, task.id)}
@@ -2147,6 +2349,7 @@ const DailyTimerPage = () => {
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
+          {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           {hasPlanned && <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>}
           <ElapsedText $overdue={overdue}>経過 {formatElapsed(elapsedMs)}</ElapsedText>
@@ -2188,6 +2391,7 @@ const DailyTimerPage = () => {
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
+          {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
           {resumeButton}
@@ -2215,6 +2419,7 @@ const DailyTimerPage = () => {
         {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
         {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
         {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
+          {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
         {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
         <ResultText $overdue={overdue}>
           予定{task.plannedMinutes}分 / 実績{formatActual(actualMs)}
@@ -2421,7 +2626,58 @@ const DailyTimerPage = () => {
         {!wizardActive ? (
           <ReviewBody>
             {reviewCompleted ? (
-              <ReviewSavedBadge>✅ 今日の振り返りは完了しています</ReviewSavedBadge>
+              <>
+                <ReviewSavedBadge>✅ 今日の振り返りは完了しています</ReviewSavedBadge>
+                <ReviewSummaryBlock>
+                  <ReviewSummaryTitle>大幅超過タスクの振り返り</ReviewSummaryTitle>
+                  {(selectedDayDoc?.tasks || []).filter((t) => t.overrunReflection).length === 0 ? (
+                    <ReviewSummaryEmpty>記入はありませんでした</ReviewSummaryEmpty>
+                  ) : (
+                    <TaskList>
+                      {(selectedDayDoc?.tasks || []).filter((t) => t.overrunReflection).map((t) => (
+                        <TaskRow key={t.id}>
+                          <TaskName>{t.name}</TaskName>
+                          <ResultText>{t.overrunReflection}</ResultText>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  )}
+                </ReviewSummaryBlock>
+                <ReviewSummaryBlock>
+                  <ReviewSummaryTitle>未完了タスクのリカバリー</ReviewSummaryTitle>
+                  {(selectedDayDoc?.tasks || []).filter((t) => t.recoveryPlanned).length === 0 ? (
+                    <ReviewSummaryEmpty>対象はありませんでした</ReviewSummaryEmpty>
+                  ) : (
+                    <TaskList>
+                      {(selectedDayDoc?.tasks || []).filter((t) => t.recoveryPlanned).map((t) => (
+                        <TaskRow key={t.id}>
+                          <TaskName>{t.name}</TaskName>
+                          <PlannedBadge>対応済み</PlannedBadge>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  )}
+                </ReviewSummaryBlock>
+                {(selectedDayDoc?.review?.pipelineStatusNote || selectedDayDoc?.review?.pipelineWeekNote) && (
+                  <ReviewSummaryBlock>
+                    <ReviewSummaryTitle>週次パイプライン振り返りの記入</ReviewSummaryTitle>
+                    <TaskList>
+                      {selectedDayDoc?.review?.pipelineStatusNote && (
+                        <TaskRow>
+                          <TaskName>各案件のステータス確認</TaskName>
+                          <ResultText>{selectedDayDoc.review.pipelineStatusNote}</ResultText>
+                        </TaskRow>
+                      )}
+                      {selectedDayDoc?.review?.pipelineWeekNote && (
+                        <TaskRow>
+                          <TaskName>今週確定予定の案件確認</TaskName>
+                          <ResultText>{selectedDayDoc.review.pipelineWeekNote}</ResultText>
+                        </TaskRow>
+                      )}
+                    </TaskList>
+                  </ReviewSummaryBlock>
+                )}
+              </>
             ) : (
               <AddButton type="button" onClick={handleStartReview} disabled={!representative}>
                 <FiPlay size={14} /> 振り返りを始める
@@ -2614,36 +2870,85 @@ const DailyTimerPage = () => {
             {reviewStep === 3 && (
               <>
                 <WizardIntro>
-                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（1/2）: パイプライン振り返りページを開き、各案件のフェーズ・ネクストアクションの内容が正しいか確認してください。
+                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（1/2）: 各案件のフェーズ・ネクストアクションの内容が正しいか確認してください（気になる点があれば自由記述に書けます・任意）。
                 </WizardIntro>
-                <ReviewFooter style={{ justifyContent: 'flex-start' }}>
-                  <AddButton type="button" onClick={() => window.open('/pipeline-forecast', '_blank')}>
-                    <FiLink size={14} /> パイプライン振り返りページを開く
-                  </AddButton>
-                </ReviewFooter>
-                <ReviewFooter>
-                  <AddButton onClick={handleConfirmPipelineStatus} disabled={saving}>
-                    <FiCheck size={14} /> 確認しました
-                  </AddButton>
-                </ReviewFooter>
+                <WizardSideBySide>
+                  <WizardMainColumn>
+                    <ReviewField>
+                      <ReviewLabel htmlFor="pipeline-status-note">振り返りコメント（任意）</ReviewLabel>
+                      <ReviewTextarea
+                        id="pipeline-status-note"
+                        value={pipelineStatusNoteInput}
+                        onChange={(e) => setPipelineStatusNoteInput(e.target.value)}
+                      />
+                    </ReviewField>
+                    <ReviewFooter>
+                      <AddButton onClick={handleConfirmPipelineStatus} disabled={saving}>
+                        <FiCheck size={14} /> 確認しました
+                      </AddButton>
+                    </ReviewFooter>
+                  </WizardMainColumn>
+                  <WizardSideColumn>
+                    <ReviewSummaryTitle>保有中の案件</ReviewSummaryTitle>
+                    {pipelineReviewLoading ? (
+                      <ReviewSummaryEmpty>読み込み中...</ReviewSummaryEmpty>
+                    ) : pipelineReviewSnapshot.activeDeals.length === 0 ? (
+                      <ReviewSummaryEmpty>保有中の案件はありません</ReviewSummaryEmpty>
+                    ) : (
+                      <TaskList>
+                        {pipelineReviewSnapshot.activeDeals.map((deal) => (
+                          <TaskRow key={deal.id}>
+                            <TaskName>{deal.companyName}</TaskName>
+                            <PlannedBadge>{deal.status}</PlannedBadge>
+                            {deal.naContent && <ResultText>{deal.naContent}</ResultText>}
+                          </TaskRow>
+                        ))}
+                      </TaskList>
+                    )}
+                  </WizardSideColumn>
+                </WizardSideBySide>
               </>
             )}
 
             {reviewStep === 4 && (
               <>
                 <WizardIntro>
-                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（2/2）: 今週確定予定の案件について、ヨミの確度が変わっていないか、追加で取るべきアクションがないか確認してください。
+                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（2/2）: 今週確定予定の案件について、ヨミの確度が変わっていないか、追加で取るべきアクションがないか確認してください（任意）。
                 </WizardIntro>
-                <ReviewFooter style={{ justifyContent: 'flex-start' }}>
-                  <AddButton type="button" onClick={() => window.open('/pipeline-forecast', '_blank')}>
-                    <FiLink size={14} /> パイプライン振り返りページを開く
-                  </AddButton>
-                </ReviewFooter>
-                <ReviewFooter>
-                  <AddButton onClick={handleConfirmPipelineWeek} disabled={saving}>
-                    <FiCheck size={14} /> 確認しました（振り返りを完了する）
-                  </AddButton>
-                </ReviewFooter>
+                <WizardSideBySide>
+                  <WizardMainColumn>
+                    <ReviewField>
+                      <ReviewLabel htmlFor="pipeline-week-note">振り返りコメント（任意）</ReviewLabel>
+                      <ReviewTextarea
+                        id="pipeline-week-note"
+                        value={pipelineWeekNoteInput}
+                        onChange={(e) => setPipelineWeekNoteInput(e.target.value)}
+                      />
+                    </ReviewField>
+                    <ReviewFooter>
+                      <AddButton onClick={handleConfirmPipelineWeek} disabled={saving}>
+                        <FiCheck size={14} /> 確認しました（振り返りを完了する）
+                      </AddButton>
+                    </ReviewFooter>
+                  </WizardMainColumn>
+                  <WizardSideColumn>
+                    <ReviewSummaryTitle>今週成約予定の案件</ReviewSummaryTitle>
+                    {pipelineReviewLoading ? (
+                      <ReviewSummaryEmpty>読み込み中...</ReviewSummaryEmpty>
+                    ) : pipelineReviewSnapshot.predictedDeals.length === 0 ? (
+                      <ReviewSummaryEmpty>今週成約予定の案件はありません</ReviewSummaryEmpty>
+                    ) : (
+                      <TaskList>
+                        {pipelineReviewSnapshot.predictedDeals.map((deal) => (
+                          <TaskRow key={deal.id}>
+                            <TaskName>{deal.companyName}</TaskName>
+                            <PlannedBadge>確度 {deal.probability}%</PlannedBadge>
+                          </TaskRow>
+                        ))}
+                      </TaskList>
+                    )}
+                  </WizardSideColumn>
+                </WizardSideBySide>
               </>
             )}
 
@@ -2689,6 +2994,24 @@ const DailyTimerPage = () => {
                     </TaskList>
                   )}
                 </ReviewSummaryBlock>
+                {meetingCandidates.length > 0 && (
+                  <ReviewSummaryBlock>
+                    <ReviewSummaryTitle>翌日の定例/単発ミーティング候補（任意・議事録が自動記録されます）</ReviewSummaryTitle>
+                    <TaskList>
+                      {meetingCandidates.map((meeting) => (
+                        <TaskRow key={`${meeting.dealId}_${meeting.meetingType}`}>
+                          <TaskName>
+                            {meeting.companyName}: {meeting.meetingType}MTG
+                            {meeting.startTime ? `（${meeting.startTime}〜）` : ''}
+                          </TaskName>
+                          <AddButton type="button" onClick={() => addMeetingToNextDayPlan(meeting)}>
+                            <FiPlus size={14} /> 追加
+                          </AddButton>
+                        </TaskRow>
+                      ))}
+                    </TaskList>
+                  </ReviewSummaryBlock>
+                )}
                 {nextDayPlan.some((t) => t.earlyMorningCandidate && !t.plannedStartTime) && (
                   <ReviewSummaryBlock>
                     <ReviewSummaryTitle>早起き候補（開始時刻を指定してください）</ReviewSummaryTitle>
@@ -2717,6 +3040,7 @@ const DailyTimerPage = () => {
                         <TaskRow key={t.localId}>
                           <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
                           {t.naLink && <NaLinkBadge>案件NA</NaLinkBadge>}
+                          {t.meetingLink && <MeetingLinkBadge>🎥議事録自動記録</MeetingLinkBadge>}
                           <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
                           {t.plannedMinutes != null && (
                             <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>

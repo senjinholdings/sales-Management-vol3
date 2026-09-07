@@ -192,14 +192,21 @@ dailyTimers: {
     }],
     outputUrls: [string],      // アウトプットのリンク（任意。なしは未定義/空配列。https://を自動補完して保存）
     overrunReflection: string, // 振り返りウィザード手順1で記入した「大幅超過の振り返り」（任意フィールドなので未記入行は未定義）
-    recoveryPlanned: boolean   // 振り返りウィザード手順2でリカバリー方法（新期日/早起き）を決定済みかのフラグ
+    recoveryPlanned: boolean,  // 振り返りウィザード手順2でリカバリー方法（新期日/早起き）を決定済みかのフラグ
+    meetingLink: {             // 振り返りウィザード手順5で追加した、議事録が自動記録されるミーティング由来のタスクの参照（任意）
+      dealId: string, companyName: string, meetUrl: string,
+      meetingType: string,     // '定例' | '臨時'
+      scheduledDate: string, startTime: string | null
+    }
     // 旧形式はstartedAt/endedAt直持ち（区間1つとして解釈し、いずれかの操作時に新形式へ変換）
   }],
   manualSort: boolean,         // trueならtasks配列の並びが表示順の正（D&Dで初めて並び替えた時に立つ。未設定は予定開始時刻ソート表示）
-  review: {                    // 1日1件の振り返り（tasksとは独立、担当者×日付ごと）。振り返りウィザードの手順0・3・4の「確認しました」フラグのみを持つ
+  review: {                    // 1日1件の振り返り（tasksとは独立、担当者×日付ごと）。振り返りウィザードの手順0・3・4の「確認しました」フラグ・任意の自由記述を持つ
     reminderAcked: boolean,        // 手順0: リマインド頻度を確認した
     pipelineStatusChecked: boolean,// 手順3: 各案件のステータス確認をした
-    pipelineWeekChecked: boolean   // 手順4: 今週確定予定の案件確認をした
+    pipelineWeekChecked: boolean,  // 手順4: 今週確定予定の案件確認をした
+    pipelineStatusNote: string,    // 手順3の振り返りコメント（任意、空文字許容）
+    pipelineWeekNote: string       // 手順4の振り返りコメント（任意、空文字許容）
   },
   reviewCompletedAt: timestamp,// 夜の振り返り完了の正（Cloud Function POST /api/staff/night-review-complete が設定）。存在有無のみで完了判定
   timeAccuracy: {               // タイマー止め忘れ・つけ忘れの記録（functions/dailyReportGuard.jsが日々積み上げ）
@@ -226,9 +233,19 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.45.0
-- **最終更新**: 2026年9月7日
+- **現在バージョン**: v2.46.0
+- **最終更新**: 2026年9月8日
 - **直近の更新内容**:
+  - 営業記録（`salesRecords`/`newCaseSalesRecords`の`budget`）の入力を必須化（0円・空欄での保存を禁止）
+    - 既存案件のパイプライン一覧の一部（`ExistingDealsDashboard.js`の滞留商談リスト・担当者別サマリー）が、案件本体の`expectedBudget`ではなく最新営業記録の`budget`を「想定予算」として表示しており、この`budget`は今までバリデーション無しで空欄・0円のまま保存できていたため0円表示が発生していた
+    - `ProjectDetailPanel.js`の営業タブ（新規追加・既存行のインライン編集）で、0円・空欄の保存を禁止するよう修正
+    - 案件本体の`expectedBudget`と営業記録ごとの`budget`は別々に手入力する独立したフィールドであり、自動転記は無い（詳細は本ファイルのデータ構造セクション参照）
+  - 日報の振り返りウィザードを4点改善
+    - 振り返り内の固定タスク（「日報に基づく振り返り」「週次パイプライン振り返り」「翌日の予定の記入」）のタイマーを、該当する手順に入ったタイミングで自動的に開始するように変更（手動での開始/終了操作が不要に。次のフェーズを開始するだけで前のフェーズは自動終了する）
+    - 手順3・4（週次パイプライン振り返り）を、パイプライン振り返りページへの遷移をやめ、日報画面内で完結する形に変更。保有中案件のフェーズ・ネクストアクションや今週成約予定案件の確度を画面内に読み取り専用で表示しつつ、任意の自由記述欄（`review.pipelineStatusNote`/`pipelineWeekNote`）に振り返りを書けるようにした
+    - 手順5（翌日の予定作り）に、翌日が定例ミーティング（`clientMeetingSettings.recurringDayOfWeek`が翌日の曜日と一致）または単発ミーティング（`progressDashboard/{dealId}/materials/slot_{翌日の日付}`が存在）にあたる案件を候補として表示し、ワンクリックで翌日プランに追加できるように追加（任意、追加しなくても完了できる）。追加したタスクには`meetingLink`が付き、タスク一覧に「🎥議事録自動記録」バッジが表示される（ダッシュボードに登録されていない社外ミーティングの登録漏れに気づきやすくする目的）
+    - その日の振り返りが完了した後も、手順1（大幅超過タスクの振り返り）・手順2（未完了タスクのリカバリー）・手順3・4（自由記述）で記入した内容を、バッジの下に要約として表示し続けるように変更（今までは完了バッジのみで内容を見返せなかった）
+    - `src/services/projectService.js`に`fetchDealsForRep`/`fetchAllClientMeetingSettings`/`fetchMaterialSlot`/`fetchPipelineReviewSnapshot`を追加
   - 案件登録・編集時の想定予算（`expectedBudget`）を必須化（0円・空欄での保存を禁止）
     - 保有中の案件に想定予算0円のものが存在していたバグを調査した結果、案件の新規登録・編集フォームで想定予算が唯一バリデーション対象外（他項目は必須チェックあり）になっており、空欄や「0」のまま保存できてしまっていたことが原因と判明
     - 対象は新規案件登録の全経路: `LogEntryPage.js`（アクションログ経由の新規登録）、`ProgressDashboard.js`（案件一覧の追加・編集モーダル）、`AccountDealsListPage.js`（アカウント営業の新規追加・既存案件追加・編集モーダル）、`AccountSalesDashboard.js`（旧アカウント営業画面の追加モーダル）

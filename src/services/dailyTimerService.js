@@ -24,7 +24,10 @@ import { computeScheduleGaps } from '../utils/dailyTimerSchedule.js';
  *             addedAfterConfirm(boolean、任意): planSnapshot確定後に追加されたタスクの目印。
  *               確定前に追加されたタスク・確定自体をしていない日は付かない,
  *             naLink({projectId,recordId,subCol,entryId,actionAssignee}、任意): 案件のネクストアクションから
- *               追加したタスクの参照。付いているタスクは終了時に次のNA入力を必須にする（DailyTimerPage.js参照） }],
+ *               追加したタスクの参照。付いているタスクは終了時に次のNA入力を必須にする（DailyTimerPage.js参照）,
+ *             meetingLink({dealId,companyName,meetUrl,meetingType,scheduledDate,startTime}、任意):
+ *               ダッシュボード側で議事録が自動記録される定例/単発ミーティングから追加したタスクの参照。
+ *               タスク一覧に「議事録自動記録」バッジを表示する目印としてのみ使う（DailyTimerPage.js参照） }],
  *   planSnapshot({ tasks: [{id,name,plannedMinutes,plannedStartTime}], confirmedAt: Timestamp }、任意):
  *     「予定を確定する」ボタン押下時点のtasksのスナップショット（confirmDayPlan参照）。
  *     以後に追加したタスクはaddedAfterConfirmが立ち、確定前の朝の姿と区別できる。
@@ -417,10 +420,10 @@ export const confirmDayPlan = async (representative, date) => {
 };
 
 /**
- * 1日1件の振り返り（手順0・3・4の確認済みフラグ）を保存する（tasksには一切触れない）
+ * 1日1件の振り返り（手順0・3・4の確認済みフラグ・任意の自由記述）を保存する（tasksには一切触れない）
  * @param {string} representative - 担当者名
  * @param {string} date - "YYYY-MM-DD"
- * @param {{reminderAcked: boolean, pipelineStatusChecked: boolean, pipelineWeekChecked: boolean}} review
+ * @param {{reminderAcked: boolean, pipelineStatusChecked: boolean, pipelineWeekChecked: boolean, pipelineStatusNote?: string, pipelineWeekNote?: string}} review
  */
 export const saveReview = async (representative, date, review) => {
   try {
@@ -431,7 +434,9 @@ export const saveReview = async (representative, date, review) => {
       review: {
         reminderAcked: !!review.reminderAcked,
         pipelineStatusChecked: !!review.pipelineStatusChecked,
-        pipelineWeekChecked: !!review.pipelineWeekChecked
+        pipelineWeekChecked: !!review.pipelineWeekChecked,
+        pipelineStatusNote: review.pipelineStatusNote || '',
+        pipelineWeekNote: review.pipelineWeekNote || ''
       },
       updatedAt: Timestamp.now()
     }, { merge: true });
@@ -488,7 +493,9 @@ export const planNextDayTasks = async (representative, date, plannedTasks) => {
       sessions: [],
       source: 'planned',
       // 案件のネクストアクションから追加したタスクは、終了時に次のNA入力を求めるための参照を持たせる
-      ...(p.naLink ? { naLink: p.naLink } : {})
+      ...(p.naLink ? { naLink: p.naLink } : {}),
+      // ダッシュボード側で議事録が自動記録されるミーティングから追加したタスクの参照
+      ...(p.meetingLink ? { meetingLink: p.meetingLink } : {})
     }));
     await saveTasks(ref, representative, date, [...kept, ...newTasks]);
   } catch (error) {

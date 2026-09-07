@@ -2756,10 +2756,15 @@ const SalesTab = ({ project, operators, salesReps, subCol = 'salesRecords', onPh
   };
 
   const handleSaveNew = async () => {
+    const budgetNum = Number(editForm.budget);
+    if (!editForm.budget || !Number.isFinite(budgetNum) || budgetNum <= 0) {
+      alert('予算を入力してください（0円は不可）');
+      return;
+    }
     try {
       await addSalesRecord(project.id, {
         phase: editForm.phase,
-        budget: editForm.budget,
+        budget: budgetNum,
         date: editForm.date,
         salesRep: editForm.salesRep,
         operatorRep: editForm.operatorRep,
@@ -2871,7 +2876,14 @@ const SalesTab = ({ project, operators, salesReps, subCol = 'salesRecords', onPh
                       const val = e.target.value;
                       setRecords(prev => prev.map(r => r.id === record.id ? { ...r, budget: val } : r));
                     }}
-                    onBlur={e => saveRecordField(record.id, 'budget', e.target.value ? Number(e.target.value) : '')}
+                    onBlur={e => {
+                      const num = Number(e.target.value);
+                      if (!e.target.value || !Number.isFinite(num) || num <= 0) {
+                        alert('予算は1円以上を入力してください（0円・空欄は保存できません）');
+                        return;
+                      }
+                      saveRecordField(record.id, 'budget', num);
+                    }}
                     placeholder="予算"
                   />
                 </RecordTd>
@@ -2987,7 +2999,7 @@ const SalesTab = ({ project, operators, salesReps, subCol = 'salesRecords', onPh
               </RecordTd>
               <RecordTd>
                 <SaveCancelButtons>
-                  <SmallButton $primary onClick={handleSaveNew}>保存</SmallButton>
+                  <SmallButton $primary onClick={handleSaveNew} disabled={!(Number(editForm.budget) > 0)}>保存</SmallButton>
                   <SmallButton onClick={handleCancel}>取消</SmallButton>
                 </SaveCancelButtons>
               </RecordTd>
