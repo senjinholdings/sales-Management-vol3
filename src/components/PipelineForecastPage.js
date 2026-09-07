@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
-import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget, FiFileText } from 'react-icons/fi';
+import { FiEdit3, FiPlus, FiCheck, FiX, FiRefreshCw, FiTarget, FiFileText, FiArchive, FiRotateCcw, FiChevronDown, FiChevronUp } from 'react-icons/fi';
 import { db } from '../firebase.js';
-import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { STATUS_COLORS, PHASE_DESCRIPTIONS } from '../data/constants.js';
 import { addSalesEntry, updateSalesEntry, updateSalesEntryStatus } from '../services/projectService.js';
 import { suggestGapClosingActions, isGPTServiceAvailable } from '../services/gptService.js';
@@ -300,7 +300,7 @@ const DealTableWrap = styled.div`
 
 const DealRow = styled.div`
   display: grid;
-  grid-template-columns: 1.3fr 90px 100px 56px 1.6fr 28px;
+  grid-template-columns: 1.3fr 90px 100px 56px 1.4fr 28px 28px;
   align-items: center;
   gap: 0.5rem;
   padding: 0.45rem 0.5rem;
@@ -531,6 +531,45 @@ const RecordBudget = styled.div`
   text-align: right;
 `;
 
+const NewBadge = styled.span`
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: white;
+  background: #e74c3c;
+  padding: 0.05rem 0.35rem;
+  border-radius: 3px;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+`;
+
+const ExcludedToggleHeader = styled.button`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  background: #f8f9fa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  color: #7f8c8d;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 0.5rem;
+  &:hover { background: #f0f0f0; }
+`;
+
+const ExcludedRow = styled.div`
+  display: grid;
+  grid-template-columns: 1.3fr 90px 100px 1fr 28px;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid #f0f0f0;
+  font-size: 0.82rem;
+  color: #999;
+`;
+
 // ============================================
 // メインコンポーネント
 // ============================================
@@ -552,6 +591,7 @@ function PipelineForecastPage() {
   const [savingNa, setSavingNa] = useState(false);
   const [realizedRecords, setRealizedRecords] = useState([]);
   const [openNoteId, setOpenNoteId] = useState(null); // 状況メモは普段畳んでおき、開いた案件だけ編集欄を出す
+  const [excludedOpen, setExcludedOpen] = useState(false); // 「今期対象外」は普段畳んでおく
 
   const toggleNote = (dealId) => {
     setOpenNoteId((prev) => (prev === dealId ? null : dealId));
@@ -561,6 +601,31 @@ function PipelineForecastPage() {
   const subCol = isExisting ? 'salesRecords' : 'newCaseSalesRecords';
   const recordType = RECORD_TYPE_BY_DEAL_TYPE[dealType];
   const isCurrentQuarter = selectedQuarter === currentQuarterKey;
+
+  // 「今期対象外」にした案件は下の畳んだ一覧にまとめ、着地予想からも除く（あとで対象に戻せる）
+  const activeDeals = useMemo(() => deals.filter((d) => !d.excludedFromForecast), [deals]);
+  const excludedDeals = useMemo(() => deals.filter((d) => d.excludedFromForecast), [deals]);
+
+  const toggleExcluded = async (dealId, excluded) => {
+    setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, excludedFromForecast: excluded } : d)));
+    try {
+      await updateDoc(doc(db, 'progressDashboard', dealId), { excludedFromForecast: excluded });
+    } catch (error) {
+      console.error('今期対象外フラグの保存に失敗:', error);
+    }
+  };
+
+  // 選択中の週に新規登録された案件は「NEW」表示にする
+  const selectedWeekRange = useMemo(() => {
+    const [y, m, d] = selectedWeekId.split('-').map(Number);
+    return getWeekRange(new Date(y, m - 1, d));
+  }, [selectedWeekId]);
+
+  const isNewDeal = (deal) => {
+    const ms = deal.createdAt?.toMillis?.();
+    if (!ms) return false;
+    return ms >= selectedWeekRange.start.getTime() && ms <= selectedWeekRange.end.getTime();
+  };
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -622,16 +687,16 @@ function PipelineForecastPage() {
       .reduce((sum, r) => sum + r.budget, 0)
   ), [recordsForType, quarterRangeForSelected]);
 
-  // 保有中の案件（想定予算×着地確率）の見込み。まだ確定していない分の予想
+  // 保有中の案件（想定予算×着地確率）の見込み。「今期対象外」にした案件は含めない
   const pipelineForecast = useMemo(() => (
-    deals.reduce((sum, d) => sum + (d.expectedBudget || 0) * (d.landingProbability || 0) / 100, 0)
-  ), [deals]);
+    activeDeals.reduce((sum, d) => sum + (d.expectedBudget || 0) * (d.landingProbability || 0) / 100, 0)
+  ), [activeDeals]);
 
   // 着地予想額 = 今期すでに確定した実績 ＋ 保有中案件の見込み
   const landingForecastTotal = quarterActualTotal + pipelineForecast;
   const gap = target - landingForecastTotal;
-  const avgBudget = deals.length > 0
-    ? deals.reduce((sum, d) => sum + (d.expectedBudget || 0), 0) / deals.length
+  const avgBudget = activeDeals.length > 0
+    ? activeDeals.reduce((sum, d) => sum + (d.expectedBudget || 0), 0) / activeDeals.length
     : 0;
 
   // 今の四半期を見ている時だけ、月別・週別の内訳と「今週の実績」を表示する
@@ -766,7 +831,7 @@ function PipelineForecastPage() {
       dealType: isExisting ? '既存' : '新規',
       gapAmount: gap,
       avgDealBudget: avgBudget,
-      dealCount: deals.length
+      dealCount: activeDeals.length
     });
     setAiLoading(false);
     if (result.error) {
@@ -892,7 +957,7 @@ function PipelineForecastPage() {
             </SuggestBox>
           )}
 
-          {deals.length === 0 ? (
+          {activeDeals.length === 0 ? (
             <EmptyText>対象の案件はありません</EmptyText>
           ) : (
             <SectionCard>
@@ -908,12 +973,14 @@ function PipelineForecastPage() {
                   <div>確率</div>
                   <div>ネクストアクション</div>
                   <div>メモ</div>
+                  <div></div>
                 </DealRowHeader>
-                {deals.map((deal) => (
+                {activeDeals.map((deal) => (
                   <React.Fragment key={deal.id}>
                     <DealRow>
                       <CompanyName title={deal.companyName || deal.productName || ''}>
                         {deal.companyName || deal.productName || '(社名未設定)'}
+                        {isNewDeal(deal) && <NewBadge>NEW</NewBadge>}
                       </CompanyName>
                       <PhaseBadge $status={deal.status} title={PHASE_DESCRIPTIONS[deal.status] || ''}>
                         {deal.status}
@@ -950,6 +1017,12 @@ function PipelineForecastPage() {
                         title={deal.landingStatusNote || 'メモを書く（任意）'}
                       >
                         <FiFileText size={14} />
+                      </NoteToggleButton>
+                      <NoteToggleButton
+                        onClick={() => toggleExcluded(deal.id, true)}
+                        title="今期対象外にする"
+                      >
+                        <FiArchive size={14} />
                       </NoteToggleButton>
                     </DealRow>
 
@@ -992,6 +1065,34 @@ function PipelineForecastPage() {
                   </React.Fragment>
                 ))}
               </DealTableWrap>
+            </SectionCard>
+          )}
+
+          {excludedDeals.length > 0 && (
+            <SectionCard>
+              <ExcludedToggleHeader onClick={() => setExcludedOpen((prev) => !prev)}>
+                {excludedOpen ? <FiChevronUp /> : <FiChevronDown />}
+                今期対象外にした案件（{excludedDeals.length}件）
+              </ExcludedToggleHeader>
+              {excludedOpen && (
+                <DealTableWrap style={{ marginTop: '0.5rem' }}>
+                  {excludedDeals.map((deal) => (
+                    <ExcludedRow key={deal.id}>
+                      <CompanyName title={deal.companyName || deal.productName || ''}>
+                        {deal.companyName || deal.productName || '(社名未設定)'}
+                      </CompanyName>
+                      <PhaseBadge $status={deal.status} title={PHASE_DESCRIPTIONS[deal.status] || ''}>
+                        {deal.status}
+                      </PhaseBadge>
+                      <BudgetText>{formatCurrency(deal.expectedBudget)}</BudgetText>
+                      <div />
+                      <IconButton onClick={() => toggleExcluded(deal.id, false)} title="対象に戻す">
+                        <FiRotateCcw />
+                      </IconButton>
+                    </ExcludedRow>
+                  ))}
+                </DealTableWrap>
+              )}
             </SectionCard>
           )}
         </>
