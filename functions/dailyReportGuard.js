@@ -14,18 +14,18 @@
  *   これら記入漏れ由来の「不正確な時間」の合計（超過分＋タイマー未開始で空いていた時間）と
  *   リマインドが送られた回数は、dailyTimersドキュメントのtimeAccuracy.inaccurateMinutes /
  *   timeAccuracy.reminderCountとして日ごとに積み上げて記録する（振り返り画面で表示する）
- * - 夜の振り返りフロー: 23:20になったらSlackスレッドを1本立てて開始連絡をする
- *   （日報画面の「振り返りを始める」ウィザードに沿って進める形式。タスク一覧に
- *   固定枠を用意する必要はない）。以後、reviewCompletedAtが立つまで10分おきに督促
- *   を返信し続け、時間が経つほど文面を強くする。ウィザードの手順0（リマインド確認）
- *   が終わっている（dailyTimers.review.reminderAckedがtrue）かどうかで「開始済みか」
- *   を判定し、文面を出し分ける（未開始なら「開始してください」、開始済みなら
- *   「最後まで進めて完了してください」）
+ * - 夜の振り返りフロー: 平日分は今日から先2週間ぶん、振り返りの3区切り（日報に基づく
+ *   振り返り10分／週次パイプライン振り返り20分／翌日の予定の記入20分、23:00スタート）を
+ *   前もって自動で用意しておく（固定枠。カレンダーで先の日付を開いても既に入っている。
+ *   実体は日報画面の「振り返りを始める」ウィザードで進めるため、この固定枠自体にタイマーを
+ *   入れる必要はない＝時間予約の表示目的）。23:00になったらSlackスレッドを1本立てて
+ *   開始連絡をする。以後、reviewCompletedAtが立つまで10分おきに督促を返信し続け、時間が
+ *   経つほど文面を強くする。ウィザードの手順0（リマインド確認）が終わっている
+ *   （dailyTimers.review.reminderAckedがtrue）かどうかで「開始済みか」を判定し、文面を
+ *   出し分ける（未開始なら「開始してください」、開始済みなら「最後まで進めて完了してください」）
  *   止まるのは「完了」ボタン（functions/staff.jsのnight-review-completeエンドポイント）が
- *   押された時だけ。土日は催促を行わない
- *   （旧バージョンで前もって用意していた「振り返りの4区切り」固定タスク（isReviewTask）
- *   は、ウィザード化に伴い廃止。まだ着手されていない古い固定タスクが残っていれば
- *   このスケジュール実行のたびに掃除する。着手済み＝記録として残す価値があるものは残す）
+ *   押された時だけで、3区切りが全部終わっているかどうかでは自動判定しない。
+ *   土日は枠の用意・催促とも行わない
  *
  * Slackへの送信は個人DMではなく、#営業_日報チャンネル（担当者・増田さんの両方が
  * 参加済み）への投稿＋両者へのメンションで行う。ユーザー本人だけでは「自分に届いて
@@ -55,12 +55,17 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const REP_NAME = '荒幡';
 const REP_EMAIL = 'hikaru.arahata@senjinholdings.com';
 
-// 夜の振り返り（ウィザード）の開始時刻・目安合計時間（Slackの案内文言用。実体はDailyTimerPage.jsのウィザード）
+// 夜の振り返りは3つの区切り（ウィザードの3つの塊にそのまま対応）に分かれている。開始は23:00
+const REVIEW_SECTIONS = [
+  { name: '日報に基づく振り返り', startTime: '23:00', minutes: 10 },
+  { name: '週次パイプライン振り返り', startTime: '23:10', minutes: 20 },
+  { name: '翌日の予定の記入', startTime: '23:30', minutes: 20 }
+];
+const REVIEW_TOTAL_MINUTES = REVIEW_SECTIONS.reduce((sum, s) => sum + s.minutes, 0);
 const REVIEW_KICKOFF_HOUR = 23;
-const REVIEW_KICKOFF_MINUTE = 20;
-const REVIEW_TOTAL_MINUTES = 50;
-// 旧バージョンが前もって用意していた固定枠（isReviewTask）の掃除対象を、今日から先何日分見るか
-const REVIEW_STALE_CLEANUP_DAYS_AHEAD = 14;
+const REVIEW_KICKOFF_MINUTE = 0;
+// 「振り返り」枠を先々の日付までどれだけ前もって用意しておくか（今日を含め何日分か）
+const REVIEW_TASK_PREP_DAYS_AHEAD = 14;
 
 // 通知先は個人DMではなく#営業_日報チャンネル。担当者本人＋増田さんの両方をメンションする
 const NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR';
@@ -460,12 +465,13 @@ function createIdleResumeNotifier({ admin, db }) {
 
 /**
  * 夜の振り返りフロー（10分おきに実行し、JST時刻で内部分岐）。土日は完全にスキップする。
- * - 常時: 旧バージョンが前もって用意していた「振り返りの4区切り」固定タスク
- *   （isReviewTask、まだ着手されていないもの）が残っていれば掃除する
- *   （ウィザード化に伴い、タスク一覧に固定枠を用意する仕組み自体を廃止したため）
- * - 23:20以降、スレッドがまだ無ければその時点でSlackスレッドを1本立てて開始連絡をする
+ * - 常時: 振り返りの3区切り（日報に基づく振り返り10分・週次パイプライン振り返り20分・
+ *   翌日の予定の記入20分、23:00/23:10/23:30スタート）を平日分は前もって用意しておく
+ *   （23:00を待たず、日付が変わり次第すぐ日報に見える固定枠にする。時間予約の表示目的で、
+ *   実際の振り返りは日報画面の「振り返りを始める」ウィザードで進める）
+ * - 23:00以降、スレッドがまだ無ければその時点でSlackスレッドを1本立てて開始連絡をする
  *   （スケジュール実行の発火時刻はちょうど:00/:10...とは限らずずれることがあるため、
- *   厳密な時刻一致ではなく「23:20以降で最初に実行された時」に作る）
+ *   厳密な時刻一致ではなく「23:00以降で最初に実行された時」に作る）
  * - スレッドができた後は、1:00台前半まで実行のたびにreviewCompletedAtが立つまで
  *   そのスレッドへ督促を返信し続ける。時間が経つほど文面を強め、ウィザードの手順0が
  *   終わっているか（dailyTimers.review.reminderAcked）で「開始してください」/
@@ -479,25 +485,58 @@ function createReviewReminder({ admin, db }) {
     const { hour, minute } = jstHourMinute(now);
     const todayStr = toJstDateStr(now);
 
-    // 旧バージョンの固定枠（isReviewTask）のうち、まだ着手されていないものを掃除する。
-    // 着手済み（sessionsが残っている）ものは過去の記録として残す
-    for (let offset = 0; offset < REVIEW_STALE_CLEANUP_DAYS_AHEAD; offset++) {
+    // 「振り返り」枠は今日から先の数日分（土日を除く）を毎回（時刻を問わず）前もって用意しておく。
+    // 未来日の分もあらかじめ入っているので、カレンダーで先の日付を開いても既に見える
+    for (let offset = 0; offset < REVIEW_TASK_PREP_DAYS_AHEAD; offset++) {
       const dateStr = toJstDateStr(new Date(now.getTime() + offset * 24 * 60 * 60 * 1000));
+      if (isWeekendDateStr(dateStr)) continue;
+
       const docRef = db.collection('dailyTimers').doc(`${REP_NAME}_${dateStr}`);
       const snap = await docRef.get();
       const tasks = Array.isArray(snap.data()?.tasks) ? snap.data().tasks : [];
+
+      // 3区切りが名前まで含めて揃っていればOK。旧形式（Q3新規の振り返り等の4区切りや、
+      // 固定枠自体が無い状態）が混ざっている場合は「isReviewTaskが1つでもあれば揃っている」
+      // とみなさないよう、名前で個別に判定する（でないと旧形式のまま新しい3区切りへの移行が一生起きない）
+      const existingReviewTasks = tasks.filter((t) => t.isReviewTask);
+      const hasAllSections = REVIEW_SECTIONS.every((section) =>
+        existingReviewTasks.some((t) => t.name === section.name)
+      );
+      if (hasAllSections) continue;
+
+      // 未着手の旧形式レビュー枠は新しい3区切りに置き換える（記録を守るため、
+      // 一度でも着手されたものはそのまま残し、足りない区切りだけ追加する）
       const keptTasks = tasks.filter((t) => !t.isReviewTask || (Array.isArray(t.sessions) && t.sessions.length > 0));
-      if (keptTasks.length === tasks.length) continue;
-      await docRef.set({ tasks: keptTasks, updatedAt: admin.firestore.Timestamp.now() }, { merge: true });
+      const keptSectionNames = new Set(keptTasks.filter((t) => t.isReviewTask).map((t) => t.name));
+      const sectionsToAdd = REVIEW_SECTIONS.filter((section) => !keptSectionNames.has(section.name));
+      if (sectionsToAdd.length === 0) continue;
+
+      await docRef.set({
+        representative: REP_NAME,
+        date: dateStr,
+        tasks: [
+          ...keptTasks,
+          ...sectionsToAdd.map((section, sectionIndex) => ({
+            id: `task_${Date.now()}_review_${offset}_${sectionIndex}`,
+            name: section.name,
+            plannedMinutes: section.minutes,
+            plannedStartTime: section.startTime,
+            sessions: [],
+            source: 'system',
+            isReviewTask: true
+          }))
+        ],
+        updatedAt: admin.firestore.Timestamp.now()
+      }, { merge: true });
     }
 
-    // 夜のチェック対象時間帯（23:20〜翌1時台前半）。スケジュール実行は必ずしも
+    // 夜のチェック対象時間帯（23:00〜翌1時台前半）。スケジュール実行は必ずしも
     // ちょうど:00/:10/:20...に発火するとは限らない（実際に:X9のようにずれて
     // 発火することがある）ため、厳密な分一致ではなく範囲で判定する
     const inNightWindow = (hour === REVIEW_KICKOFF_HOUR && minute >= REVIEW_KICKOFF_MINUTE) || hour === 0 || (hour === 1 && minute < 10);
     if (!inNightWindow) return;
 
-    // 0時・1時台は日付が変わっているため、督促対象は前日（23:20に始まった振り返り）を指す
+    // 0時・1時台は日付が変わっているため、督促対象は前日（23:00に始まった振り返り）を指す
     const reviewDateStr = hour === 23 ? todayStr : toJstDateStr(new Date(now.getTime() - 24 * 60 * 60 * 1000));
     if (isWeekendDateStr(reviewDateStr)) return; // 土日は振り返りなし＝催促もなし
 
@@ -524,7 +563,7 @@ function createReviewReminder({ admin, db }) {
         .filter((t) => isTaskUnfinished(t))
         .reduce((sum, t) => sum + (t.plannedMinutes || 0), 0);
 
-      let text = `📋 ${reviewDateStr} 夜チェック\n23時20分になりました。作業をやめて夜の振り返りに移行してください。\n日報画面の「振り返りを始める」ボタンを押すと、手順に沿って進められます（目安合計${REVIEW_TOTAL_MINUTES}分）。`;
+      let text = `📋 ${reviewDateStr} 夜チェック\n23時になりました。作業をやめて夜の振り返りに移行してください。\n日報画面の「振り返りを始める」ボタンを押すと、手順に沿って進められます（目安合計${REVIEW_TOTAL_MINUTES}分）。`;
       if (overrunLines.length > 0) {
         text += `\n\n本日、予定を大幅に超過したタスク:\n${overrunLines.join('\n')}`;
       }

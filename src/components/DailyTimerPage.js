@@ -963,6 +963,31 @@ const WizardInputsRow = styled.div`
   align-items: center;
 `;
 
+// 手順0: 確認すべき数字を、案内文よりも目立たせて表示する
+const WizardStatRow = styled.div`
+  display: flex;
+  gap: 2rem;
+  flex-wrap: wrap;
+`;
+
+const WizardStatItem = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+`;
+
+const WizardStatNumber = styled.span`
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #2c3e50;
+  line-height: 1.1;
+`;
+
+const WizardStatLabel = styled.span`
+  font-size: 0.75rem;
+  color: #7f8c8d;
+`;
+
 // ---- 振り返り内のタスク一覧（未完了・超過） ----
 
 const ReviewSummaryBlock = styled.div`
@@ -1189,7 +1214,9 @@ const computeFreeRanges = (blocks, rangeStart, rangeEnd, minGap = 5) => {
     cursor = Math.max(cursor, b.end);
   });
   if (cursor < rangeEnd) free.push({ start: cursor, end: rangeEnd });
-  return free.map((f) => ({ ...f, minutes: f.end - f.start })).filter((f) => f.minutes >= minGap);
+  // start/endは秒単位まで含む実績時刻由来のため小数になりうる（表示用のminutesだけ丸める。
+  // ピクセル位置の計算にはstart/endの精度をそのまま使うので、ここでは丸めない）
+  return free.map((f) => ({ ...f, minutes: Math.round(f.end - f.start) })).filter((f) => f.minutes >= minGap);
 };
 
 const LAST_REP_STORAGE_KEY = 'dailyTimerLastRepresentative';
@@ -1268,7 +1295,8 @@ const DailyTimerPage = () => {
   // 振り返りウィザード（null=未開始、0〜5=手順番号）
   // 0:リマインド確認 1:時間の使い方 2:未完了タスク 3:各案件ステータス 4:今週確定予定 5:翌日の予定作り
   const [reviewStep, setReviewStep] = useState(null);
-  // 手順1: 大幅超過タスクごとの入力 { [taskId]: { reflection, actionName, actionMinutes, actionDueDate } }
+  // 手順1: 大幅超過タスクごとの入力 { [taskId]: { reflection, actions: [{id,name,minutes,dueDate}], draft: {name,minutes,dueDate} } }
+  // reflectionのみ必須。actionsは任意・複数可（draftは未追加の入力欄の一時保持で、保存対象ではない）
   const [overrunInputs, setOverrunInputs] = useState({});
   // 手順2: 未完了タスクごとの選択 { [taskId]: { mode: 'reschedule'|'earlyMorning', newDate } }
   const [unfinishedInputs, setUnfinishedInputs] = useState({});
@@ -1504,13 +1532,18 @@ const DailyTimerPage = () => {
     runMutation(() => confirmDayPlan(representative, selectedDate));
   };
 
+  // 予定時間は必須（全タスク共通のルール）
+  const nextDayPlannedMinutesNum = Number(nextDayPlannedMinutes);
+  const nextDayPlannedMinutesValid = nextDayPlannedMinutes.trim() !== ''
+    && Number.isInteger(nextDayPlannedMinutesNum) && nextDayPlannedMinutesNum > 0;
+
   const addNextDayTask = () => {
-    if (!nextDayTaskName.trim()) return;
+    if (!nextDayTaskName.trim() || !nextDayPlannedMinutesValid) return;
     const defaultDate = loadedDate ? shiftDateKey(loadedDate, 1) : '';
     setNextDayPlan((prev) => [...prev, {
       localId: `new_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       name: nextDayTaskName.trim(),
-      plannedMinutes: nextDayPlannedMinutes.trim() === '' ? null : Number(nextDayPlannedMinutes),
+      plannedMinutes: nextDayPlannedMinutesNum,
       plannedStartTime: nextDayPlannedStartTime || null,
       fromCarryover: false,
       date: nextDayTaskDate || defaultDate
@@ -1580,7 +1613,8 @@ const DailyTimerPage = () => {
 
   const hasPlannedInput = plannedMinutes.trim() !== '';
   const plannedNum = Number(plannedMinutes);
-  const plannedValid = !hasPlannedInput || (Number.isInteger(plannedNum) && plannedNum > 0);
+  // 予定時間は必須（確定後に追加するタスクも含め、全タスク共通）
+  const plannedValid = hasPlannedInput && Number.isInteger(plannedNum) && plannedNum > 0;
   const canAdd = !saving && representative && taskName.trim() && plannedValid;
 
   const toggleMinutesChip = (min) => {
@@ -1755,19 +1789,55 @@ const DailyTimerPage = () => {
     });
   };
 
-  // 手順1: 時間の使い方の振り返り（大幅超過タスクごとの記入）
-  const updateOverrunInput = (taskId, field, value) => {
-    setOverrunInputs((prev) => ({ ...prev, [taskId]: { ...prev[taskId], [field]: value } }));
+  // 手順1: 時間の使い方の振り返り（大幅超過タスクごとの記入）。
+  // 振り返り本文は必須、次のアクションは任意・複数追加可（未追加の入力欄の内容は保存されない）
+  const defaultOverrunInput = () => ({ reflection: '', actions: [], draft: { name: '', minutes: '', dueDate: '' } });
+
+  const updateOverrunReflection = (taskId, value) => {
+    setOverrunInputs((prev) => ({
+      ...prev,
+      [taskId]: { ...defaultOverrunInput(), ...prev[taskId], reflection: value }
+    }));
   };
 
-  const overrunStepReady = significantOverdueTasks.every(({ task }) => {
-    const input = overrunInputs[task.id] || {};
-    const minutesNum = Number(input.actionMinutes);
-    return (input.reflection || '').trim() !== ''
-      && (input.actionName || '').trim() !== ''
-      && Number.isInteger(minutesNum) && minutesNum > 0
-      && !!input.actionDueDate;
-  });
+  const updateOverrunDraft = (taskId, field, value) => {
+    setOverrunInputs((prev) => {
+      const current = { ...defaultOverrunInput(), ...prev[taskId] };
+      return { ...prev, [taskId]: { ...current, draft: { ...current.draft, [field]: value } } };
+    });
+  };
+
+  const addOverrunAction = (taskId) => {
+    setOverrunInputs((prev) => {
+      const current = { ...defaultOverrunInput(), ...prev[taskId] };
+      const minutesNum = Number(current.draft.minutes);
+      if (!current.draft.name.trim() || !Number.isInteger(minutesNum) || minutesNum <= 0 || !current.draft.dueDate) {
+        return prev;
+      }
+      const action = {
+        id: `${taskId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: current.draft.name.trim(),
+        minutes: minutesNum,
+        dueDate: current.draft.dueDate
+      };
+      return {
+        ...prev,
+        [taskId]: { ...current, actions: [...current.actions, action], draft: { name: '', minutes: '', dueDate: '' } }
+      };
+    });
+  };
+
+  const removeOverrunAction = (taskId, actionId) => {
+    setOverrunInputs((prev) => {
+      const current = prev[taskId];
+      if (!current) return prev;
+      return { ...prev, [taskId]: { ...current, actions: current.actions.filter((a) => a.id !== actionId) } };
+    });
+  };
+
+  const overrunStepReady = significantOverdueTasks.every(
+    ({ task }) => (overrunInputs[task.id]?.reflection || '').trim() !== ''
+  );
 
   const handleAdvanceOverrunStep = () => {
     if (!overrunStepReady) return;
@@ -1779,17 +1849,16 @@ const DailyTimerPage = () => {
       ));
       setNextDayPlan((prev) => [
         ...prev,
-        ...significantOverdueTasks.map(({ task }) => {
-          const input = overrunInputs[task.id];
-          return {
-            localId: `overrun_${task.id}`,
-            name: input.actionName.trim(),
-            plannedMinutes: Number(input.actionMinutes),
+        ...significantOverdueTasks.flatMap(({ task }) =>
+          (overrunInputs[task.id]?.actions || []).map((action) => ({
+            localId: `overrun_${task.id}_${action.id}`,
+            name: action.name,
+            plannedMinutes: action.minutes,
             plannedStartTime: null,
             fromCarryover: false,
-            date: input.actionDueDate
-          };
-        })
+            date: action.dueDate
+          }))
+        )
       ]);
       setReviewStep(2);
     });
@@ -2260,7 +2329,7 @@ const DailyTimerPage = () => {
             />
           </FormRow>
           <FormRow>
-            <FormLabel>予定時間（任意）</FormLabel>
+            <FormLabel>予定時間</FormLabel>
             {PRESET_MINUTES.map((min) => (
               <MinutesChip
                 key={min}
@@ -2274,7 +2343,7 @@ const DailyTimerPage = () => {
               type="number"
               min="1"
               step="1"
-              placeholder="任意"
+              placeholder="分"
               value={plannedMinutes}
               onChange={(e) => setPlannedMinutes(e.target.value)}
             />
@@ -2366,13 +2435,20 @@ const DailyTimerPage = () => {
             {reviewStep === 0 && (
               <>
                 <WizardIntro>日報に基づく振り返り（1/2）: リマインドされた頻度を確認してください。</WizardIntro>
-                <ReviewSummaryBlock>
-                  <ReviewSummaryEmpty>
-                    リマインド回数（合計） {timeAccuracy?.reminderCount || 0}回 /
-                    タイマーが止まっていた回数 {freeGaps.length}回 /
-                    止まっていた時間 合計{freeGapMinutesTotal}分
-                  </ReviewSummaryEmpty>
-                </ReviewSummaryBlock>
+                <WizardStatRow>
+                  <WizardStatItem>
+                    <WizardStatNumber>{timeAccuracy?.reminderCount || 0}回</WizardStatNumber>
+                    <WizardStatLabel>リマインド回数（合計）</WizardStatLabel>
+                  </WizardStatItem>
+                  <WizardStatItem>
+                    <WizardStatNumber>{freeGaps.length}回</WizardStatNumber>
+                    <WizardStatLabel>タイマーが止まっていた回数</WizardStatLabel>
+                  </WizardStatItem>
+                  <WizardStatItem>
+                    <WizardStatNumber>{freeGapMinutesTotal}分</WizardStatNumber>
+                    <WizardStatLabel>止まっていた時間（合計）</WizardStatLabel>
+                  </WizardStatItem>
+                </WizardStatRow>
                 <ReviewFooter>
                   <AddButton onClick={handleAckReminders} disabled={saving}>
                     <FiCheck size={14} /> 確認しました
@@ -2383,50 +2459,74 @@ const DailyTimerPage = () => {
 
             {reviewStep === 1 && (
               <>
-                <WizardIntro>日報に基づく振り返り（2/2）: 時間の使い方を振り返ってください。大幅に超過したタスクは振り返り・次のアクションの記入が必須です。</WizardIntro>
+                <WizardIntro>日報に基づく振り返り（2/2）: 時間の使い方を振り返ってください。大幅に超過したタスクは振り返りの記入が必須です（次のアクションの追加は任意・複数可）。</WizardIntro>
                 {significantOverdueTasks.length === 0 ? (
                   <ReviewSummaryEmpty>大幅に超過したタスクはありません</ReviewSummaryEmpty>
                 ) : (
                   <ReviewSummaryBlock>
-                    {significantOverdueTasks.map(({ task, timing }) => (
-                      <WizardItemCard key={task.id}>
-                        <TaskRow $overdue>
-                          <TaskName>{task.name}</TaskName>
-                          <ResultText $overdue>
-                            予定{task.plannedMinutes}分 / 実績{formatActual(timing.actualMs)}
-                          </ResultText>
-                          <OverdueBadge>超過{timing.diffMinutes}分</OverdueBadge>
-                        </TaskRow>
-                        <ReviewField>
-                          <ReviewLabel htmlFor={`overrun-reflection-${task.id}`}>振り返り</ReviewLabel>
-                          <ReviewTextarea
-                            id={`overrun-reflection-${task.id}`}
-                            value={overrunInputs[task.id]?.reflection || ''}
-                            onChange={(e) => updateOverrunInput(task.id, 'reflection', e.target.value)}
-                          />
-                        </ReviewField>
-                        <WizardInputsRow>
-                          <Input
-                            placeholder="次のアクション名"
-                            value={overrunInputs[task.id]?.actionName || ''}
-                            onChange={(e) => updateOverrunInput(task.id, 'actionName', e.target.value)}
-                          />
-                          <MinutesInput
-                            type="number"
-                            min="1"
-                            placeholder="予定時間（分）"
-                            value={overrunInputs[task.id]?.actionMinutes || ''}
-                            onChange={(e) => updateOverrunInput(task.id, 'actionMinutes', e.target.value)}
-                          />
-                          <DateInput
-                            type="date"
-                            value={overrunInputs[task.id]?.actionDueDate || ''}
-                            onChange={(e) => updateOverrunInput(task.id, 'actionDueDate', e.target.value)}
-                            title="期日"
-                          />
-                        </WizardInputsRow>
-                      </WizardItemCard>
-                    ))}
+                    {significantOverdueTasks.map(({ task, timing }) => {
+                      const input = overrunInputs[task.id] || defaultOverrunInput();
+                      const draftMinutesNum = Number(input.draft.minutes);
+                      const draftValid = input.draft.name.trim() !== ''
+                        && Number.isInteger(draftMinutesNum) && draftMinutesNum > 0
+                        && !!input.draft.dueDate;
+                      return (
+                        <WizardItemCard key={task.id}>
+                          <TaskRow $overdue>
+                            <TaskName>{task.name}</TaskName>
+                            <ResultText $overdue>
+                              予定{task.plannedMinutes}分 / 実績{formatActual(timing.actualMs)}
+                            </ResultText>
+                            <OverdueBadge>超過{timing.diffMinutes}分</OverdueBadge>
+                          </TaskRow>
+                          <ReviewField>
+                            <ReviewLabel htmlFor={`overrun-reflection-${task.id}`}>振り返り</ReviewLabel>
+                            <ReviewTextarea
+                              id={`overrun-reflection-${task.id}`}
+                              value={input.reflection}
+                              onChange={(e) => updateOverrunReflection(task.id, e.target.value)}
+                            />
+                          </ReviewField>
+                          {input.actions.length > 0 && (
+                            <TaskList>
+                              {input.actions.map((action) => (
+                                <TaskRow key={action.id}>
+                                  <TaskName>{action.name}</TaskName>
+                                  <PlannedBadge>期日 {action.dueDate}</PlannedBadge>
+                                  <PlannedBadge>予定 {action.minutes}分</PlannedBadge>
+                                  <DeleteButton onClick={() => removeOverrunAction(task.id, action.id)}>
+                                    <FiTrash2 size={14} />
+                                  </DeleteButton>
+                                </TaskRow>
+                              ))}
+                            </TaskList>
+                          )}
+                          <WizardInputsRow>
+                            <Input
+                              placeholder="次のアクション名（任意）"
+                              value={input.draft.name}
+                              onChange={(e) => updateOverrunDraft(task.id, 'name', e.target.value)}
+                            />
+                            <MinutesInput
+                              type="number"
+                              min="1"
+                              placeholder="予定時間（分）"
+                              value={input.draft.minutes}
+                              onChange={(e) => updateOverrunDraft(task.id, 'minutes', e.target.value)}
+                            />
+                            <DateInput
+                              type="date"
+                              value={input.draft.dueDate}
+                              onChange={(e) => updateOverrunDraft(task.id, 'dueDate', e.target.value)}
+                              title="期日"
+                            />
+                            <AddButton type="button" onClick={() => addOverrunAction(task.id)} disabled={!draftValid}>
+                              <FiPlus size={14} /> アクションを追加
+                            </AddButton>
+                          </WizardInputsRow>
+                        </WizardItemCard>
+                      );
+                    })}
                   </ReviewSummaryBlock>
                 )}
                 {minorOverdueTasks.length > 0 && (
@@ -2652,7 +2752,11 @@ const DailyTimerPage = () => {
                       value={nextDayPlannedStartTime}
                       onChange={(e) => setNextDayPlannedStartTime(e.target.value)}
                     />
-                    <AddButton type="button" onClick={addNextDayTask} disabled={!nextDayTaskName.trim()}>
+                    <AddButton
+                      type="button"
+                      onClick={addNextDayTask}
+                      disabled={!nextDayTaskName.trim() || !nextDayPlannedMinutesValid}
+                    >
                       <FiPlus size={14} /> 追加
                     </AddButton>
                   </div>
@@ -2698,7 +2802,7 @@ const DailyTimerPage = () => {
                   {planConfirmed ? (
                     <><FiCheckCircle /> 確定済み（{formatClock(toMillis(selectedDayDoc.planSnapshot.confirmedAt))}）</>
                   ) : (
-                    <><FiLock /> 未確定（最初の予定〜23:20が埋まるまで開始できません）</>
+                    <><FiLock /> 未確定（最初の予定〜23:00が埋まるまで開始できません）</>
                   )}
                 </ConfirmStatus>
                 {!planConfirmed && (
