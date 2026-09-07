@@ -9,6 +9,7 @@ import {
   setDoc,
   Timestamp
 } from 'firebase/firestore';
+import { computeScheduleGaps } from '../utils/dailyTimerSchedule.js';
 
 /**
  * デイリータイマーのFirestore操作サービス
@@ -19,9 +20,13 @@ import {
  *             sessions: [{ startedAt(Timestamp), endedAt(Timestamp|null) }],
  *             outputUrls([string]、任意。アウトプットのリンク。なしは未定義/空配列),
  *             source("planned"|"adhoc"、任意): 前日の振り返りで計画されたタスクか、
- *               当日その場で追加した臨時タスクかの区別。未設定の既存データは動作に影響なし }],
- *   manualSort(boolean、任意): trueならtasks配列の並びが表示順の正（D&Dで初めて並び替えた時に立つ）。
- *     未設定の既存ドキュメントは従来どおり予定開始時刻ソートで表示する
+ *               当日その場で追加した臨時タスクかの区別。未設定の既存データは動作に影響なし,
+ *             addedAfterConfirm(boolean、任意): planSnapshot確定後に追加されたタスクの目印。
+ *               確定前に追加されたタスク・確定自体をしていない日は付かない }],
+ *   planSnapshot({ tasks: [{id,name,plannedMinutes,plannedStartTime}], confirmedAt: Timestamp }、任意):
+ *     「予定を確定する」ボタン押下時点のtasksのスナップショット（confirmDayPlan参照）。
+ *     以後に追加したタスクはaddedAfterConfirmが立ち、確定前の朝の姿と区別できる。
+ *     この日の予定が確定済みかどうかの判定はこのフィールドの有無のみで行う
  *   review: { notAchieved, timeImprovement, reflection, nextAction }（1日1件の振り返り。tasksとは独立）
  *
  * sessionsは作業区間の配列（時系列順）。終了したタスクは「再開」で区間を追加できる。
@@ -31,10 +36,13 @@ import {
  *
  * 実績時間はDBに保存しない（閉じた区間の合算を都度計算する）。
  * 開始・終了時刻は通常、開始/終了/再開ボタン押下時点の時刻を刻む。
- * タイマー押し忘れの事後修正としてupdateTaskSessionsで各区間の時刻のみ手動修正できる。
+ * タイマー押し忘れの事後修正としてupdateTaskDetailsで各区間の時刻のみ手動修正できる。
  *
  * 旧形式（startedAt/endedAt直持ち）のタスクはgetTaskSessionsが区間1つとして解釈し、
  * いずれかの操作時に新形式へ変換して書き戻す（一括マイグレーションはしない）。
+ *
+ * 「予定を確定する」（confirmDayPlan）より前は開始不可。緊急クエスト（isUrgentTask）のみ例外。
+ * このロックは当日分のみ（過去日・未来日の予定タスクには掛けない）。
  */
 
 const COLLECTION_NAME = 'dailyTimers';
@@ -43,6 +51,15 @@ const buildDocId = (representative, date) => `${representative}_${date}`;
 
 const generateTaskId = () =>
   `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+/** ローカルタイムで今日の "YYYY-MM-DD"（開始ロックが当日のみに掛かるようにするための比較用） */
+const todayKey = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
 
 const getDayDoc = async (representative, date) => {
   const ref = doc(db, COLLECTION_NAME, buildDocId(representative, date));
@@ -122,7 +139,9 @@ export const addTask = async (representative, date, name, plannedMinutes, planne
       plannedMinutes: plannedMinutes ?? null,
       plannedStartTime: plannedStartTime ?? null,
       sessions: [],
-      source: 'adhoc'
+      source: 'adhoc',
+      // 予定確定後に追加されたタスクはその目印を付ける（画面側で色分けする）
+      ...(data?.planSnapshot ? { addedAfterConfirm: true } : {})
     };
     const afterIndex = afterTaskId ? tasks.findIndex((t) => t.id === afterTaskId) : -1;
     if (afterIndex >= 0) {
@@ -149,6 +168,9 @@ export const addTask = async (representative, date, name, plannedMinutes, planne
 export const addTaskAndStart = async (representative, date, name, plannedMinutes) => {
   try {
     const { ref, data } = await getDayDoc(representative, date);
+    if (date === todayKey() && !data?.planSnapshot) {
+      throw new Error('予定を確定してから開始してください');
+    }
     const now = Timestamp.now();
     const tasks = (data?.tasks || [])
       .map(normalizeTask)
@@ -159,7 +181,8 @@ export const addTaskAndStart = async (representative, date, name, plannedMinutes
       plannedMinutes: plannedMinutes ?? null,
       plannedStartTime: null,
       sessions: [{ startedAt: now, endedAt: null }],
-      source: 'adhoc'
+      source: 'adhoc',
+      ...(data?.planSnapshot ? { addedAfterConfirm: true } : {})
     });
     await saveTasks(ref, representative, date, tasks);
   } catch (error) {
@@ -182,6 +205,9 @@ export const startTask = async (representative, date, taskId) => {
     const target = tasks.find((t) => t.id === taskId);
     if (!target) throw new Error('対象のタスクが見つかりません');
     if (isRunningTask(target)) throw new Error('既に実行中のタスクです');
+    if (date === todayKey() && !data.planSnapshot && !target.isUrgentTask) {
+      throw new Error('予定を確定してから開始してください');
+    }
 
     const now = Timestamp.now();
     const updated = tasks.map((t) => {
@@ -345,30 +371,39 @@ export const deleteTask = async (representative, date, taskId) => {
 };
 
 /**
- * タスクの表示順を並び替える（D&D用）
- * tasks配列を指定された順序に書き換え、manualSort: true を立てる
- * （以後このドキュメントはtasks配列の並びが表示順の正となる）
+ * 朝立てた予定を確定する。9:00〜23:20が隙間なく埋まっていること（時刻の重なりも無いこと）を
+ * 再チェックしたうえで、その時点のtasksをplanSnapshotとして保存する。
+ * 確定後に追加されたタスクはaddTask/addTaskAndStartがaddedAfterConfirmを立てる。
+ * 画面側は事前にcomputeScheduleGapsでボタンの活性・非活性を出すが、ここでも同じ関数で
+ * 再チェックする（画面を開いたままの間に他の変更が入っている可能性があるため）
  * @param {string} representative - 担当者名
  * @param {string} date - "YYYY-MM-DD"
- * @param {Array<string>} orderedTaskIds - 新しい表示順のタスクID（現在の全タスクと過不足なく一致すること）
  */
-export const reorderTasks = async (representative, date, orderedTaskIds) => {
+export const confirmDayPlan = async (representative, date) => {
   try {
     const { ref, data } = await getDayDoc(representative, date);
     if (!data) throw new Error('対象の日報データが見つかりません');
 
     const tasks = (data.tasks || []).map(normalizeTask);
-    const byId = new Map(tasks.map((t) => [t.id, t]));
-    const idSetMatches =
-      orderedTaskIds.length === tasks.length && orderedTaskIds.every((id) => byId.has(id));
-    if (!idSetMatches) {
-      throw new Error('タスクが変更されています。画面を再読み込みしてください');
-    }
+    const { isFilled } = computeScheduleGaps(tasks);
+    if (!isFilled) throw new Error('まだ埋まっていない時間帯、または時刻が重なっているタスクがあります');
 
-    const ordered = orderedTaskIds.map((id) => byId.get(id));
-    await saveTasks(ref, representative, date, ordered, { manualSort: true });
+    await setDoc(ref, {
+      representative,
+      date,
+      planSnapshot: {
+        tasks: tasks.map((t) => ({
+          id: t.id,
+          name: t.name,
+          plannedMinutes: t.plannedMinutes,
+          plannedStartTime: t.plannedStartTime
+        })),
+        confirmedAt: Timestamp.now()
+      },
+      updatedAt: Timestamp.now()
+    }, { merge: true });
   } catch (error) {
-    console.error('Failed to reorder tasks:', error);
+    console.error('Failed to confirm day plan:', error);
     throw error;
   }
 };

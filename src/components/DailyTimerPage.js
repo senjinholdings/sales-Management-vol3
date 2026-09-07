@@ -15,8 +15,9 @@ import {
   FiEdit3,
   FiSave,
   FiLink,
-  FiMenu,
-  FiCheck
+  FiCheck,
+  FiCheckCircle,
+  FiLock
 } from 'react-icons/fi';
 import { fetchStaffByRole } from '../services/staffService.js';
 import {
@@ -30,11 +31,17 @@ import {
   fetchDatesWithData,
   getTaskSessions,
   updateTaskDetails,
-  reorderTasks,
+  confirmDayPlan,
   planNextDayTasks,
   completeNightReview,
   reportUrgentTaskComplete
 } from '../services/dailyTimerService.js';
+import {
+  computeScheduleGaps,
+  minutesToTime,
+  timeToMinutes,
+  PLAN_WINDOW_START
+} from '../utils/dailyTimerSchedule.js';
 
 // ============================================
 // Styled Components
@@ -350,6 +357,8 @@ const TaskRow = styled.div`
   border-width: ${(props) => (props.$urgent ? '2px' : '1px')};
   background: ${(props) => (props.$urgent ? '#fef3e6' : props.$overdue ? '#fdecea' : props.$running ? '#eaf4fd' : '#f8f9fa')};
   flex-wrap: wrap;
+  box-shadow: ${(props) => (props.$highlighted ? '0 0 0 3px #f1c40f' : 'none')};
+  transition: box-shadow 0.3s;
 `;
 
 const TaskName = styled.span`
@@ -603,27 +612,223 @@ const LinkItem = styled.a`
   &:hover { text-decoration: underline; }
 `;
 
-// ---- ドラッグ&ドロップ並び替え ----
+// ---- 時刻未定タスクの見出し ----
 
-// 行のラッパー。ドロップ位置の挿入線をborderで表示する
-const RowDragWrap = styled.div`
-  display: flex;
-  align-items: stretch;
-  gap: 0.35rem;
-  border-top: 2px solid ${(props) => (props.$dropBefore ? '#3498db' : 'transparent')};
-  border-bottom: 2px solid ${(props) => (props.$dropAfter ? '#3498db' : 'transparent')};
-  opacity: ${(props) => (props.$dragging ? 0.4 : 1)};
-  & > *:last-child { flex: 1; min-width: 0; }
+const UntimedLabel = styled.div`
+  font-size: 0.75rem;
+  color: #95a5a6;
+  font-weight: 600;
+  margin: 0.25rem 0 0.35rem;
 `;
 
-const DragHandle = styled.span`
+// ---- 空き時間の行 ----
+
+const GapRow = styled.div`
   display: flex;
   align-items: center;
-  padding: 0 0.15rem;
-  color: #bdc3c7;
-  cursor: grab;
-  &:hover { color: #7f8c8d; }
-  &:active { cursor: grabbing; }
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border: 1px dashed ${(props) => (props.$alert ? '#e74c3c' : '#bdc3c7')};
+  background: ${(props) => (props.$alert ? '#fdecea' : '#f8f9fa')};
+  flex-wrap: wrap;
+`;
+
+const GapLabel = styled.span`
+  font-size: 0.85rem;
+  color: ${(props) => (props.$alert ? '#c0392b' : '#7f8c8d')};
+  font-weight: 500;
+`;
+
+const GapActions = styled.div`
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+`;
+
+const GapButton = styled.button`
+  padding: 0.35rem 0.7rem;
+  border: 1px solid #bdc3c7;
+  border-radius: 4px;
+  background: white;
+  color: #2c3e50;
+  font-size: 0.78rem;
+  cursor: pointer;
+  white-space: nowrap;
+  &:hover { border-color: #3498db; color: #3498db; }
+`;
+
+// ---- 予定の確認・確定 ----
+
+const ConfirmBar = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+`;
+
+const ConfirmStatus = styled.span`
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: ${(props) => (props.$confirmed ? '#27ae60' : '#e67e22')};
+`;
+
+const ConfirmButton = styled(AddButton)`
+  background: #27ae60;
+`;
+
+const GapWarningList = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 1rem;
+`;
+
+const GapWarningItem = styled.div`
+  font-size: 0.8rem;
+  color: #c0392b;
+  background: #fdecea;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+`;
+
+const ConfirmedTag = styled.span`
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #27ae60;
+  background: #eafaf1;
+  border: 1px solid #27ae60;
+  padding: 0.1rem 0.5rem;
+  border-radius: 4px;
+`;
+
+const LockedHint = styled.span`
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: #e67e22;
+  font-weight: 600;
+  white-space: nowrap;
+`;
+
+const AddedLaterBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: white;
+  background: #f39c12;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
+// ---- タイムライン（左＝朝の予定 / 右＝実績） ----
+
+const TimelineGrid = styled.div`
+  display: grid;
+  grid-template-columns: 42px 1fr 1fr;
+  grid-template-rows: auto 1fr;
+  gap: 0.5rem;
+`;
+
+const TimelineColHeader = styled.div`
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #2c3e50;
+  text-align: center;
+  padding-bottom: 0.35rem;
+`;
+
+const TimelineHourGutter = styled.div`
+  position: relative;
+`;
+
+const TimelineHourLabel = styled.div`
+  position: absolute;
+  right: 4px;
+  transform: translateY(-50%);
+  font-size: 0.68rem;
+  color: #95a5a6;
+  white-space: nowrap;
+`;
+
+const TimelineColumn = styled.div`
+  position: relative;
+  background: #fafbfc;
+  border: 1px solid #eee;
+  border-radius: 4px;
+`;
+
+const TimelineHourLine = styled.div`
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 1px solid #eee;
+`;
+
+const TimelineBlock = styled.div`
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  border-radius: 3px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.68rem;
+  line-height: 1.25;
+  color: white;
+  overflow: hidden;
+  cursor: pointer;
+  background: ${(props) =>
+    props.$variant === 'added' ? '#f39c12'
+    : props.$variant === 'urgent' ? '#e67e22'
+    : props.$variant === 'running' ? '#3498db'
+    : '#6b8caf'};
+  outline: ${(props) => (props.$variant === 'running' ? '2px solid #2980b9' : 'none')};
+`;
+
+const TimelineGapBlock = styled.div`
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  border-radius: 3px;
+  background: ${(props) =>
+    props.$alert
+      ? 'repeating-linear-gradient(45deg, #fdecea, #fdecea 6px, #fbd4d0 6px, #fbd4d0 12px)'
+      : 'repeating-linear-gradient(45deg, #f1f2f3, #f1f2f3 6px, #e6e8ea 6px, #e6e8ea 12px)'};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.65rem;
+  color: ${(props) => (props.$alert ? '#c0392b' : '#95a5a6')};
+  text-align: center;
+  overflow: hidden;
+`;
+
+const TimelineNowLine = styled.div`
+  position: absolute;
+  left: 0;
+  right: 0;
+  border-top: 2px solid #e74c3c;
+  z-index: 5;
+`;
+
+const TimelinePlaceholder = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 0.8rem;
+  color: #95a5a6;
+  text-align: center;
+  padding: 1rem;
 `;
 
 // ---- 振り返り（アコーディオン） ----
@@ -800,13 +1005,6 @@ const plannedEndTime = (hhmm, minutes) => {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 };
 
-/** 予定開始時刻 + 予定時間から終了予定を time input用の "09:30" 形式で返す */
-const plannedEndTimeInput = (hhmm, minutes) => {
-  const [h, m] = hhmm.split(':').map(Number);
-  const total = (h * 60 + m + minutes) % (24 * 60);
-  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
-};
-
 /** タイムスタンプ(ms)を "9:13" 形式の時刻にする */
 const formatClock = (ms) => {
   const d = new Date(ms);
@@ -862,25 +1060,88 @@ const getTaskTiming = (task) => {
   };
 };
 
-/** 予定開始時刻がある行を時刻昇順で先に、ない行はその後ろに追加順で並べる */
-const sortTasksForDisplay = (tasks) => {
-  const withTime = tasks.filter((t) => t.plannedStartTime);
-  const withoutTime = tasks.filter((t) => !t.plannedStartTime);
-  withTime.sort((a, b) => a.plannedStartTime.localeCompare(b.plannedStartTime));
-  return [...withTime, ...withoutTime];
-};
-
 /**
- * ドキュメントの表示順のタスク一覧を返す
- * manualSort（一度でもD&Dで並び替えた）ならtasks配列の並びが正、
- * 未設定の既存ドキュメントは従来どおり予定開始時刻ソート。
+ * ドキュメントの表示順のタスク一覧を返す（振り返りの未完了/超過一覧など、並び順だけ欲しい箇所用）
+ * 全タスクに開始時刻が入る前提のため、時刻順が唯一の正しい並びになった
+ * （旧D&D手動並び替え・manualSortは廃止。予定を確定する仕組みに置き換えたため）
  * 緊急クエスト（isUrgentTask）は並び順に関わらず常に先頭に出す（最優先タスクのため）
  */
 const getDisplayTasks = (dayDoc) => {
-  const base = dayDoc?.manualSort ? (dayDoc.tasks || []) : sortTasksForDisplay(dayDoc?.tasks || []);
-  const urgent = base.filter((t) => t.isUrgentTask);
-  if (urgent.length === 0) return base;
-  return [...urgent, ...base.filter((t) => !t.isUrgentTask)];
+  const tasks = dayDoc?.tasks || [];
+  const timed = tasks.filter((t) => t.plannedStartTime)
+    .sort((a, b) => a.plannedStartTime.localeCompare(b.plannedStartTime));
+  const untimed = tasks.filter((t) => !t.plannedStartTime);
+  const urgent = untimed.filter((t) => t.isUrgentTask);
+  const other = untimed.filter((t) => !t.isUrgentTask);
+  return [...urgent, ...timed, ...other];
+};
+
+/** 時刻未定のタスク（緊急クエスト・割り込みで今すぐ開始したもの）だけを、一覧の上に出す別枠用に取り出す */
+const getUntimedTasks = (tasks) => {
+  const untimed = (tasks || []).filter((t) => !t.plannedStartTime);
+  const urgent = untimed.filter((t) => t.isUrgentTask);
+  const other = untimed.filter((t) => !t.isUrgentTask);
+  return [...urgent, ...other];
+};
+
+/** 時刻がある行を時刻順に並べ、空き時間の行(type:'gap')を間に挟んだ表示用の一覧を作る */
+const buildTimedRowsWithGaps = (tasks) => {
+  const timed = (tasks || []).filter((t) => t.plannedStartTime)
+    .sort((a, b) => a.plannedStartTime.localeCompare(b.plannedStartTime));
+  const { gaps } = computeScheduleGaps(tasks || []);
+  const rows = [
+    ...timed.map((t) => ({ type: 'task', sortMin: timeToMinutes(t.plannedStartTime), task: t })),
+    ...gaps.map((g) => ({ type: 'gap', sortMin: g.start, gap: g }))
+  ];
+  rows.sort((a, b) => a.sortMin - b.sortMin);
+  return rows;
+};
+
+// ---- タイムライン（左＝朝の予定 / 右＝実績）用の時刻換算 ----
+
+const TIMELINE_START_MIN = timeToMinutes(PLAN_WINDOW_START); // 9:00
+const TIMELINE_END_MIN = 24 * 60;
+const TIMELINE_PX_PER_MIN = 0.9;
+const TIMELINE_HEIGHT = (TIMELINE_END_MIN - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN;
+
+const minutesFromMidnight = (ms) => {
+  const d = new Date(ms);
+  return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60;
+};
+
+const clampToTimelineRange = (min) => Math.min(TIMELINE_END_MIN, Math.max(TIMELINE_START_MIN, min));
+
+const timelineTopPx = (min) => (clampToTimelineRange(min) - TIMELINE_START_MIN) * TIMELINE_PX_PER_MIN;
+
+const timelineHeightPx = (startMin, endMin) =>
+  Math.max(2, (clampToTimelineRange(endMin) - clampToTimelineRange(startMin)) * TIMELINE_PX_PER_MIN);
+
+/**
+ * 実績ブロック（sessions由来の区間）の一覧から、指定範囲内で何も動いていなかった時間（空白）を計算する
+ * 5分未満は誤差として無視する
+ */
+const computeFreeRanges = (blocks, rangeStart, rangeEnd, minGap = 5) => {
+  const clipped = blocks
+    .map((b) => ({ start: Math.max(rangeStart, b.startMin), end: Math.min(rangeEnd, b.endMin) }))
+    .filter((b) => b.end > b.start)
+    .sort((a, b) => a.start - b.start);
+  const merged = [];
+  clipped.forEach((b) => {
+    const last = merged[merged.length - 1];
+    if (last && b.start <= last.end) {
+      last.end = Math.max(last.end, b.end);
+    } else {
+      merged.push({ ...b });
+    }
+  });
+  const free = [];
+  let cursor = rangeStart;
+  merged.forEach((b) => {
+    if (b.start > cursor) free.push({ start: cursor, end: b.start });
+    cursor = Math.max(cursor, b.end);
+  });
+  if (cursor < rangeEnd) free.push({ start: cursor, end: rangeEnd });
+  return free.map((f) => ({ ...f, minutes: f.end - f.start })).filter((f) => f.minutes >= minGap);
 };
 
 const LAST_REP_STORAGE_KEY = 'dailyTimerLastRepresentative';
@@ -963,13 +1224,13 @@ const DailyTimerPage = () => {
   // { rep, taskId } | null
   const [linksPopover, setLinksPopover] = useState(null);
 
-  // D&D並び替え（担当者をまたぐ移動は不可）
-  const [dragItem, setDragItem] = useState(null);           // { rep, taskId }
-  const [dropIndicator, setDropIndicator] = useState(null); // { rep, taskId, before }
-
-  // 行直下のタスク差し込みフォーム（同時に開けるのは1つ、時刻編集とも排他）
-  // { rep, afterTaskId, startTime: "HH:MM"|"", name, minutes: string }
+  // 空き時間の行から開く「ここにタスクを追加」フォーム（同時に開けるのは1つ、時刻編集とも排他）
+  // { rep, gapStart: 分（0:00からの分数）, name, minutes: string }
   const [insertForm, setInsertForm] = useState(null);
+
+  // タイムラインのブロックをクリックした時、下のタスク一覧の該当行を光らせる
+  const [highlightedTaskId, setHighlightedTaskId] = useState(null);
+  const taskRowRefs = useRef({});
 
   // 振り返り
   const [reviewDraft, setReviewDraft] = useState(normalizeReview());
@@ -1108,8 +1369,6 @@ const DailyTimerPage = () => {
       .filter(({ task }) => !task.isReviewTask)
       .reduce((sum, { task }) => sum + (task.plannedMinutes || 0), 0)
   ), [unfinishedTasks]);
-  const showScheduleGapField = unfinishedPlannedMinutesTotal >= 120;
-
   // 夜の振り返りが完了したかどうかは、この記録の有無だけで判定する
   // （振り返り欄に文字が入っているかどうかでは判定しない）
   const reviewCompleted = !!dayDocs.find((d) => d.representative === representative)?.reviewCompletedAt;
@@ -1117,6 +1376,77 @@ const DailyTimerPage = () => {
   // タイマー止め忘れ・つけ忘れによる「不正確な時間」の合計とリマインド回数
   // （超過分＋タイマー未開始で空いていた時間。functions/dailyReportGuard.jsが日々積み上げて記録する）
   const timeAccuracy = dayDocs.find((d) => d.representative === representative)?.timeAccuracy;
+
+  // ---- 予定の確認・確定（表示中の担当者について。planSnapshotの有無で確定済みかを判定する） ----
+
+  const selectedDayDoc = useMemo(
+    () => dayDocs.find((d) => d.representative === representative) || null,
+    [dayDocs, representative]
+  );
+  const planConfirmed = !!selectedDayDoc?.planSnapshot;
+  const scheduleCheck = useMemo(
+    () => computeScheduleGaps(selectedDayDoc?.tasks || []),
+    [selectedDayDoc]
+  );
+
+  // 実績（sessions）を1区間=1ブロックとして展開する（タイムライン右側用）。実行中の区間は現在時刻まで伸ばす
+  const actualBlocks = useMemo(() => {
+    const tasks = selectedDayDoc?.tasks || [];
+    const blocks = [];
+    tasks.forEach((task) => {
+      getTaskSessions(task).forEach((s, i) => {
+        const startMs = toMillis(s.startedAt);
+        if (startMs === null) return;
+        const endMsRaw = toMillis(s.endedAt);
+        const running = endMsRaw === null;
+        const endMs = running ? now : endMsRaw;
+        blocks.push({
+          key: `${task.id}_${i}`,
+          taskId: task.id,
+          name: task.name,
+          startMin: minutesFromMidnight(startMs),
+          endMin: minutesFromMidnight(endMs),
+          variant: task.addedAfterConfirm ? 'added' : task.isUrgentTask ? 'urgent' : running ? 'running' : 'done'
+        });
+      });
+    });
+    return blocks;
+  }, [selectedDayDoc, now]);
+
+  // 実績側の「何も動いていなかった時間」（空白）。今日はまだ来ていない未来分を含めないよう現在時刻までに絞る
+  const actualRangeEnd = isTodaySelected
+    ? Math.min(TIMELINE_END_MIN, minutesFromMidnight(now))
+    : TIMELINE_END_MIN;
+  const freeGaps = useMemo(
+    () => (selectedDayDoc ? computeFreeRanges(actualBlocks, TIMELINE_START_MIN, actualRangeEnd) : []),
+    [actualBlocks, actualRangeEnd, selectedDayDoc]
+  );
+  const freeGapMinutesTotal = freeGaps.reduce((sum, g) => sum + g.minutes, 0);
+
+  // 予定確定後に追加されたタスク（「後から追加」）の一覧と、それに使った合計時間
+  const addedAfterConfirmTasks = useMemo(
+    () => (selectedDayDoc?.tasks || []).filter((t) => t.addedAfterConfirm),
+    [selectedDayDoc]
+  );
+  const addedAfterConfirmMinutesTotal = useMemo(() => (
+    addedAfterConfirmTasks.reduce((sum, t) => {
+      const timing = getTaskTiming(t);
+      const ms = timing.status === 'running'
+        ? timing.closedMs + (now - timing.runningStartMs)
+        : (timing.actualMs || 0);
+      return sum + Math.round(ms / 60000);
+    }, 0)
+  ), [addedAfterConfirmTasks, now]);
+
+  // 未完了タスクの予定ズレ（120分以上）、または実績側の空白（60分以上）のどちらかがあれば
+  // 振り返り欄に「なぜズレたのか」の入力欄を追加で出す（同じ仕組みを共用する）
+  const showScheduleGapField = unfinishedPlannedMinutesTotal >= 120 || freeGapMinutesTotal >= 60;
+
+  const handleConfirmPlan = () => {
+    if (!representative) return;
+    if (!window.confirm('この内容で今日の予定を確定します。確定後に開始ボタンが押せるようになります。よろしいですか？')) return;
+    runMutation(() => confirmDayPlan(representative, selectedDate));
+  };
 
   const addNextDayTask = () => {
     if (!nextDayTaskName.trim()) return;
@@ -1259,93 +1589,44 @@ const DailyTimerPage = () => {
   const handleDelete = (rep, taskId) =>
     runMutation(() => deleteTask(rep, selectedDate, taskId));
 
-  // ---- 時刻のインライン編集 ----
+  // ---- 空き時間の埋め方 ----
 
-  // ---- D&D並び替え ----
+  // 隙間ぴったりの「休憩」「移動」タスクをワンタッチで追加する
+  const quickFillGap = (rep, gap, name) => {
+    runMutation(() => addTask(rep, selectedDate, name, gap.minutes, minutesToTime(gap.start)));
+  };
 
-  const handleDragStart = (rep, taskId) => (e) => {
-    e.dataTransfer.effectAllowed = 'move';
-    // FirefoxはsetDataしないとドラッグが始まらない
-    e.dataTransfer.setData('text/plain', taskId);
+  const beginGapInsert = (rep, gap) => {
     setEditingTask(null);
-    setInsertForm(null);
-    setLinksPopover(null);
-    setDragItem({ rep, taskId });
-  };
-
-  const handleDragEnd = () => {
-    setDragItem(null);
-    setDropIndicator(null);
-  };
-
-  const handleRowDragOver = (rep, taskId) => (e) => {
-    // 別担当者の行の上ではpreventDefaultしない=ドロップ不可
-    if (!dragItem || dragItem.rep !== rep || dragItem.taskId === taskId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const before = e.clientY < rect.top + rect.height / 2;
-    setDropIndicator((prev) =>
-      prev && prev.rep === rep && prev.taskId === taskId && prev.before === before
-        ? prev
-        : { rep, taskId, before }
-    );
-  };
-
-  const handleRowDrop = (dayDoc, targetTaskId) => (e) => {
-    e.preventDefault();
-    const indicator = dropIndicator;
-    handleDragEnd();
-    if (!dragItem || dragItem.rep !== dayDoc.representative || dragItem.taskId === targetTaskId) {
-      return;
-    }
-    // 現在の表示順を基準に、ドラッグ行を抜いてドロップ位置に差し込む
-    const original = getDisplayTasks(dayDoc).map((t) => t.id);
-    const ids = original.filter((id) => id !== dragItem.taskId);
-    const before = indicator && indicator.taskId === targetTaskId ? indicator.before : true;
-    const insertAt = ids.indexOf(targetTaskId) + (before ? 0 : 1);
-    ids.splice(insertAt, 0, dragItem.taskId);
-    if (ids.every((id, i) => id === original[i])) return; // 並びが変わらなければ保存しない
-    runMutation(() => reorderTasks(dayDoc.representative, selectedDate, ids));
-  };
-
-  // ---- 行直下のタスク差し込み ----
-
-  const beginInsertAfter = (rep, task) => {
-    // 予定終了時刻（予定開始+予定時間）が計算できる行はそれを自動入力、なければ空で開く
-    const startTime = task.plannedStartTime && task.plannedMinutes != null
-      ? plannedEndTimeInput(task.plannedStartTime, task.plannedMinutes)
-      : '';
-    setEditingTask(null);
-    setInsertForm({ rep, afterTaskId: task.id, startTime, name: '', minutes: '' });
+    setInsertForm({ rep, gapStart: gap.start, name: '', minutes: String(Math.round(gap.minutes)) });
   };
 
   const updateInsertForm = (field, value) => {
     setInsertForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const toggleInsertMinutesChip = (min) => {
-    setInsertForm((prev) => ({
-      ...prev,
-      minutes: Number(prev.minutes) === min ? '' : String(min)
-    }));
-  };
-
   const insertMinutesNum = Number(insertForm?.minutes);
   const canInsert = !saving && !!insertForm
     && insertForm.name.trim() !== ''
-    && insertForm.startTime !== ''
     && insertForm.minutes.trim() !== ''
     && Number.isInteger(insertMinutesNum) && insertMinutesNum > 0;
 
   const handleInsertSave = () => {
     if (!canInsert) return;
-    const { rep, name, startTime, afterTaskId } = insertForm;
+    const { rep, name, gapStart } = insertForm;
     runMutation(async () => {
-      // afterTaskId指定で配列上も押した行の直後に挿入（手動並び順の日でも位置が保たれる）
-      await addTask(rep, selectedDate, name.trim(), insertMinutesNum, startTime, afterTaskId);
+      await addTask(rep, selectedDate, name.trim(), insertMinutesNum, minutesToTime(gapStart));
       setInsertForm(null);
     });
+  };
+
+  // タイムラインのブロックをクリックすると、下のタスク一覧の該当行までスクロールして光らせる
+  const handleTimelineBlockClick = (taskId) => {
+    setHighlightedTaskId(taskId);
+    taskRowRefs.current[taskId]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    window.setTimeout(() => {
+      setHighlightedTaskId((prev) => (prev === taskId ? null : prev));
+    }, 2000);
   };
 
   const beginEditTask = (rep, task) => {
@@ -1435,11 +1716,16 @@ const DailyTimerPage = () => {
     });
   };
 
-  const renderTaskRow = (rep, task) => {
+  const renderTaskRow = (dayDoc, task) => {
+    const rep = dayDoc.representative;
     const timing = getTaskTiming(task);
     const hasPlanned = task.plannedMinutes != null;
     const plannedMs = hasPlanned ? task.plannedMinutes * 60000 : null;
     const hasPlannedStart = !!task.plannedStartTime;
+    const isHighlighted = highlightedTaskId === task.id;
+    const attachRowRef = (el) => { taskRowRefs.current[task.id] = el; };
+    // 確定前は緊急クエスト以外の開始を止める（当日分のみ。過去日・翌日以降はロックしない）
+    const startLocked = isTodaySelected && !dayDoc.planSnapshot && !task.isUrgentTask;
 
     // 時刻のインライン編集モード
     if (editingTask && editingTask.rep === rep && editingTask.taskId === task.id) {
@@ -1504,17 +1790,6 @@ const DailyTimerPage = () => {
       </EditIconButton>
     );
 
-    // この行の直下にタスクを差し込むフォームを開く（全状態で表示）
-    const insertIcon = (
-      <EditIconButton
-        onClick={() => beginInsertAfter(rep, task)}
-        disabled={saving}
-        title="この直後にタスクを追加"
-      >
-        <FiPlus size={14} />
-      </EditIconButton>
-    );
-
     // アウトプットリンク: 1件なら直接開く、複数ならポップオーバーで選択
     const outputUrls = task.outputUrls || [];
     const isLinksPopoverOpen =
@@ -1572,16 +1847,21 @@ const DailyTimerPage = () => {
     // 未開始
     if (timing.status === 'notStarted') {
       return (
-        <TaskRow key={task.id} $urgent={task.isUrgentTask}>
+        <TaskRow key={task.id} ref={attachRowRef} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
           <TaskName>{task.name}</TaskName>
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
+          {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {scheduleLabel && <PlannedBadge>{scheduleLabel}</PlannedBadge>}
-          <ActionButton onClick={() => handleStart(rep, task.id)} disabled={saving}>
+          <ActionButton
+            onClick={() => handleStart(rep, task.id)}
+            disabled={saving || startLocked}
+            title={startLocked ? '予定を確定してから開始してください' : undefined}
+          >
             <FiPlay size={12} /> 開始
           </ActionButton>
+          {startLocked && <LockedHint><FiLock size={11} /> 未確定</LockedHint>}
           {editIcon}
-          {insertIcon}
           {linkIcon}
           {task.isUrgentTask && (
             task.urgentReportedAt
@@ -1608,10 +1888,11 @@ const DailyTimerPage = () => {
       const overdue = hasPlanned && elapsedMs > plannedMs;
       const overdueMinutes = overdue ? Math.ceil((elapsedMs - plannedMs) / 60000) : 0;
       return (
-        <TaskRow key={task.id} $running $overdue={overdue} $urgent={task.isUrgentTask}>
+        <TaskRow key={task.id} ref={attachRowRef} $running $overdue={overdue} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
           <TaskName>{task.name}</TaskName>
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
+          {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           {hasPlanned && <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>}
           <ElapsedText $overdue={overdue}>経過 {formatElapsed(elapsedMs)}</ElapsedText>
@@ -1620,7 +1901,6 @@ const DailyTimerPage = () => {
             <FiSquare size={12} /> 終了
           </ActionButton>
           {editIcon}
-          {insertIcon}
           {linkIcon}
           {task.isUrgentTask && (
             <ActionButton onClick={() => handleReportUrgentComplete(rep, task.id)} disabled={saving}>
@@ -1636,7 +1916,11 @@ const DailyTimerPage = () => {
 
     // 再開は「今の時刻」で区間を追加するため、今日を表示中のときのみ可能
     const resumeButton = isTodaySelected && (
-      <ActionButton onClick={() => handleStart(rep, task.id)} disabled={saving}>
+      <ActionButton
+        onClick={() => handleStart(rep, task.id)}
+        disabled={saving || startLocked}
+        title={startLocked ? '予定を確定してから再開してください' : undefined}
+      >
         <FiPlay size={12} /> 再開
       </ActionButton>
     );
@@ -1644,15 +1928,16 @@ const DailyTimerPage = () => {
     // 予定なしの行は超過判定をせず実績のみ表示（妥当性は判定不能で「−」）
     if (!hasPlanned) {
       return (
-        <TaskRow key={task.id} $urgent={task.isUrgentTask}>
+        <TaskRow key={task.id} ref={attachRowRef} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
           <TaskName>{task.name}</TaskName>
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
+          {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
           {resumeButton}
+          {startLocked && <LockedHint><FiLock size={11} /> 未確定</LockedHint>}
           {editIcon}
-          {insertIcon}
           {linkIcon}
           {task.isUrgentTask ? (
             task.urgentReportedAt
@@ -1670,9 +1955,10 @@ const DailyTimerPage = () => {
     }
 
     return (
-      <TaskRow key={task.id} $overdue={overdue}>
+      <TaskRow key={task.id} ref={attachRowRef} $overdue={overdue} $highlighted={isHighlighted}>
         <TaskName>{task.name}</TaskName>
         {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
+        {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
         {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
         <ResultText $overdue={overdue}>
           予定{task.plannedMinutes}分 / 実績{formatActual(actualMs)}
@@ -1684,8 +1970,8 @@ const DailyTimerPage = () => {
         </ResultText>
         {overdue && <OverdueBadge>超過{diffMinutes}分</OverdueBadge>}
         {resumeButton}
+        {startLocked && <LockedHint><FiLock size={11} /> 未確定</LockedHint>}
         {editIcon}
-        {insertIcon}
         {linkIcon}
         {/* 妥当性: 実績が予定以内なら◯、超過なら×（判定は超過バッジと共通） */}
         {overdue ? (
@@ -1819,12 +2105,144 @@ const DailyTimerPage = () => {
               <FiPlus size={14} /> 追加
             </AddButton>
             {isTodaySelected && (
-              <StartNowButton onClick={handleAddAndStart} disabled={!canAdd}>
+              <StartNowButton
+                onClick={handleAddAndStart}
+                disabled={!canAdd || !planConfirmed}
+                title={!planConfirmed ? '予定を確定してから開始してください' : undefined}
+              >
                 <FiPlay size={14} /> 今すぐ開始
               </StartNowButton>
             )}
           </FormRow>
         </AddForm>
+      </Section>
+
+      <Section>
+        <SectionTitle><FiCheckCircle /> 予定の確認・確定{representative ? `（${representative}）` : ''}</SectionTitle>
+        {!representative ? (
+          <EmptyText>担当者を選択してください</EmptyText>
+        ) : (
+          <>
+            {isTodaySelected && (
+              <ConfirmBar>
+                <ConfirmStatus $confirmed={planConfirmed}>
+                  {planConfirmed ? (
+                    <><FiCheckCircle /> 確定済み（{formatClock(toMillis(selectedDayDoc.planSnapshot.confirmedAt))}）</>
+                  ) : (
+                    <><FiLock /> 未確定（9:00〜23:20が埋まるまで開始できません）</>
+                  )}
+                </ConfirmStatus>
+                {!planConfirmed && (
+                  <ConfirmButton onClick={handleConfirmPlan} disabled={saving || !scheduleCheck.isFilled}>
+                    <FiCheck size={14} /> 予定を確定する
+                  </ConfirmButton>
+                )}
+              </ConfirmBar>
+            )}
+            {isTodaySelected && !planConfirmed && (scheduleCheck.gaps.length > 0 || scheduleCheck.overlaps.length > 0) && (
+              <GapWarningList>
+                {scheduleCheck.gaps.map((g) => (
+                  <GapWarningItem key={`gap_${g.start}`}>
+                    空いています：{minutesToTime(g.start)}〜{minutesToTime(g.end)}（{g.minutes}分）
+                  </GapWarningItem>
+                ))}
+                {scheduleCheck.overlaps.map((o, i) => (
+                  <GapWarningItem key={`overlap_${i}`}>
+                    時刻が重なっています：「{o.a.name}」と「{o.b.name}」
+                  </GapWarningItem>
+                ))}
+              </GapWarningList>
+            )}
+            <TimelineGrid>
+              <div />
+              <TimelineColHeader>予定</TimelineColHeader>
+              <TimelineColHeader>実績</TimelineColHeader>
+              <TimelineHourGutter style={{ height: TIMELINE_HEIGHT }}>
+                {Array.from({ length: 16 }, (_, i) => 9 + i).map((h) => (
+                  <TimelineHourLabel key={h} style={{ top: timelineTopPx(h * 60) }}>
+                    {h}:00
+                  </TimelineHourLabel>
+                ))}
+              </TimelineHourGutter>
+              <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
+                {Array.from({ length: 16 }, (_, i) => 9 + i).map((h) => (
+                  <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
+                ))}
+                {planConfirmed ? (
+                  selectedDayDoc.planSnapshot.tasks.map((t) => {
+                    const start = timeToMinutes(t.plannedStartTime);
+                    return (
+                      <TimelineBlock
+                        key={t.id}
+                        style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + (t.plannedMinutes || 0)) }}
+                        onClick={() => handleTimelineBlockClick(t.id)}
+                        title={`${t.name}（${formatTimeHM(t.plannedStartTime)}〜）`}
+                      >
+                        {t.name}
+                      </TimelineBlock>
+                    );
+                  })
+                ) : isTodaySelected ? (
+                  <>
+                    {(selectedDayDoc?.tasks || [])
+                      .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
+                      .map((t) => {
+                        const start = timeToMinutes(t.plannedStartTime);
+                        return (
+                          <TimelineBlock
+                            key={t.id}
+                            style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
+                            onClick={() => handleTimelineBlockClick(t.id)}
+                            title={t.name}
+                          >
+                            {t.name}
+                          </TimelineBlock>
+                        );
+                      })}
+                    {scheduleCheck.gaps.map((g) => (
+                      <TimelineGapBlock
+                        key={`gap_${g.start}`}
+                        $alert
+                        style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
+                      >
+                        {g.minutes >= 20 ? `空き${g.minutes}分` : ''}
+                      </TimelineGapBlock>
+                    ))}
+                  </>
+                ) : (
+                  <TimelinePlaceholder>この日は予定が確定されていません</TimelinePlaceholder>
+                )}
+              </TimelineColumn>
+              <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
+                {Array.from({ length: 16 }, (_, i) => 9 + i).map((h) => (
+                  <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
+                ))}
+                {actualBlocks.map((b) => (
+                  <TimelineBlock
+                    key={b.key}
+                    $variant={b.variant}
+                    style={{ top: timelineTopPx(b.startMin), height: timelineHeightPx(b.startMin, b.endMin) }}
+                    onClick={() => handleTimelineBlockClick(b.taskId)}
+                    title={b.name}
+                  >
+                    {b.name}
+                  </TimelineBlock>
+                ))}
+                {freeGaps.map((g) => (
+                  <TimelineGapBlock
+                    key={`free_${g.start}`}
+                    style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
+                  >
+                    {g.minutes >= 20 ? `${g.minutes}分` : ''}
+                  </TimelineGapBlock>
+                ))}
+                {isTodaySelected && (
+                  <TimelineNowLine style={{ top: timelineTopPx(minutesFromMidnight(now)) }} />
+                )}
+              </TimelineColumn>
+            </TimelineGrid>
+          </>
+        )}
       </Section>
 
       <Section>
@@ -1834,86 +2252,85 @@ const DailyTimerPage = () => {
         ) : dayDocs.length === 0 ? (
           <EmptyText>この日のタスクはまだ登録されていません</EmptyText>
         ) : (
-          dayDocs.map((dayDoc) => (
-            <RepSection key={dayDoc.id}>
-              <RepHeader><FiUser size={14} /> {dayDoc.representative}</RepHeader>
-              <TaskList>
-                {getDisplayTasks(dayDoc).map((task) => (
-                  <React.Fragment key={task.id}>
-                    <RowDragWrap
-                      $dragging={
-                        dragItem?.rep === dayDoc.representative && dragItem?.taskId === task.id
-                      }
-                      $dropBefore={
-                        dropIndicator?.rep === dayDoc.representative &&
-                        dropIndicator?.taskId === task.id &&
-                        dropIndicator.before
-                      }
-                      $dropAfter={
-                        dropIndicator?.rep === dayDoc.representative &&
-                        dropIndicator?.taskId === task.id &&
-                        !dropIndicator.before
-                      }
-                      onDragOver={handleRowDragOver(dayDoc.representative, task.id)}
-                      onDrop={handleRowDrop(dayDoc, task.id)}
-                    >
-                      <DragHandle
-                        draggable
-                        onDragStart={handleDragStart(dayDoc.representative, task.id)}
-                        onDragEnd={handleDragEnd}
-                        title="ドラッグで並び替え"
-                      >
-                        <FiMenu size={14} />
-                      </DragHandle>
-                      {renderTaskRow(dayDoc.representative, task)}
-                    </RowDragWrap>
-                    {insertForm &&
-                      insertForm.rep === dayDoc.representative &&
-                      insertForm.afterTaskId === task.id && (
-                        <TaskRow>
-                          <FormLabel>開始</FormLabel>
-                          <TimeInput
-                            type="time"
-                            value={insertForm.startTime}
-                            onChange={(e) => updateInsertForm('startTime', e.target.value)}
-                          />
-                          <Input
-                            placeholder="タスク名を入力..."
-                            value={insertForm.name}
-                            onChange={(e) => updateInsertForm('name', e.target.value)}
-                            onKeyDown={(e) => { if (e.key === 'Enter') handleInsertSave(); }}
-                            autoFocus
-                          />
-                          {PRESET_MINUTES.map((min) => (
-                            <MinutesChip
-                              key={min}
-                              $selected={insertForm.minutes !== '' && Number(insertForm.minutes) === min}
-                              onClick={() => toggleInsertMinutesChip(min)}
-                            >
-                              {min}分
-                            </MinutesChip>
-                          ))}
-                          <MinutesInput
-                            type="number"
-                            min="1"
-                            step="1"
-                            placeholder="分"
-                            value={insertForm.minutes}
-                            onChange={(e) => updateInsertForm('minutes', e.target.value)}
-                          />
-                          <AddButton onClick={handleInsertSave} disabled={!canInsert}>
-                            <FiPlus size={14} /> 追加
-                          </AddButton>
-                          <CancelButton onClick={() => setInsertForm(null)} disabled={saving}>
-                            キャンセル
-                          </CancelButton>
-                        </TaskRow>
-                      )}
-                  </React.Fragment>
-                ))}
-              </TaskList>
-            </RepSection>
-          ))
+          dayDocs.map((dayDoc) => {
+            const untimed = getUntimedTasks(dayDoc.tasks || []);
+            const timedRows = buildTimedRowsWithGaps(dayDoc.tasks || []);
+            return (
+              <RepSection key={dayDoc.id}>
+                <RepHeader>
+                  <FiUser size={14} /> {dayDoc.representative}
+                  {dayDoc.planSnapshot && (
+                    <ConfirmedTag>
+                      <FiCheckCircle size={12} /> 予定確定済み（{formatClock(toMillis(dayDoc.planSnapshot.confirmedAt))}）
+                    </ConfirmedTag>
+                  )}
+                </RepHeader>
+                {untimed.length > 0 && (
+                  <>
+                    <UntimedLabel>時刻未定</UntimedLabel>
+                    <TaskList>
+                      {untimed.map((task) => renderTaskRow(dayDoc, task))}
+                    </TaskList>
+                  </>
+                )}
+                <TaskList>
+                  {timedRows.map((row) => (
+                    row.type === 'task' ? (
+                      renderTaskRow(dayDoc, row.task)
+                    ) : (
+                      <React.Fragment key={`gap_${dayDoc.id}_${row.gap.start}`}>
+                        <GapRow>
+                          <GapLabel>
+                            空き {row.gap.minutes}分（{minutesToTime(row.gap.start)}〜{minutesToTime(row.gap.end)}）
+                          </GapLabel>
+                          <GapActions>
+                            <GapButton onClick={() => quickFillGap(dayDoc.representative, row.gap, '休憩')}>
+                              休憩で埋める
+                            </GapButton>
+                            <GapButton onClick={() => quickFillGap(dayDoc.representative, row.gap, '移動')}>
+                              移動で埋める
+                            </GapButton>
+                            <GapButton onClick={() => beginGapInsert(dayDoc.representative, row.gap)}>
+                              ここにタスクを追加
+                            </GapButton>
+                          </GapActions>
+                        </GapRow>
+                        {insertForm &&
+                          insertForm.rep === dayDoc.representative &&
+                          insertForm.gapStart === row.gap.start && (
+                            <TaskRow>
+                              <FormLabel>開始 {formatTimeHM(minutesToTime(insertForm.gapStart))}</FormLabel>
+                              <Input
+                                placeholder="タスク名を入力..."
+                                value={insertForm.name}
+                                onChange={(e) => updateInsertForm('name', e.target.value)}
+                                onKeyDown={(e) => { if (e.key === 'Enter') handleInsertSave(); }}
+                                autoFocus
+                              />
+                              <MinutesInput
+                                type="number"
+                                min="1"
+                                step="1"
+                                placeholder="分"
+                                value={insertForm.minutes}
+                                onChange={(e) => updateInsertForm('minutes', e.target.value)}
+                              />
+                              <FormLabel>分</FormLabel>
+                              <AddButton onClick={handleInsertSave} disabled={!canInsert}>
+                                <FiPlus size={14} /> 追加
+                              </AddButton>
+                              <CancelButton onClick={() => setInsertForm(null)} disabled={saving}>
+                                キャンセル
+                              </CancelButton>
+                            </TaskRow>
+                          )}
+                      </React.Fragment>
+                    )
+                  ))}
+                </TaskList>
+              </RepSection>
+            );
+          })
         )}
       </Section>
 
@@ -1980,6 +2397,38 @@ const DailyTimerPage = () => {
               )}
             </ReviewSummaryBlock>
             <ReviewSummaryBlock>
+              <ReviewSummaryTitle>空白だった時間（何も動いていなかった時間）</ReviewSummaryTitle>
+              {freeGaps.length === 0 ? (
+                <ReviewSummaryEmpty>空白の時間はありませんでした</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {freeGaps.map((g) => (
+                    <TaskRow key={`free_${g.start}`}>
+                      <TaskName>{minutesToTime(g.start)}〜{minutesToTime(g.end)}</TaskName>
+                      <ResultText>{g.minutes}分</ResultText>
+                    </TaskRow>
+                  ))}
+                  <ReviewSummaryEmpty>合計 {freeGapMinutesTotal}分</ReviewSummaryEmpty>
+                </TaskList>
+              )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
+              <ReviewSummaryTitle>後から追加されたタスク（朝の予定確定後に追加したもの）</ReviewSummaryTitle>
+              {addedAfterConfirmTasks.length === 0 ? (
+                <ReviewSummaryEmpty>後から追加したタスクはありません</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {addedAfterConfirmTasks.map((task) => (
+                    <TaskRow key={task.id}>
+                      <TaskName>{task.name}</TaskName>
+                      <AddedLaterBadge>後から追加</AddedLaterBadge>
+                    </TaskRow>
+                  ))}
+                  <ReviewSummaryEmpty>合計 {addedAfterConfirmMinutesTotal}分使用</ReviewSummaryEmpty>
+                </TaskList>
+              )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
               <ReviewSummaryTitle>NA（次のアクション・保存時にまとめて登録されます）</ReviewSummaryTitle>
               {nextDayPlan.length === 0 ? (
                 <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
@@ -2043,7 +2492,13 @@ const DailyTimerPage = () => {
             {showScheduleGapField && CONDITIONAL_REVIEW_FIELDS.map((field) => (
               <ReviewField key={field.key}>
                 <ReviewLabel htmlFor={`review-${field.key}`}>
-                  {field.label}（未完了タスクの予定時間合計が{unfinishedPlannedMinutesTotal}分あります）
+                  {field.label}
+                  （
+                  {unfinishedPlannedMinutesTotal >= 120 && `未完了タスクの予定時間合計が${unfinishedPlannedMinutesTotal}分`}
+                  {unfinishedPlannedMinutesTotal >= 120 && freeGapMinutesTotal >= 60 && '、'}
+                  {freeGapMinutesTotal >= 60 && `空白の時間が合計${freeGapMinutesTotal}分`}
+                  あります
+                  ）
                 </ReviewLabel>
                 <ReviewTextarea
                   id={`review-${field.key}`}
