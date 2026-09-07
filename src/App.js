@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget, FiClock } from 'react-icons/fi';
+import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget, FiClock, FiShoppingBag } from 'react-icons/fi';
 import { analyzeMeetingNotes, isGPTServiceAvailable, debugAPIStatus, checkAPIKeyStatus } from './services/gptService.js';
 import LoginPage from './components/LoginPage.js';
 import ProtectedRoute from './components/ProtectedRoute.js';
@@ -35,6 +35,7 @@ import AccountDealsListPage from './components/AccountDealsListPage.js';
 import KeyAccountMasterPage from './components/KeyAccountMasterPage.js';
 import DailyTimerPage from './components/DailyTimerPage.js';
 import PipelineForecastPage from './components/PipelineForecastPage.js';
+import MallCalendarPage from './components/MallCalendarPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import { db } from './firebase.js';
@@ -511,6 +512,12 @@ function AdminApp() {
             </NavLink>
           </NavItem>
           <NavItem>
+            <NavLink to="/mall-calendar" onClick={closeMobileMenu}>
+              <FiShoppingBag />
+              モールカレンダー
+            </NavLink>
+          </NavItem>
+          <NavItem>
             <NavLink to="/weekly-report" onClick={closeMobileMenu}>
               <FiClipboard />
               週報
@@ -598,6 +605,7 @@ function AdminApp() {
           <Route path="/key-accounts" element={<KeyAccountMasterPage />} />
           <Route path="/daily-timer" element={<DailyTimerPage />} />
           <Route path="/pipeline-forecast" element={<PipelineForecastPage />} />
+          <Route path="/mall-calendar" element={<MallCalendarPage />} />
         </Routes>
       </MainContent>
       </AppContainer>

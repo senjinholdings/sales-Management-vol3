@@ -89,6 +89,7 @@ const routeConfig = {
   '/next-action-management': { name: 'NA管理', icon: null },
   '/daily-timer': { name: '日報', icon: null },
   '/weekly-report': { name: '週報', icon: null },
+  '/mall-calendar': { name: 'モールカレンダー', icon: null },
   
   // パートナー用ルート
   '/partner': { name: 'ホーム', icon: FiHome },

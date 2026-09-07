@@ -172,3 +172,13 @@ export const PROJECT_STAGES = [
   { no: 6, name: '初稿の共有', standardDays: 1 },
   { no: 7, name: 'プロジェクト開始', standardDays: null },
 ];
+
+// モールカレンダー: 対象モール（3種）
+export const MALLS = ['Amazon', '楽天', 'Qoo10'];
+
+// モールごとの表示色
+export const MALL_COLORS = {
+  'Amazon': '#FF9900',
+  '楽天': '#BF0000',
+  'Qoo10': '#7B2D8E'
+};
