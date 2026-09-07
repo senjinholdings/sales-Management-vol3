@@ -91,17 +91,17 @@ const getWeekId = (date) => {
   return `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
 };
 
-/** 直近12週＋今週の選択肢を作る（表示は月曜日の日付のみ。年・範囲表記は出さない） */
+/** 直近12週＋今週＋来週の選択肢を作る（来週のページは常に用意しておき、事前に見られるようにする） */
 const generateWeekOptions = () => {
   const options = [];
   const today = new Date();
-  for (let i = 0; i < 13; i++) {
+  for (let i = -1; i < 13; i++) {
     const d = new Date(today);
     d.setDate(d.getDate() - i * 7);
     const { start } = getWeekRange(d);
     options.push({
       id: getWeekId(d),
-      label: `${formatMonthDay(start)}週${i === 0 ? '（今週）' : ''}`
+      label: `${formatMonthDay(start)}週${i === 0 ? '（今週）' : i === -1 ? '（来週）' : ''}`
     });
   }
   return options;
