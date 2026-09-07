@@ -42,6 +42,8 @@ import {
   timeToMinutes,
   PLAN_WINDOW_START
 } from '../utils/dailyTimerSchedule.js';
+import { fetchAllNextActions, addSalesEntry, updateSalesEntryStatus } from '../services/projectService.js';
+import { isStageTargetProject } from '../utils/stageProgress.js';
 
 // ============================================
 // Styled Components
@@ -135,6 +137,45 @@ const CalendarOverlay = styled.div`
   position: fixed;
   inset: 0;
   z-index: 90;
+`;
+
+// 終了時の次NA入力モーダル（NA管理のdoneドロップ時の必須入力と同じ見た目）
+const EndNaModalOverlay = styled.div`
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+`;
+
+const EndNaModalContent = styled.div`
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+  padding: 1.5rem;
+  width: 420px;
+  max-width: 90vw;
+`;
+
+const EndNaModalTitle = styled.h3`
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+  color: #2c3e50;
+`;
+
+const EndNaModalHint = styled.p`
+  font-size: 0.8rem;
+  color: #e67e22;
+  margin: 0 0 1rem;
+`;
+
+const EndNaModalActions = styled.div`
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
 `;
 
 const CalendarPopover = styled.div`
@@ -731,6 +772,17 @@ const AddedLaterBadge = styled.span`
   white-space: nowrap;
 `;
 
+// 案件のネクストアクションから追加したタスクの目印（終了時に次のNA入力が必須になる）
+const NaLinkBadge = styled.span`
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #6c5ce7;
+  background: #ecebfd;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
 // ---- タイムライン（左＝朝の予定 / 右＝実績） ----
 
 const TimelineGrid = styled.div`
@@ -1246,6 +1298,17 @@ const DailyTimerPage = () => {
   const [nextDayTaskDate, setNextDayTaskDate] = useState('');
   const [initialNextDayPlan, setInitialNextDayPlan] = useState([]);
 
+  // 期日が翌日の案件ネクストアクション（振り返りを開いた時に取得し、ワンクリックでNAタスク一覧に追加できる）
+  const [tomorrowDueNas, setTomorrowDueNas] = useState([]);
+
+  // 案件のネクストアクションから来たタスクを終了する時の「次のNA」入力モーダル
+  // （NA管理のdoneドロップ時の必須入力と同じ考え方。確定まで何も書き込まないので、
+  // キャンセルすればタイマーは動いたままになる）
+  const [endNaModal, setEndNaModal] = useState(null); // { rep, task }
+  const [endNaContent, setEndNaContent] = useState('');
+  const [endNaDueDate, setEndNaDueDate] = useState('');
+  const [endNaSaving, setEndNaSaving] = useState(false);
+
   // カレンダー
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -1354,6 +1417,51 @@ const DailyTimerPage = () => {
     setNextDayPlan(seeded);
     setInitialNextDayPlan(seeded);
   }, [unfinishedTasks, loadedDate, representative]);
+
+  // 振り返りを開いた時に、翌日が期日の案件ネクストアクションを拾ってくる（NAタスク一覧にワンクリックで追加できるように）。
+  // ステージ連動の特殊なNA（完了すると自動で次のステージNAが生成される）は対象から除く
+  useEffect(() => {
+    if (!reviewOpen || !loadedDate) return;
+    const tomorrowDate = shiftDateKey(loadedDate, 1);
+    let cancelled = false;
+    (async () => {
+      try {
+        const all = await fetchAllNextActions();
+        if (cancelled) return;
+        const due = all.filter((na) =>
+          na.actionDueDate === tomorrowDate &&
+          (na.actionStatus || 'active') !== 'done' &&
+          (na.actionAssignee || '').includes(REPRESENTATIVE_FILTER) &&
+          !(na.stageNaStage != null && isStageTargetProject(na))
+        );
+        setTomorrowDueNas(due);
+      } catch (error) {
+        console.error('翌日期日の案件ネクストアクション取得エラー:', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [reviewOpen, loadedDate]);
+
+  // 案件のネクストアクションをNAタスク一覧に追加する（追加後は候補一覧から消す）
+  const addNaToNextDayPlan = (na) => {
+    const targetDate = loadedDate ? shiftDateKey(loadedDate, 1) : '';
+    setNextDayPlan((prev) => [...prev, {
+      localId: `na_${na.id}`,
+      name: `${na.companyName || na.productName || '(案件)'}: ${na.actionContent}`,
+      plannedMinutes: null,
+      plannedStartTime: null,
+      fromCarryover: false,
+      date: targetDate,
+      naLink: {
+        projectId: na.projectId,
+        recordId: na.recordId,
+        subCol: na.subCol,
+        entryId: na.id,
+        actionAssignee: na.actionAssignee || ''
+      }
+    }]);
+    setTomorrowDueNas((prev) => prev.filter((n) => n.id !== na.id));
+  };
 
   // NAタスク一覧を、繰越で自動セットされた時点から変更したかどうか
   // （文字での識別のため区切り文字を含む値が来ても壊れないよう配列長も合わせて見る）
@@ -1586,6 +1694,43 @@ const DailyTimerPage = () => {
   const handleEnd = (rep, taskId) =>
     runMutation(() => endTask(rep, selectedDate, taskId));
 
+  // 案件のネクストアクションから来たタスク（naLink付き）は、終了前に次のNA入力を必須にする
+  // （NA管理のdoneドロップ時の必須入力と同じ考え方）。それ以外のタスクは今まで通りそのまま終了する
+  const handleEndClick = (rep, task) => {
+    if (task.naLink) {
+      setEndNaContent('');
+      setEndNaDueDate('');
+      setEndNaModal({ rep, task });
+      return;
+    }
+    handleEnd(rep, task.id);
+  };
+
+  const handleConfirmEndNa = async () => {
+    if (!endNaModal || !endNaContent.trim() || !endNaDueDate) return;
+    setEndNaSaving(true);
+    try {
+      const { rep, task } = endNaModal;
+      const { projectId, recordId, subCol, entryId, actionAssignee } = task.naLink;
+      await updateSalesEntryStatus(projectId, recordId, entryId, 'done', subCol);
+      await addSalesEntry(projectId, recordId, {
+        memoContent: '',
+        actionContent: endNaContent.trim(),
+        actionDueDate: endNaDueDate,
+        actionAssignee: actionAssignee || rep,
+        actionStatus: 'active'
+      }, subCol);
+      await endTask(rep, selectedDate, task.id);
+      setEndNaModal(null);
+      await loadDayDocs(selectedDate);
+    } catch (error) {
+      console.error('タイマー終了時の次NA登録エラー:', error);
+      window.alert('次のネクストアクションの登録に失敗しました');
+    } finally {
+      setEndNaSaving(false);
+    }
+  };
+
   const handleDelete = (rep, taskId) =>
     runMutation(() => deleteTask(rep, selectedDate, taskId));
 
@@ -1680,7 +1825,8 @@ const DailyTimerPage = () => {
         byDate.get(date).push({
           name: t.name,
           plannedMinutes: t.plannedMinutes,
-          plannedStartTime: t.plannedStartTime
+          plannedStartTime: t.plannedStartTime,
+          ...(t.naLink ? { naLink: t.naLink } : {})
         });
       });
       // 今回のNA一覧に1件も無い日は変更しない。デフォルト日（翌日）だけは、
@@ -1847,6 +1993,7 @@ const DailyTimerPage = () => {
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
+          {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
           {scheduleLabel && <PlannedBadge>{scheduleLabel}</PlannedBadge>}
           <ActionButton
             onClick={() => handleStart(rep, task.id)}
@@ -1888,11 +2035,12 @@ const DailyTimerPage = () => {
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
+          {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           {hasPlanned && <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>}
           <ElapsedText $overdue={overdue}>経過 {formatElapsed(elapsedMs)}</ElapsedText>
           {overdue && <OverdueBadge>超過{overdueMinutes}分</OverdueBadge>}
-          <ActionButton $variant="stop" onClick={() => handleEnd(rep, task.id)} disabled={saving}>
+          <ActionButton $variant="stop" onClick={() => handleEndClick(rep, task)} disabled={saving}>
             <FiSquare size={12} /> 終了
           </ActionButton>
           {editIcon}
@@ -1928,6 +2076,7 @@ const DailyTimerPage = () => {
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
+          {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
           {resumeButton}
@@ -1954,6 +2103,7 @@ const DailyTimerPage = () => {
         <TaskName>{task.name}</TaskName>
         {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
         {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
+        {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
         {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
         <ResultText $overdue={overdue}>
           予定{task.plannedMinutes}分 / 実績{formatActual(actualMs)}
@@ -2418,6 +2568,25 @@ const DailyTimerPage = () => {
               )}
             </ReviewSummaryBlock>
             <ReviewSummaryBlock>
+              <ReviewSummaryTitle>期日が翌日の案件ネクストアクション（ワンクリックでNAタスクに追加）</ReviewSummaryTitle>
+              {tomorrowDueNas.length === 0 ? (
+                <ReviewSummaryEmpty>期日が翌日の案件ネクストアクションはありません</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {tomorrowDueNas.map((na) => (
+                    <TaskRow key={na.id}>
+                      <TaskName>
+                        {na.companyName || na.productName || '(案件)'}: {na.actionContent}
+                      </TaskName>
+                      <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
+                        <FiPlus size={14} /> 追加
+                      </AddButton>
+                    </TaskRow>
+                  ))}
+                </TaskList>
+              )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
               <ReviewSummaryTitle>NA（次のアクション・保存時にまとめて登録されます）</ReviewSummaryTitle>
               {nextDayPlan.length === 0 ? (
                 <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
@@ -2426,6 +2595,7 @@ const DailyTimerPage = () => {
                   {nextDayPlan.map((t) => (
                     <TaskRow key={t.localId}>
                       <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
+                      {t.naLink && <NaLinkBadge>案件NA</NaLinkBadge>}
                       <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
                       {t.plannedMinutes != null && (
                         <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
@@ -2516,6 +2686,44 @@ const DailyTimerPage = () => {
           </ReviewBody>
         )}
       </Section>
+
+      {endNaModal && (
+        <EndNaModalOverlay onClick={(e) => { if (e.target === e.currentTarget) setEndNaModal(null); }}>
+          <EndNaModalContent>
+            <EndNaModalTitle>次のネクストアクションを入力してください</EndNaModalTitle>
+            <EndNaModalHint>
+              「{endNaModal.task.name}」はこの案件のネクストアクションから追加したタスクです。
+              次のネクストアクションを入力するまでタイマーは終了しません。キャンセルすると終了自体が取り消されます。
+            </EndNaModalHint>
+            <ReviewField>
+              <ReviewLabel>次のNA内容 *</ReviewLabel>
+              <ReviewTextarea
+                value={endNaContent}
+                onChange={(e) => setEndNaContent(e.target.value)}
+              />
+            </ReviewField>
+            <ReviewField>
+              <ReviewLabel>期日 *</ReviewLabel>
+              <DateInput
+                type="date"
+                value={endNaDueDate}
+                onChange={(e) => setEndNaDueDate(e.target.value)}
+              />
+            </ReviewField>
+            <EndNaModalActions>
+              <CancelButton onClick={() => setEndNaModal(null)} disabled={endNaSaving}>
+                キャンセル（終了を取り消す）
+              </CancelButton>
+              <AddButton
+                onClick={handleConfirmEndNa}
+                disabled={!endNaContent.trim() || !endNaDueDate || endNaSaving}
+              >
+                <FiCheck size={14} /> {endNaSaving ? '保存中...' : '終了して次のNAを登録'}
+              </AddButton>
+            </EndNaModalActions>
+          </EndNaModalContent>
+        </EndNaModalOverlay>
+      )}
     </PageContainer>
   );
 };

@@ -22,7 +22,9 @@ import { computeScheduleGaps } from '../utils/dailyTimerSchedule.js';
  *             source("planned"|"adhoc"、任意): 前日の振り返りで計画されたタスクか、
  *               当日その場で追加した臨時タスクかの区別。未設定の既存データは動作に影響なし,
  *             addedAfterConfirm(boolean、任意): planSnapshot確定後に追加されたタスクの目印。
- *               確定前に追加されたタスク・確定自体をしていない日は付かない }],
+ *               確定前に追加されたタスク・確定自体をしていない日は付かない,
+ *             naLink({projectId,recordId,subCol,entryId,actionAssignee}、任意): 案件のネクストアクションから
+ *               追加したタスクの参照。付いているタスクは終了時に次のNA入力を必須にする（DailyTimerPage.js参照） }],
  *   planSnapshot({ tasks: [{id,name,plannedMinutes,plannedStartTime}], confirmedAt: Timestamp }、任意):
  *     「予定を確定する」ボタン押下時点のtasksのスナップショット（confirmDayPlan参照）。
  *     以後に追加したタスクはaddedAfterConfirmが立ち、確定前の朝の姿と区別できる。
@@ -455,7 +457,9 @@ export const planNextDayTasks = async (representative, date, plannedTasks) => {
       plannedMinutes: p.plannedMinutes ?? null,
       plannedStartTime: p.plannedStartTime ?? null,
       sessions: [],
-      source: 'planned'
+      source: 'planned',
+      // 案件のネクストアクションから追加したタスクは、終了時に次のNA入力を求めるための参照を持たせる
+      ...(p.naLink ? { naLink: p.naLink } : {})
     }));
     await saveTasks(ref, representative, date, [...kept, ...newTasks]);
   } catch (error) {
