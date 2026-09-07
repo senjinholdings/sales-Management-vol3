@@ -894,7 +894,12 @@ function AccountDealsListPage() {
 
   // 新規追加
   const handleAddDeal = async () => {
+    const budgetNum = Number(addForm.expectedBudget);
     if (!addForm.companyName.trim() || !addForm.productName.trim()) return;
+    if (!addForm.expectedBudget || !Number.isFinite(budgetNum) || budgetNum <= 0) {
+      alert('想定予算を入力してください（0円は不可）');
+      return;
+    }
     try {
       setIsSaving(true);
       const newDeal = {
@@ -980,7 +985,12 @@ function AccountDealsListPage() {
 
   // 既存案件（すでに成約済みの取引）を直接追加。フェーズ1〜7のパイプラインを経由しない。
   const handleAddExistingDeal = async () => {
+    const existingBudgetNum = Number(addExistingForm.expectedBudget);
     if (!addExistingForm.companyName.trim() || !addExistingForm.productName.trim()) return;
+    if (!addExistingForm.expectedBudget || !Number.isFinite(existingBudgetNum) || existingBudgetNum <= 0) {
+      alert('想定予算を入力してください（0円は不可）');
+      return;
+    }
     try {
       setIsSaving(true);
       const today = new Date().toISOString().split('T')[0];
@@ -1128,6 +1138,11 @@ function AccountDealsListPage() {
 
   // 編集保存
   const handleEditSave = async () => {
+    const budgetNum = Number(editModal.deal?.expectedBudget);
+    if (!editModal.deal?.expectedBudget || !Number.isFinite(budgetNum) || budgetNum <= 0) {
+      alert('想定予算を入力してください（0円は不可）');
+      return;
+    }
     try {
       const updatedDeal = editModal.deal;
       const dealRef = doc(db, 'progressDashboard', updatedDeal.id);
@@ -1650,13 +1665,13 @@ function AccountDealsListPage() {
               </>
             )}
             <FormGroup>
-              <FormLabel>想定予算（円）</FormLabel>
+              <FormLabel>想定予算（円） *</FormLabel>
               <FormInput
                 type="number"
                 value={editModal.deal?.expectedBudget || ''}
                 onChange={e => setEditModal(prev => ({ ...prev, deal: { ...prev.deal, expectedBudget: e.target.value ? Number(e.target.value) : null } }))}
                 placeholder="例：1000000"
-                min="0"
+                min="1"
               />
             </FormGroup>
             <FormGroup>
@@ -1807,13 +1822,13 @@ function AccountDealsListPage() {
               </FormSelect>
             </FormGroup>
             <FormGroup>
-              <FormLabel>想定予算（円）</FormLabel>
+              <FormLabel>想定予算（円） *</FormLabel>
               <FormInput
                 type="number"
                 placeholder="例：1000000"
                 value={addForm.expectedBudget}
                 onChange={e => setAddForm(prev => ({ ...prev, expectedBudget: e.target.value }))}
-                min="0"
+                min="1"
               />
             </FormGroup>
             <FormGroup>
@@ -1833,7 +1848,7 @@ function AccountDealsListPage() {
               <ModalBtn
                 $primary
                 onClick={handleAddDeal}
-                disabled={!addForm.companyName.trim() || !addForm.productName.trim() || isSaving}
+                disabled={!addForm.companyName.trim() || !addForm.productName.trim() || !(Number(addForm.expectedBudget) > 0) || isSaving}
               >
                 {isSaving ? '保存中...' : '追加'}
               </ModalBtn>
@@ -1887,13 +1902,13 @@ function AccountDealsListPage() {
               </FormSelect>
             </FormGroup>
             <FormGroup>
-              <FormLabel>成約予算（円）</FormLabel>
+              <FormLabel>成約予算（円） *</FormLabel>
               <FormInput
                 type="number"
                 placeholder="例：1000000"
                 value={addExistingForm.expectedBudget}
                 onChange={e => setAddExistingForm(prev => ({ ...prev, expectedBudget: e.target.value }))}
-                min="0"
+                min="1"
               />
             </FormGroup>
             <ModalActions>
@@ -1901,7 +1916,7 @@ function AccountDealsListPage() {
               <ModalBtn
                 $primary
                 onClick={handleAddExistingDeal}
-                disabled={!addExistingForm.companyName.trim() || !addExistingForm.productName.trim() || isSaving}
+                disabled={!addExistingForm.companyName.trim() || !addExistingForm.productName.trim() || !(Number(addExistingForm.expectedBudget) > 0) || isSaving}
               >
                 {isSaving ? '保存中...' : '追加'}
               </ModalBtn>

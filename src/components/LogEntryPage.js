@@ -723,6 +723,14 @@ function LogEntryPage() {
       errors.proposalMenu = '提案メニューを選択してください';
     }
 
+    // 想定予算は新規登録時のみ必須（編集モードでは入力欄自体が無効化されているため対象外）
+    if (!isEditMode) {
+      const budgetNum = Number(formData.expectedBudget);
+      if (!formData.expectedBudget || !Number.isFinite(budgetNum) || budgetNum <= 0) {
+        errors.expectedBudget = '想定予算を入力してください（0円は不可）';
+      }
+    }
+
     if (!formData.representative) {
       errors.representative = '対応者を選択してください';
     }
@@ -1661,7 +1669,7 @@ function LogEntryPage() {
           <FormGroup>
             <Label>
               <FiFileText />
-              想定予算（円）
+              想定予算（円） {!isEditMode && '*'}
             </Label>
             <Input
               type="number"
@@ -1669,11 +1677,17 @@ function LogEntryPage() {
               value={formData.expectedBudget}
               onChange={handleInputChange}
               placeholder="例：1000000"
-              min="0"
+              min="1"
               style={{
+                ...(formErrors.expectedBudget ? { borderColor: '#e74c3c' } : {}),
                 ...(isEditMode ? { backgroundColor: '#f8f9fa', cursor: 'not-allowed' } : {})
               }}
             />
+            {formErrors.expectedBudget && (
+              <div style={{ color: '#e74c3c', fontSize: '0.875rem', marginTop: '0.25rem' }}>
+                {formErrors.expectedBudget}
+              </div>
+            )}
           </FormGroup>
 
           <FormGroup>

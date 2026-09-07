@@ -875,7 +875,12 @@ function AccountSalesDashboard() {
   }, [deals, selectedRepresentative]);
 
   const handleAddDeal = async () => {
+    const budgetNum = Number(addForm.expectedBudget);
     if (!addForm.companyName || !addForm.productName.trim()) return;
+    if (!addForm.expectedBudget || !Number.isFinite(budgetNum) || budgetNum <= 0) {
+      alert('想定予算を入力してください（0円は不可）');
+      return;
+    }
     setIsSaving(true);
     try {
       const newDeal = {
@@ -1273,18 +1278,18 @@ function AccountSalesDashboard() {
               onChange={(e) => setAddForm(prev => ({ ...prev, representative: e.target.value }))}
             />
 
-            <ModalLabel>想定予算（円）</ModalLabel>
+            <ModalLabel>想定予算（円） *</ModalLabel>
             <ModalInput
               type="number"
               value={addForm.expectedBudget}
               onChange={(e) => setAddForm(prev => ({ ...prev, expectedBudget: e.target.value }))}
               placeholder="例: 5000000"
-              min="0"
+              min="1"
             />
 
             <ModalButtons>
               <ModalButton className="cancel" onClick={() => setShowAddModal(false)}>キャンセル</ModalButton>
-              <ModalButton className="save" onClick={handleAddDeal} disabled={isSaving}>登録</ModalButton>
+              <ModalButton className="save" onClick={handleAddDeal} disabled={!addForm.companyName || !addForm.productName.trim() || !(Number(addForm.expectedBudget) > 0) || isSaving}>登録</ModalButton>
             </ModalButtons>
           </ModalContent>
         </Modal>
