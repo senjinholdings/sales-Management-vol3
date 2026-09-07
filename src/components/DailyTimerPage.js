@@ -1591,11 +1591,6 @@ const DailyTimerPage = () => {
 
   // ---- 空き時間の埋め方 ----
 
-  // 隙間ぴったりの「休憩」「移動」タスクをワンタッチで追加する
-  const quickFillGap = (rep, gap, name) => {
-    runMutation(() => addTask(rep, selectedDate, name, gap.minutes, minutesToTime(gap.start)));
-  };
-
   const beginGapInsert = (rep, gap) => {
     setEditingTask(null);
     setInsertForm({ rep, gapStart: gap.start, name: '', minutes: String(Math.round(gap.minutes)) });
@@ -2284,12 +2279,6 @@ const DailyTimerPage = () => {
                             空き {row.gap.minutes}分（{minutesToTime(row.gap.start)}〜{minutesToTime(row.gap.end)}）
                           </GapLabel>
                           <GapActions>
-                            <GapButton onClick={() => quickFillGap(dayDoc.representative, row.gap, '休憩')}>
-                              休憩で埋める
-                            </GapButton>
-                            <GapButton onClick={() => quickFillGap(dayDoc.representative, row.gap, '移動')}>
-                              移動で埋める
-                            </GapButton>
                             <GapButton onClick={() => beginGapInsert(dayDoc.representative, row.gap)}>
                               ここにタスクを追加
                             </GapButton>
