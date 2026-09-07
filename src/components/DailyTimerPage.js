@@ -391,9 +391,9 @@ const TaskRow = styled.div`
   gap: 0.75rem;
   padding: 0.6rem 0.75rem;
   border-radius: 6px;
-  border: 1px solid ${(props) => (props.$urgent ? '#e67e22' : props.$overdue ? '#e74c3c' : props.$running ? '#3498db' : '#e0e0e0')};
-  border-width: ${(props) => (props.$urgent ? '2px' : '1px')};
-  background: ${(props) => (props.$urgent ? '#fef3e6' : props.$overdue ? '#fdecea' : props.$running ? '#eaf4fd' : '#f8f9fa')};
+  border: 1px solid ${(props) => (props.$overlap ? '#c0392b' : props.$urgent ? '#e67e22' : props.$overdue ? '#e74c3c' : props.$running ? '#3498db' : '#e0e0e0')};
+  border-width: ${(props) => (props.$overlap || props.$urgent ? '2px' : '1px')};
+  background: ${(props) => (props.$overlap ? '#fceceb' : props.$urgent ? '#fef3e6' : props.$overdue ? '#fdecea' : props.$running ? '#eaf4fd' : '#f8f9fa')};
   flex-wrap: wrap;
   box-shadow: ${(props) => (props.$highlighted ? '0 0 0 3px #f1c40f' : 'none')};
   transition: box-shadow 0.3s;
@@ -453,6 +453,18 @@ const OverdueBadge = styled.span`
   font-weight: 600;
   color: white;
   background: #e74c3c;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  white-space: nowrap;
+`;
+
+// 予定時刻が他のタスクと重なっているタスクの目印（「予定を確定する」がこの重なりのせいで
+// 押せないことに気づけるよう、タスク一覧のその場で分かるようにする）
+const OverlapBadge = styled.span`
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: white;
+  background: #c0392b;
   padding: 0.15rem 0.5rem;
   border-radius: 4px;
   white-space: nowrap;
@@ -1673,6 +1685,16 @@ const DailyTimerPage = () => {
     () => computeScheduleGaps(selectedDayDoc?.tasks || []),
     [selectedDayDoc]
   );
+  // 時刻が重なっているタスクのID集合（一覧のその場で赤く目立たせ、「予定を確定する」が
+  // 押せない原因にすぐ気づけるようにする）
+  const overlappingTaskIds = useMemo(() => {
+    const ids = new Set();
+    scheduleCheck.overlaps.forEach((o) => {
+      ids.add(o.a.id);
+      ids.add(o.b.id);
+    });
+    return ids;
+  }, [scheduleCheck]);
 
   // 実績（sessions）を1区間=1ブロックとして展開する（タイムライン右側用）。実行中の区間は現在時刻まで伸ばす
   const actualBlocks = useMemo(() => {
@@ -2179,6 +2201,8 @@ const DailyTimerPage = () => {
     const attachRowRef = (el) => { taskRowRefs.current[task.id] = el; };
     // 確定前は緊急クエスト以外の開始を止める（当日分のみ。過去日・翌日以降はロックしない）
     const startLocked = isTodaySelected && !dayDoc.planSnapshot && !task.isUrgentTask;
+    // 予定時刻が他のタスクと重なっているか（「予定を確定する」が押せない原因にその場で気づけるように）
+    const isOverlapping = overlappingTaskIds.has(task.id);
 
     // 時刻のインライン編集モード
     if (editingTask && editingTask.rep === rep && editingTask.taskId === task.id) {
@@ -2300,13 +2324,14 @@ const DailyTimerPage = () => {
     // 未開始
     if (timing.status === 'notStarted') {
       return (
-        <TaskRow key={task.id} ref={attachRowRef} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
+        <TaskRow key={task.id} ref={attachRowRef} $overlap={isOverlapping} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
           <TaskName>{task.name}</TaskName>
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
           {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
+          {isOverlapping && <OverlapBadge title="他のタスクと予定時刻が重なっています（このままでは予定を確定できません）">⚠️時刻重複</OverlapBadge>}
           {scheduleLabel && <PlannedBadge>{scheduleLabel}</PlannedBadge>}
           <ActionButton
             onClick={() => handleStart(rep, task.id)}
@@ -2343,13 +2368,14 @@ const DailyTimerPage = () => {
       const overdue = hasPlanned && elapsedMs > plannedMs;
       const overdueMinutes = overdue ? Math.ceil((elapsedMs - plannedMs) / 60000) : 0;
       return (
-        <TaskRow key={task.id} ref={attachRowRef} $running $overdue={overdue} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
+        <TaskRow key={task.id} ref={attachRowRef} $running $overdue={overdue} $overlap={isOverlapping} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
           <TaskName>{task.name}</TaskName>
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
           {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
+          {isOverlapping && <OverlapBadge title="他のタスクと予定時刻が重なっています（このままでは予定を確定できません）">⚠️時刻重複</OverlapBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           {hasPlanned && <PlannedBadge>予定 {task.plannedMinutes}分</PlannedBadge>}
           <ElapsedText $overdue={overdue}>経過 {formatElapsed(elapsedMs)}</ElapsedText>
@@ -2385,13 +2411,14 @@ const DailyTimerPage = () => {
     // 予定なしの行は超過判定をせず実績のみ表示（妥当性は判定不能で「−」）
     if (!hasPlanned) {
       return (
-        <TaskRow key={task.id} ref={attachRowRef} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
+        <TaskRow key={task.id} ref={attachRowRef} $overlap={isOverlapping} $urgent={task.isUrgentTask} $highlighted={isHighlighted}>
           <TaskName>{task.name}</TaskName>
           {task.isUrgentTask && <UrgentBadge>🚨緊急クエスト</UrgentBadge>}
           {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
           {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
           {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
           {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
+          {isOverlapping && <OverlapBadge title="他のタスクと予定時刻が重なっています（このままでは予定を確定できません）">⚠️時刻重複</OverlapBadge>}
           {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
           <ResultText>実績{formatActual(actualMs)}</ResultText>
           {resumeButton}
@@ -2414,12 +2441,13 @@ const DailyTimerPage = () => {
     }
 
     return (
-      <TaskRow key={task.id} ref={attachRowRef} $overdue={overdue} $highlighted={isHighlighted}>
+      <TaskRow key={task.id} ref={attachRowRef} $overdue={overdue} $overlap={isOverlapping} $highlighted={isHighlighted}>
         <TaskName>{task.name}</TaskName>
         {task.isReviewTask && <FixedBadge>固定</FixedBadge>}
         {task.addedAfterConfirm && <AddedLaterBadge>後から追加</AddedLaterBadge>}
         {task.naLink && <NaLinkBadge title="案件のネクストアクションから追加したタスク">案件NA</NaLinkBadge>}
-          {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
+        {task.meetingLink && <MeetingLinkBadge title="議事録が自動記録されるミーティング">🎥議事録自動記録</MeetingLinkBadge>}
+        {isOverlapping && <OverlapBadge title="他のタスクと予定時刻が重なっています（このままでは予定を確定できません）">⚠️時刻重複</OverlapBadge>}
         {startGapLabel && <PlannedBadge>{startGapLabel}</PlannedBadge>}
         <ResultText $overdue={overdue}>
           予定{task.plannedMinutes}分 / 実績{formatActual(actualMs)}
