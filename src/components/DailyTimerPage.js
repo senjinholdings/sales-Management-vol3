@@ -1298,8 +1298,9 @@ const DailyTimerPage = () => {
   const [nextDayTaskDate, setNextDayTaskDate] = useState('');
   const [initialNextDayPlan, setInitialNextDayPlan] = useState([]);
 
-  // 期日が翌日の案件ネクストアクション（振り返りを開いた時に取得し、ワンクリックでNAタスク一覧に追加できる）
-  const [tomorrowDueNas, setTomorrowDueNas] = useState([]);
+  // 期日が3日以内の案件ネクストアクション（振り返りを開いた時に取得し、ワンクリックでNAタスク一覧に追加できる）。
+  // 明日が期日のもの(mandatory:true)は、夜の振り返りを完了する前に必ず追加する必要がある
+  const [upcomingDueNas, setUpcomingDueNas] = useState([]);
 
   // 案件のネクストアクションから来たタスクを終了する時の「次のNA」入力モーダル
   // （NA管理のdoneドロップ時の必須入力と同じ考え方。確定まで何も書き込まないので、
@@ -1418,40 +1419,53 @@ const DailyTimerPage = () => {
     setInitialNextDayPlan(seeded);
   }, [unfinishedTasks, loadedDate, representative]);
 
-  // 振り返りを開いた時に、翌日が期日の案件ネクストアクションを拾ってくる（NAタスク一覧にワンクリックで追加できるように）。
+  // 振り返りを開いた時に、3日以内が期日の案件ネクストアクションを拾ってくる（NAタスク一覧にワンクリックで追加できるように）。
+  // 明日が期日のものはmandatory:trueにする（夜の振り返り完了の必須条件になる）
   // ステージ連動の特殊なNA（完了すると自動で次のステージNAが生成される）は対象から除く
   useEffect(() => {
     if (!reviewOpen || !loadedDate) return;
     const tomorrowDate = shiftDateKey(loadedDate, 1);
+    const withinDates = new Set([tomorrowDate, shiftDateKey(loadedDate, 2), shiftDateKey(loadedDate, 3)]);
     let cancelled = false;
     (async () => {
       try {
         const all = await fetchAllNextActions();
         if (cancelled) return;
-        const due = all.filter((na) =>
-          na.actionDueDate === tomorrowDate &&
-          (na.actionStatus || 'active') !== 'done' &&
-          (na.actionAssignee || '').includes(REPRESENTATIVE_FILTER) &&
-          !(na.stageNaStage != null && isStageTargetProject(na))
-        );
-        setTomorrowDueNas(due);
+        const due = all
+          .filter((na) =>
+            withinDates.has(na.actionDueDate) &&
+            (na.actionStatus || 'active') !== 'done' &&
+            (na.actionAssignee || '').includes(REPRESENTATIVE_FILTER) &&
+            !(na.stageNaStage != null && isStageTargetProject(na))
+          )
+          .map((na) => ({ ...na, mandatory: na.actionDueDate === tomorrowDate }));
+        setUpcomingDueNas(due);
       } catch (error) {
-        console.error('翌日期日の案件ネクストアクション取得エラー:', error);
+        console.error('近日期日の案件ネクストアクション取得エラー:', error);
       }
     })();
     return () => { cancelled = true; };
   }, [reviewOpen, loadedDate]);
 
-  // 案件のネクストアクションをNAタスク一覧に追加する（追加後は候補一覧から消す）
+  // 明日が期日（必須）/ 2〜3日以内が期日（任意）に分けて表示する
+  const tomorrowMandatoryNas = useMemo(
+    () => upcomingDueNas.filter((na) => na.mandatory),
+    [upcomingDueNas]
+  );
+  const soonOptionalNas = useMemo(
+    () => upcomingDueNas.filter((na) => !na.mandatory),
+    [upcomingDueNas]
+  );
+
+  // 案件のネクストアクションをNAタスク一覧に追加する（追加後は候補一覧から消す。対象日はそのNAの期日そのもの）
   const addNaToNextDayPlan = (na) => {
-    const targetDate = loadedDate ? shiftDateKey(loadedDate, 1) : '';
     setNextDayPlan((prev) => [...prev, {
       localId: `na_${na.id}`,
       name: `${na.companyName || na.productName || '(案件)'}: ${na.actionContent}`,
       plannedMinutes: null,
       plannedStartTime: null,
       fromCarryover: false,
-      date: targetDate,
+      date: na.actionDueDate,
       naLink: {
         projectId: na.projectId,
         recordId: na.recordId,
@@ -1460,7 +1474,7 @@ const DailyTimerPage = () => {
         actionAssignee: na.actionAssignee || ''
       }
     }]);
-    setTomorrowDueNas((prev) => prev.filter((n) => n.id !== na.id));
+    setUpcomingDueNas((prev) => prev.filter((n) => n.id !== na.id));
   };
 
   // NAタスク一覧を、繰越で自動セットされた時点から変更したかどうか
@@ -1842,6 +1856,10 @@ const DailyTimerPage = () => {
   const handleCompleteReview = () => {
     if (!representative) {
       window.alert('担当者を選択してください');
+      return;
+    }
+    if (tomorrowMandatoryNas.length > 0) {
+      window.alert('明日が期日の案件ネクストアクションが、まだNAタスクに追加されていません。すべて追加してから完了してください');
       return;
     }
     if (!window.confirm('夜の振り返りを完了として記録します。よろしいですか？')) return;
@@ -2568,16 +2586,36 @@ const DailyTimerPage = () => {
               )}
             </ReviewSummaryBlock>
             <ReviewSummaryBlock>
-              <ReviewSummaryTitle>期日が翌日の案件ネクストアクション（ワンクリックでNAタスクに追加）</ReviewSummaryTitle>
-              {tomorrowDueNas.length === 0 ? (
-                <ReviewSummaryEmpty>期日が翌日の案件ネクストアクションはありません</ReviewSummaryEmpty>
+              <ReviewSummaryTitle>期日が明日の案件ネクストアクション（必須・すべて追加しないと完了できません）</ReviewSummaryTitle>
+              {tomorrowMandatoryNas.length === 0 ? (
+                <ReviewSummaryEmpty>期日が明日の案件ネクストアクションはありません</ReviewSummaryEmpty>
               ) : (
                 <TaskList>
-                  {tomorrowDueNas.map((na) => (
+                  {tomorrowMandatoryNas.map((na) => (
+                    <TaskRow key={na.id} $urgent>
+                      <TaskName>
+                        {na.companyName || na.productName || '(案件)'}: {na.actionContent}
+                      </TaskName>
+                      <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
+                        <FiPlus size={14} /> 追加
+                      </AddButton>
+                    </TaskRow>
+                  ))}
+                </TaskList>
+              )}
+            </ReviewSummaryBlock>
+            <ReviewSummaryBlock>
+              <ReviewSummaryTitle>期日が2〜3日以内の案件ネクストアクション（任意・先取りして追加できます）</ReviewSummaryTitle>
+              {soonOptionalNas.length === 0 ? (
+                <ReviewSummaryEmpty>期日が2〜3日以内の案件ネクストアクションはありません</ReviewSummaryEmpty>
+              ) : (
+                <TaskList>
+                  {soonOptionalNas.map((na) => (
                     <TaskRow key={na.id}>
                       <TaskName>
                         {na.companyName || na.productName || '(案件)'}: {na.actionContent}
                       </TaskName>
+                      <PlannedBadge>期日 {na.actionDueDate}</PlannedBadge>
                       <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
                         <FiPlus size={14} /> 追加
                       </AddButton>
@@ -2678,7 +2716,8 @@ const DailyTimerPage = () => {
               </AddButton>
               <AddButton
                 onClick={handleCompleteReview}
-                disabled={saving || !representative || reviewCompleted}
+                disabled={saving || !representative || reviewCompleted || tomorrowMandatoryNas.length > 0}
+                title={tomorrowMandatoryNas.length > 0 ? '明日が期日の案件ネクストアクションをすべてNAタスクに追加してください' : undefined}
               >
                 <FiCheck size={14} /> {reviewCompleted ? '完了済み' : '完了'}
               </AddButton>
