@@ -993,7 +993,11 @@ function PipelineForecastPage() {
   };
 
   const handleProbabilityBlur = async (dealId, value) => {
-    const num = Math.max(0, Math.min(100, Number(value) || 0));
+    // 空欄・不正な値のまま外れた場合は保存しない（Number('') || 0 が0円ならぬ0%を
+    // 誤って保存し続けてしまい、以後フェーズ既定値に戻らなくなるバグがあったため）
+    const trimmed = String(value).trim();
+    if (trimmed === '' || !Number.isFinite(Number(trimmed))) return;
+    const num = Math.max(0, Math.min(100, Number(trimmed)));
     setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, landingProbability: num } : d)));
     try {
       await setDoc(doc(db, 'progressDashboard', dealId, 'weeklyForecasts', selectedWeekId), {
