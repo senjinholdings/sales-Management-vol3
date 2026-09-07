@@ -476,12 +476,34 @@ const BarRow = styled.div`
   grid-template-columns: 90px 1fr 110px;
   align-items: center;
   gap: 0.75rem;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0.15rem 0.3rem;
+  margin: -0.15rem -0.3rem;
+
+  &:hover {
+    background: #f5f6f7;
+  }
 `;
 
 const BarLabel = styled.div`
   font-size: 0.85rem;
   color: ${(props) => (props.$current ? '#2980b9' : '#2c3e50')};
   font-weight: ${(props) => (props.$current ? '700' : '400')};
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+`;
+
+const BarChevron = styled.span`
+  font-size: 0.7rem;
+  color: #95a5a6;
+  display: inline-block;
+`;
+
+const BarBreakdown = styled.div`
+  margin: 0.3rem 0 0.4rem;
+  padding-left: 0.3rem;
 `;
 
 const BarTrack = styled.div`
@@ -669,6 +691,24 @@ function PipelineForecastPage() {
   const [openNoteId, setOpenNoteId] = useState(null); // 状況メモは普段畳んでおき、開いた案件だけ編集欄を出す
   const [excludedOpen, setExcludedOpen] = useState(false); // 「今期対象外」は普段畳んでおく
   const [predictedDeals, setPredictedDeals] = useState([]); // 表示中の週に「成約予定」とマークされていた案件
+  const [expandedMonths, setExpandedMonths] = useState(() => new Set());
+  const [expandedWeeks, setExpandedWeeks] = useState(() => new Set());
+
+  const toggleExpandedMonth = (label) => {
+    setExpandedMonths((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label); else next.add(label);
+      return next;
+    });
+  };
+
+  const toggleExpandedWeek = (label) => {
+    setExpandedWeeks((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label); else next.add(label);
+      return next;
+    });
+  };
 
   const toggleNote = (dealId) => {
     setOpenNoteId((prev) => (prev === dealId ? null : dealId));
@@ -1024,12 +1064,40 @@ function PipelineForecastPage() {
                     ? (m.total / Math.max(1, Math.max(...monthlyBreakdown.map((x) => x.total)))) * 100
                     : 0;
                   const isCurrent = currentMonthInfo && m.label === currentMonthInfo.label;
+                  const isOpen = expandedMonths.has(m.label);
+                  const records = recordsForType
+                    .filter((r) => r.date >= m.start && r.date <= m.end)
+                    .sort((a, b) => b.date - a.date);
                   return (
-                    <BarRow key={m.label}>
-                      <BarLabel $current={isCurrent}>{m.label}{isCurrent ? '（今月）' : ''}</BarLabel>
-                      <BarTrack><BarFill $current={isCurrent} $percent={percent} /></BarTrack>
-                      <BarValue>{formatCurrency(m.total)}</BarValue>
-                    </BarRow>
+                    <React.Fragment key={m.label}>
+                      <BarRow onClick={() => toggleExpandedMonth(m.label)}>
+                        <BarLabel $current={isCurrent}>
+                          <BarChevron>{isOpen ? '▼' : '▶'}</BarChevron>
+                          {m.label}{isCurrent ? '（今月）' : ''}
+                        </BarLabel>
+                        <BarTrack><BarFill $current={isCurrent} $percent={percent} /></BarTrack>
+                        <BarValue>{formatCurrency(m.total)}</BarValue>
+                      </BarRow>
+                      {isOpen && (
+                        <BarBreakdown>
+                          {records.length === 0 ? (
+                            <EmptyText>この期間に成約した案件はありません</EmptyText>
+                          ) : (
+                            <RecordTable>
+                              {records.map((r, i) => (
+                                <RecordRow key={`${r.dealId}_${i}`}>
+                                  <RecordCompany>
+                                    <DealNameCell companyName={r.companyName} productName={r.productName} />
+                                  </RecordCompany>
+                                  <RecordDate>{formatMonthDay(r.date)}</RecordDate>
+                                  <RecordBudget>{formatCurrency(r.budget)}</RecordBudget>
+                                </RecordRow>
+                              ))}
+                            </RecordTable>
+                          )}
+                        </BarBreakdown>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </BarList>
@@ -1042,12 +1110,40 @@ function PipelineForecastPage() {
               <BarList>
                 {weeklyBreakdown.map((w) => {
                   const maxVal = Math.max(1, ...weeklyBreakdown.map((x) => x.total));
+                  const isOpen = expandedWeeks.has(w.label);
+                  const records = recordsForType
+                    .filter((r) => r.date >= w.start && r.date <= w.end)
+                    .sort((a, b) => b.date - a.date);
                   return (
-                    <BarRow key={w.label}>
-                      <BarLabel $current={w.isCurrent}>{w.label}{w.isCurrent ? '（今週）' : ''}</BarLabel>
-                      <BarTrack><BarFill $current={w.isCurrent} $percent={(w.total / maxVal) * 100} /></BarTrack>
-                      <BarValue>{formatCurrency(w.total)}</BarValue>
-                    </BarRow>
+                    <React.Fragment key={w.label}>
+                      <BarRow onClick={() => toggleExpandedWeek(w.label)}>
+                        <BarLabel $current={w.isCurrent}>
+                          <BarChevron>{isOpen ? '▼' : '▶'}</BarChevron>
+                          {w.label}{w.isCurrent ? '（今週）' : ''}
+                        </BarLabel>
+                        <BarTrack><BarFill $current={w.isCurrent} $percent={(w.total / maxVal) * 100} /></BarTrack>
+                        <BarValue>{formatCurrency(w.total)}</BarValue>
+                      </BarRow>
+                      {isOpen && (
+                        <BarBreakdown>
+                          {records.length === 0 ? (
+                            <EmptyText>この期間に成約した案件はありません</EmptyText>
+                          ) : (
+                            <RecordTable>
+                              {records.map((r, i) => (
+                                <RecordRow key={`${r.dealId}_${i}`}>
+                                  <RecordCompany>
+                                    <DealNameCell companyName={r.companyName} productName={r.productName} />
+                                  </RecordCompany>
+                                  <RecordDate>{formatMonthDay(r.date)}</RecordDate>
+                                  <RecordBudget>{formatCurrency(r.budget)}</RecordBudget>
+                                </RecordRow>
+                              ))}
+                            </RecordTable>
+                          )}
+                        </BarBreakdown>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </BarList>
