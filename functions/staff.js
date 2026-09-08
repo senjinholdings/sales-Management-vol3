@@ -11,12 +11,10 @@ const fetch = require('node-fetch');
 const { WebClient } = require('@slack/web-api');
 const { getSecret, setSecret, hasSecret, chatworkSecretName } = require('./secrets');
 const { requireAppSecret, env } = require('./authHelpers');
-const { resolveSlackUserId } = require('./slackApproval');
 const { computeActualMinutes, isRunningTask } = require('./dailyReportGuard');
 
 const CHATWORK_API_BASE = 'https://api.chatwork.com/v2';
 const NIGHT_REVIEW_NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR'; // #営業_日報
-const MANAGER_EMAIL = 'yoh.masuda@senjinholdings.com';
 
 /** ChatworkのAPIトークンをASCII化してから使う（全角混入によるヘッダーエラー事故対策） */
 function sanitizeToken(token) {
@@ -301,7 +299,8 @@ function createStaffRouter({ admin, db }) {
    * POST /api/staff/night-review-complete
    * body: { representative: string, date: string ("YYYY-MM-DD") }
    * 日報画面の「完了」ボタンから呼ばれる。夜の振り返りが終わったことを記録し、
-   * その日の夜チェックスレッド（無ければ通常投稿）に増田さん宛の完了報告を送る。
+   * その日の夜チェックスレッド（無ければ通常投稿）に完了報告を送る（メンションなし。
+   * 以前は増田さん宛にメンションしていたが、営業日報の通知からは外すことになった）。
    * 「終わったかどうか」の唯一の判定基準はこのreviewCompletedAtで、
    * 振り返り欄に文字が入っているかどうかでは判定しない（functions/dailyReportGuard.js参照）
    */
@@ -328,11 +327,9 @@ function createStaffRouter({ admin, db }) {
       if (token) {
         try {
           const slack = new WebClient(token);
-          const managerId = await resolveSlackUserId(slack, MANAGER_EMAIL);
-          const mention = managerId ? `<@${managerId}> ` : '';
           await slack.chat.postMessage({
             channel: NIGHT_REVIEW_NOTIFY_CHANNEL_ID,
-            text: `${mention}✅ ${representative}さんが夜の振り返りを完了しました`,
+            text: `✅ ${representative}さんが夜の振り返りを完了しました`,
             ...(data.nightThreadTs ? { thread_ts: data.nightThreadTs } : {})
           });
         } catch (slackError) {

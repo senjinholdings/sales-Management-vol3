@@ -28,8 +28,7 @@
  *   土日は枠の用意・催促とも行わない
  *
  * Slackへの送信は個人DMではなく、#営業_日報チャンネル（担当者・増田さんの両方が
- * 参加済み）への投稿＋両者へのメンションで行う。ユーザー本人だけでは「自分に届いて
- * いるか」の確認が取りづらいため、常に両方をメンションする形に決めた。
+ * 参加済み）への投稿＋担当者本人へのメンションで行う（増田さんはメンションしない）。
  * ユーザーIDの特定はfunctions/slackApproval.jsのresolveSlackUserId
  * （staffMembers.email → users.lookupByEmail）をそのまま再利用する。
  */
@@ -67,9 +66,8 @@ const REVIEW_KICKOFF_MINUTE = 0;
 // 「振り返り」枠を先々の日付までどれだけ前もって用意しておくか（今日を含め何日分か）
 const REVIEW_TASK_PREP_DAYS_AHEAD = 14;
 
-// 通知先は個人DMではなく#営業_日報チャンネル。担当者本人＋増田さんの両方をメンションする
+// 通知先は個人DMではなく#営業_日報チャンネル。担当者本人のみをメンションする（増田さんは対象外）
 const NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR';
-const MANAGER_EMAIL = 'yoh.masuda@senjinholdings.com';
 
 /** 日付をAsia/Tokyo（UTC+9固定・DSTなし）の "YYYY-MM-DD" に変換する */
 function toJstDateStr(date) {
@@ -162,13 +160,11 @@ function isOverrun(task) {
   return actual > task.plannedMinutes + OVERRUN_BUFFER_MINUTES && actual > task.plannedMinutes * OVERRUN_RATIO;
 }
 
-/** 担当者本人と増田さんをメンションしてメッセージを投稿する（threadTs指定時はスレッド返信） */
+/** 担当者本人をメンションしてメッセージを投稿する（threadTs指定時はスレッド返信）。
+ * 以前は増田さんも併せてメンションしていたが、営業日報の通知からは外すことになった */
 async function notifyRepresentative(slack, repEmail, text, threadTs) {
-  const [repUserId, managerUserId] = await Promise.all([
-    repEmail ? resolveSlackUserId(slack, repEmail) : null,
-    resolveSlackUserId(slack, MANAGER_EMAIL)
-  ]);
-  const mentions = [repUserId, managerUserId].filter(Boolean).map((id) => `<@${id}>`).join(' ');
+  const repUserId = repEmail ? await resolveSlackUserId(slack, repEmail) : null;
+  const mentions = repUserId ? `<@${repUserId}>` : '';
   const result = await slack.chat.postMessage({
     channel: NOTIFY_CHANNEL_ID,
     text: mentions ? `${mentions} ${text}` : text,

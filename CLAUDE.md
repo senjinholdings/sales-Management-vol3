@@ -233,9 +233,13 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.50.0
+- **現在バージョン**: v2.50.1
 - **最終更新**: 2026年9月8日
 - **直近の更新内容**:
+  - 営業日報（デイリータイマー）のSlack通知から増田さんのメンションを除去
+    - `functions/dailyReportGuard.js`の`notifyRepresentative`（タイマー超過・放置・夜の振り返り督促など、日報関連のSlack送信を一手に担う共通関数）が、以前は担当者本人＋増田さんの両方をメンションしていたのを、担当者本人のみに変更
+    - `functions/staff.js`の`night-review-complete`（振り返り完了報告）も同様に増田さんのメンションを除去（メンション無しの平文投稿に変更）
+    - `functions/urgentQuest.js`の`MANAGER_EMAIL`は「🚨に反応したのが増田さん本人かどうか」の識別に使っているだけで、Slack上でのメンションではないため対象外（変更なし）。モール売上督促（`functions/mallUpdateGuard.js`）も別機能のため対象外
   - 案件詳細パネルのMTG設定から、Chatworkルーム・Slackチャンネルの作成・招待をダッシュボード側から行えるように（フェーズ1）
     - Chatwork: 担当者のトークンで新規ルームを作成し、社内メンバー・担当者の既存コンタクト（社外含む）をその場で追加できる。作成後は`chatworkRoomId`に自動保存（`functions/staff.js`に`chatwork-contacts`/`chatwork-create-room`/`chatwork-invite-link`を追加）
     - Chatworkはメールアドレスだけでの新規招待に対応していないため、まだコンタクトでない相手向けには「招待リンク」を発行してダッシュボード上に表示する方式（担当者がコピーして送る）
