@@ -44,6 +44,7 @@ import {
 import {
   fetchAllNextActions,
   addSalesEntry,
+  updateSalesEntry,
   updateSalesEntryStatus,
   fetchPipelineReviewSnapshot,
   fetchDealsForRep,
@@ -1299,12 +1300,12 @@ const REPRESENTATIVE_FILTER = '荒幡';
 // 振り返りヘルパー
 // ============================================
 
-// 夜の振り返りウィザードの手順0・3・4の「確認しました」フラグ・任意の自由記述
+// 夜の振り返りウィザードの手順0・3・4の「確認しました」フラグ・手順4のみの任意の自由記述。
+// 手順3は自由記述を廃止し、各案件のネクストアクションをその場で直接編集する方式にした
 const normalizeReview = (review = {}) => ({
   reminderAcked: !!review.reminderAcked,
   pipelineStatusChecked: !!review.pipelineStatusChecked,
   pipelineWeekChecked: !!review.pipelineWeekChecked,
-  pipelineStatusNote: review.pipelineStatusNote || '',
   pipelineWeekNote: review.pipelineWeekNote || ''
 });
 
@@ -1374,11 +1375,15 @@ const DailyTimerPage = () => {
   // 手順2: 未完了タスクごとの選択 { [taskId]: { mode: 'reschedule'|'earlyMorning', newDate } }
   const [unfinishedInputs, setUnfinishedInputs] = useState({});
 
-  // 手順3・4: 自由記述（任意）と、画面内に読み取り専用で表示するパイプラインの状況
-  const [pipelineStatusNoteInput, setPipelineStatusNoteInput] = useState('');
-  const [pipelineWeekNoteInput, setPipelineWeekNoteInput] = useState('');
+  // 手順3: 各案件のフェーズ・ネクストアクションをその場で編集する用（自由記述は廃止）
   const [pipelineReviewSnapshot, setPipelineReviewSnapshot] = useState({ activeDeals: [], predictedDeals: [] });
   const [pipelineReviewLoading, setPipelineReviewLoading] = useState(false);
+  const [editingPipelineNaId, setEditingPipelineNaId] = useState(null);
+  const [pipelineNaDraft, setPipelineNaDraft] = useState({ content: '', dueDate: '' });
+  const [savingPipelineNa, setSavingPipelineNa] = useState(false);
+
+  // 手順4: 今週確定予定の案件確認の自由記述（任意）
+  const [pipelineWeekNoteInput, setPipelineWeekNoteInput] = useState('');
 
   // 手順5: 翌日が定例/単発ミーティングの予定にあたる案件の候補（任意・追加しなくても完了できる）
   const [meetingCandidates, setMeetingCandidates] = useState([]);
@@ -2020,9 +2025,9 @@ const DailyTimerPage = () => {
     setOverrunInputs({});
     setUnfinishedInputs({});
     setNextDayPlan([]);
-    setPipelineStatusNoteInput('');
     setPipelineWeekNoteInput('');
     setMeetingCandidates([]);
+    setEditingPipelineNaId(null);
     setReviewStep(0);
   };
 
@@ -2147,13 +2152,54 @@ const DailyTimerPage = () => {
     });
   };
 
-  // 手順3・4: 週次パイプライン振り返り（リンクを開いて目視確認するだけ）
+  // 手順3: 各案件のネクストアクションをその場で編集する（PipelineForecastPage.jsのbeginNaEdit/saveNaと同じ考え方）
+  const beginPipelineNaEdit = (deal) => {
+    setEditingPipelineNaId(deal.id);
+    setPipelineNaDraft({
+      content: deal.na?.actionContent || '',
+      dueDate: deal.na?.actionDueDate || ''
+    });
+  };
+
+  const savePipelineNa = async (deal) => {
+    if (!pipelineNaDraft.content.trim()) return;
+    setSavingPipelineNa(true);
+    try {
+      if (deal.na) {
+        await updateSalesEntry(deal.id, deal.na.recordId, deal.na.id, {
+          actionContent: pipelineNaDraft.content.trim(),
+          actionDueDate: pipelineNaDraft.dueDate || null
+        }, deal.subCol);
+      } else {
+        if (!deal.latestRecordId) {
+          window.alert('この案件には営業記録がまだ無いため、案件詳細画面から先に記録を作成してください');
+          setSavingPipelineNa(false);
+          return;
+        }
+        await addSalesEntry(deal.id, deal.latestRecordId, {
+          actionContent: pipelineNaDraft.content.trim(),
+          actionDueDate: pipelineNaDraft.dueDate || null,
+          actionAssignee: representative,
+          actionStatus: 'active'
+        }, deal.subCol);
+      }
+      setEditingPipelineNaId(null);
+      const snapshot = await fetchPipelineReviewSnapshot(representative);
+      setPipelineReviewSnapshot(snapshot);
+    } catch (error) {
+      console.error('ネクストアクションの保存に失敗:', error);
+      window.alert('保存に失敗しました');
+    } finally {
+      setSavingPipelineNa(false);
+    }
+  };
+
+  // 手順3・確認しました（自由記述は無し。案件一覧はその場で編集済み）
   const handleConfirmPipelineStatus = () => {
     runMutation(async () => {
       await saveReview(representative, selectedDate, {
         ...currentReview(),
-        pipelineStatusChecked: true,
-        pipelineStatusNote: pipelineStatusNoteInput.trim()
+        pipelineStatusChecked: true
       });
       setReviewStep(4);
     });
@@ -2724,22 +2770,14 @@ const DailyTimerPage = () => {
                     </TaskList>
                   )}
                 </ReviewSummaryBlock>
-                {(selectedDayDoc?.review?.pipelineStatusNote || selectedDayDoc?.review?.pipelineWeekNote) && (
+                {selectedDayDoc?.review?.pipelineWeekNote && (
                   <ReviewSummaryBlock>
                     <ReviewSummaryTitle>週次パイプライン振り返りの記入</ReviewSummaryTitle>
                     <TaskList>
-                      {selectedDayDoc?.review?.pipelineStatusNote && (
-                        <TaskRow>
-                          <TaskName>各案件のステータス確認</TaskName>
-                          <ResultText>{selectedDayDoc.review.pipelineStatusNote}</ResultText>
-                        </TaskRow>
-                      )}
-                      {selectedDayDoc?.review?.pipelineWeekNote && (
-                        <TaskRow>
-                          <TaskName>今週確定予定の案件確認</TaskName>
-                          <ResultText>{selectedDayDoc.review.pipelineWeekNote}</ResultText>
-                        </TaskRow>
-                      )}
+                      <TaskRow>
+                        <TaskName>今週確定予定の案件確認</TaskName>
+                        <ResultText>{selectedDayDoc.review.pipelineWeekNote}</ResultText>
+                      </TaskRow>
                     </TaskList>
                   </ReviewSummaryBlock>
                 )}
@@ -2936,43 +2974,68 @@ const DailyTimerPage = () => {
             {reviewStep === 3 && (
               <>
                 <WizardIntro>
-                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（1/2）: 各案件のフェーズ・ネクストアクションの内容が正しいか確認してください（気になる点があれば自由記述に書けます・任意）。
+                  「荒幡さんの週次パイプライン振り返り」に基づく振り返り（1/2）: 各案件のフェーズ・ネクストアクションの内容が正しいか確認してください。内容が違う場合はその場で直せます。
                 </WizardIntro>
-                <WizardSideBySide>
-                  <WizardMainColumn>
-                    <ReviewField>
-                      <ReviewLabel htmlFor="pipeline-status-note">振り返りコメント（任意）</ReviewLabel>
-                      <ReviewTextarea
-                        id="pipeline-status-note"
-                        value={pipelineStatusNoteInput}
-                        onChange={(e) => setPipelineStatusNoteInput(e.target.value)}
-                      />
-                    </ReviewField>
-                    <ReviewFooter>
-                      <AddButton onClick={handleConfirmPipelineStatus} disabled={saving}>
-                        <FiCheck size={14} /> 確認しました
-                      </AddButton>
-                    </ReviewFooter>
-                  </WizardMainColumn>
-                  <WizardSideColumn>
-                    <ReviewSummaryTitle>保有中の案件</ReviewSummaryTitle>
-                    {pipelineReviewLoading ? (
-                      <ReviewSummaryEmpty>読み込み中...</ReviewSummaryEmpty>
-                    ) : pipelineReviewSnapshot.activeDeals.length === 0 ? (
-                      <ReviewSummaryEmpty>保有中の案件はありません</ReviewSummaryEmpty>
-                    ) : (
-                      <TaskList>
-                        {pipelineReviewSnapshot.activeDeals.map((deal) => (
-                          <TaskRow key={deal.id}>
-                            <TaskName>{deal.companyName}</TaskName>
-                            <PlannedBadge>{deal.status}</PlannedBadge>
-                            {deal.naContent && <ResultText>{deal.naContent}</ResultText>}
+                {pipelineReviewLoading ? (
+                  <ReviewSummaryEmpty>読み込み中...</ReviewSummaryEmpty>
+                ) : pipelineReviewSnapshot.activeDeals.length === 0 ? (
+                  <ReviewSummaryEmpty>保有中の案件はありません</ReviewSummaryEmpty>
+                ) : (
+                  <ReviewSummaryBlock>
+                    {pipelineReviewSnapshot.activeDeals.map((deal) => (
+                      <WizardItemCard key={deal.id}>
+                        <TaskRow>
+                          <TaskName>{deal.companyName}{deal.productName ? `｜${deal.productName}` : ''}</TaskName>
+                          <PlannedBadge>{deal.status}</PlannedBadge>
+                        </TaskRow>
+                        {editingPipelineNaId === deal.id ? (
+                          <WizardInputsRow>
+                            <Input
+                              placeholder="ネクストアクションの内容"
+                              value={pipelineNaDraft.content}
+                              onChange={(e) => setPipelineNaDraft((prev) => ({ ...prev, content: e.target.value }))}
+                            />
+                            <DateInput
+                              type="date"
+                              value={pipelineNaDraft.dueDate}
+                              onChange={(e) => setPipelineNaDraft((prev) => ({ ...prev, dueDate: e.target.value }))}
+                              title="期日"
+                            />
+                            <AddButton
+                              type="button"
+                              onClick={() => savePipelineNa(deal)}
+                              disabled={savingPipelineNa || !pipelineNaDraft.content.trim()}
+                            >
+                              <FiCheck size={14} /> 保存
+                            </AddButton>
+                            <CancelButton type="button" onClick={() => setEditingPipelineNaId(null)} disabled={savingPipelineNa}>
+                              キャンセル
+                            </CancelButton>
+                          </WizardInputsRow>
+                        ) : (
+                          <TaskRow>
+                            {deal.na ? (
+                              <>
+                                <ResultText>{deal.na.actionContent}</ResultText>
+                                {deal.na.actionDueDate && <PlannedBadge>期日 {deal.na.actionDueDate}</PlannedBadge>}
+                              </>
+                            ) : (
+                              <ReviewSummaryEmpty>ネクストアクション未設定</ReviewSummaryEmpty>
+                            )}
+                            <EditIconButton onClick={() => beginPipelineNaEdit(deal)} title="編集">
+                              <FiEdit3 size={14} />
+                            </EditIconButton>
                           </TaskRow>
-                        ))}
-                      </TaskList>
-                    )}
-                  </WizardSideColumn>
-                </WizardSideBySide>
+                        )}
+                      </WizardItemCard>
+                    ))}
+                  </ReviewSummaryBlock>
+                )}
+                <ReviewFooter>
+                  <AddButton onClick={handleConfirmPipelineStatus} disabled={saving}>
+                    <FiCheck size={14} /> 確認しました
+                  </AddButton>
+                </ReviewFooter>
               </>
             )}
 

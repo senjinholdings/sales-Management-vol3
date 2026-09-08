@@ -420,10 +420,11 @@ export const confirmDayPlan = async (representative, date) => {
 };
 
 /**
- * 1日1件の振り返り（手順0・3・4の確認済みフラグ・任意の自由記述）を保存する（tasksには一切触れない）
+ * 1日1件の振り返り（手順0・3・4の確認済みフラグ・手順4のみの任意の自由記述）を保存する
+ * （tasksには一切触れない。手順3は自由記述を廃止し、案件のネクストアクションをその場で直接編集する方式にした）
  * @param {string} representative - 担当者名
  * @param {string} date - "YYYY-MM-DD"
- * @param {{reminderAcked: boolean, pipelineStatusChecked: boolean, pipelineWeekChecked: boolean, pipelineStatusNote?: string, pipelineWeekNote?: string}} review
+ * @param {{reminderAcked: boolean, pipelineStatusChecked: boolean, pipelineWeekChecked: boolean, pipelineWeekNote?: string}} review
  */
 export const saveReview = async (representative, date, review) => {
   try {
@@ -435,7 +436,6 @@ export const saveReview = async (representative, date, review) => {
         reminderAcked: !!review.reminderAcked,
         pipelineStatusChecked: !!review.pipelineStatusChecked,
         pipelineWeekChecked: !!review.pipelineWeekChecked,
-        pipelineStatusNote: review.pipelineStatusNote || '',
         pipelineWeekNote: review.pipelineWeekNote || ''
       },
       updatedAt: Timestamp.now()

@@ -1305,16 +1305,30 @@ export const fetchPipelineReviewSnapshot = async (representative) => {
         }
       });
 
-    const activeDeals = deals
-      .filter((d) => OPEN_PHASES.includes(d.status) && !d.excludedFromForecast)
-      .map((d) => ({
+    const openDeals = deals.filter((d) => OPEN_PHASES.includes(d.status) && !d.excludedFromForecast);
+
+    // まだネクストアクションが無い案件は、新規追加の保存先になる「最新の営業記録」も
+    // 取得しておく（PipelineForecastPage.jsのsaveNaと同じ考え方）
+    const activeDeals = (await Promise.all(openDeals.map(async (d) => {
+      const na = naByDealId.get(d.id);
+      const subCol = d.isExistingProject === true ? 'salesRecords' : 'newCaseSalesRecords';
+      let latestRecordId = na?.recordId || null;
+      if (!latestRecordId) {
+        const recordsSnap = await getDocs(collection(db, 'progressDashboard', d.id, subCol));
+        const records = recordsSnap.docs.map((r) => ({ id: r.id, ...r.data() }));
+        records.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+        latestRecordId = records[0]?.id || null;
+      }
+      return {
         id: d.id,
-        companyName: d.companyName || d.productName || '(社名未設定)',
+        companyName: d.companyName || '(社名未設定)',
         productName: d.productName || '',
         status: d.status,
-        naContent: naByDealId.get(d.id)?.actionContent || ''
-      }))
-      .sort((a, b) => OPEN_PHASES.indexOf(b.status) - OPEN_PHASES.indexOf(a.status));
+        subCol,
+        latestRecordId,
+        na: na ? { recordId: na.recordId, id: na.id, actionContent: na.actionContent || '', actionDueDate: na.actionDueDate || '' } : null
+      };
+    }))).sort((a, b) => OPEN_PHASES.indexOf(b.status) - OPEN_PHASES.indexOf(a.status));
 
     // 今週（月曜始まり）のweekId。PipelineForecastPage.jsのgetWeekIdと同じ考え方
     const now = new Date();

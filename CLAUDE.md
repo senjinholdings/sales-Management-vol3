@@ -201,11 +201,10 @@ dailyTimers: {
     // 旧形式はstartedAt/endedAt直持ち（区間1つとして解釈し、いずれかの操作時に新形式へ変換）
   }],
   manualSort: boolean,         // trueならtasks配列の並びが表示順の正（D&Dで初めて並び替えた時に立つ。未設定は予定開始時刻ソート表示）
-  review: {                    // 1日1件の振り返り（tasksとは独立、担当者×日付ごと）。振り返りウィザードの手順0・3・4の「確認しました」フラグ・任意の自由記述を持つ
+  review: {                    // 1日1件の振り返り（tasksとは独立、担当者×日付ごと）。振り返りウィザードの手順0・3・4の「確認しました」フラグ・手順4のみの任意の自由記述を持つ
     reminderAcked: boolean,        // 手順0: リマインド頻度を確認した
-    pipelineStatusChecked: boolean,// 手順3: 各案件のステータス確認をした
+    pipelineStatusChecked: boolean,// 手順3: 各案件のステータス確認をした（自由記述は無し。案件のネクストアクションをその場で直接編集する方式）
     pipelineWeekChecked: boolean,  // 手順4: 今週確定予定の案件確認をした
-    pipelineStatusNote: string,    // 手順3の振り返りコメント（任意、空文字許容）
     pipelineWeekNote: string       // 手順4の振り返りコメント（任意、空文字許容）
   },
   reviewCompletedAt: timestamp,// 夜の振り返り完了の正（Cloud Function POST /api/staff/night-review-complete が設定）。存在有無のみで完了判定
@@ -233,9 +232,13 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.50.1
+- **現在バージョン**: v2.51.0
 - **最終更新**: 2026年9月8日
 - **直近の更新内容**:
+  - 振り返りウィザード手順3を、パイプライン振り返りページと同じ表示・その場編集に変更
+    - 会社名だけで商品名が無く「どの案件のアクションか分からない」問題を解消。`会社名｜商品名`＋フェーズバッジ＋ネクストアクションの内容・期日を一覧表示するように変更（`PipelineForecastPage.js`のDealRowと同じ考え方）
+    - 自由記述欄（振り返りコメント）を廃止し、代わりに各案件のネクストアクションをその場で直接編集できるように変更（`updateSalesEntry`/`addSalesEntry`を使用。保存後は一覧を再取得して反映）。手順4の自由記述・レイアウトは変更なし
+    - `src/services/projectService.js`の`fetchPipelineReviewSnapshot`が返す`activeDeals`の各要素を、`naContent: string`から`na: {recordId, id, actionContent, actionDueDate} | null`＋`subCol`＋`latestRecordId`（ネクストアクション未設定の案件に新規追加する際の保存先）に変更
   - 営業日報（デイリータイマー）のSlack通知から増田さんのメンションを除去
     - `functions/dailyReportGuard.js`の`notifyRepresentative`（タイマー超過・放置・夜の振り返り督促など、日報関連のSlack送信を一手に担う共通関数）が、以前は担当者本人＋増田さんの両方をメンションしていたのを、担当者本人のみに変更
     - `functions/staff.js`の`night-review-complete`（振り返り完了報告）も同様に増田さんのメンションを除去（メンション無しの平文投稿に変更）
