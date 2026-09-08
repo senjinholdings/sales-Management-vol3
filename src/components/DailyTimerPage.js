@@ -3021,202 +3021,209 @@ const DailyTimerPage = () => {
             {reviewStep === 5 && (
               <>
                 <WizardIntro>翌日の予定を作りましょう。空いている時間がなくなるまで埋めると完了できます。</WizardIntro>
-                <PreviewTimelineGrid>
-                  <TimelineHourGutter style={{ height: TIMELINE_HEIGHT }}>
-                    {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
-                      <TimelineHourLabel key={h} style={{ top: timelineTopPx(h * 60) }}>
-                        {h}:00
-                      </TimelineHourLabel>
-                    ))}
-                  </TimelineHourGutter>
-                  <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
-                    {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
-                      <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
-                    ))}
-                    {tomorrowPlanItems.length === 0 ? (
-                      <TimelinePlaceholder>まだ翌日の予定がありません</TimelinePlaceholder>
-                    ) : (
-                      <>
-                        {tomorrowPlanItems
-                          .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
-                          .map((t) => {
-                            const start = timeToMinutes(t.plannedStartTime);
-                            return (
-                              <TimelineBlock
-                                key={t.localId}
-                                style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
-                                title={t.name}
-                              >
-                                {t.name}
-                              </TimelineBlock>
-                            );
-                          })}
-                        {tomorrowPlanGapCheck.gaps.map((g) => (
-                          <TimelineGapBlock
-                            key={`plan_preview_gap_${g.start}`}
-                            $alert
-                            style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
-                          >
-                            {g.minutes >= 20 ? `空き${g.minutes}分` : ''}
-                          </TimelineGapBlock>
-                        ))}
-                      </>
+                <WizardSideBySide>
+                  <WizardMainColumn>
+                    <ReviewSummaryBlock>
+                      <ReviewSummaryTitle>期日が明日の案件ネクストアクション（必須・すべて追加しないと完了できません）</ReviewSummaryTitle>
+                      {tomorrowMandatoryNas.length === 0 ? (
+                        <ReviewSummaryEmpty>期日が明日の案件ネクストアクションはありません</ReviewSummaryEmpty>
+                      ) : (
+                        <TaskList>
+                          {tomorrowMandatoryNas.map((na) => (
+                            <TaskRow key={na.id} $urgent>
+                              <TaskName>
+                                {na.companyName || na.productName || '(案件)'}: {na.actionContent}
+                              </TaskName>
+                              <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
+                                <FiPlus size={14} /> 追加
+                              </AddButton>
+                            </TaskRow>
+                          ))}
+                        </TaskList>
+                      )}
+                    </ReviewSummaryBlock>
+                    <ReviewSummaryBlock>
+                      <ReviewSummaryTitle>期日が2〜3日以内の案件ネクストアクション（任意・先取りして追加できます）</ReviewSummaryTitle>
+                      {soonOptionalNas.length === 0 ? (
+                        <ReviewSummaryEmpty>期日が2〜3日以内の案件ネクストアクションはありません</ReviewSummaryEmpty>
+                      ) : (
+                        <TaskList>
+                          {soonOptionalNas.map((na) => (
+                            <TaskRow key={na.id}>
+                              <TaskName>
+                                {na.companyName || na.productName || '(案件)'}: {na.actionContent}
+                              </TaskName>
+                              <PlannedBadge>期日 {na.actionDueDate}</PlannedBadge>
+                              <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
+                                <FiPlus size={14} /> 追加
+                              </AddButton>
+                            </TaskRow>
+                          ))}
+                        </TaskList>
+                      )}
+                    </ReviewSummaryBlock>
+                    {meetingCandidates.length > 0 && (
+                      <ReviewSummaryBlock>
+                        <ReviewSummaryTitle>翌日の定例/単発ミーティング候補（任意・議事録が自動記録されます）</ReviewSummaryTitle>
+                        <TaskList>
+                          {meetingCandidates.map((meeting) => (
+                            <TaskRow key={`${meeting.dealId}_${meeting.meetingType}`}>
+                              <TaskName>
+                                {meeting.companyName}: {meeting.meetingType}MTG
+                                {meeting.startTime ? `（${meeting.startTime}〜）` : ''}
+                              </TaskName>
+                              <AddButton type="button" onClick={() => addMeetingToNextDayPlan(meeting)}>
+                                <FiPlus size={14} /> 追加
+                              </AddButton>
+                            </TaskRow>
+                          ))}
+                        </TaskList>
+                      </ReviewSummaryBlock>
                     )}
-                  </TimelineColumn>
-                </PreviewTimelineGrid>
-                <ReviewSummaryBlock>
-                  <ReviewSummaryTitle>期日が明日の案件ネクストアクション（必須・すべて追加しないと完了できません）</ReviewSummaryTitle>
-                  {tomorrowMandatoryNas.length === 0 ? (
-                    <ReviewSummaryEmpty>期日が明日の案件ネクストアクションはありません</ReviewSummaryEmpty>
-                  ) : (
-                    <TaskList>
-                      {tomorrowMandatoryNas.map((na) => (
-                        <TaskRow key={na.id} $urgent>
-                          <TaskName>
-                            {na.companyName || na.productName || '(案件)'}: {na.actionContent}
-                          </TaskName>
-                          <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
-                            <FiPlus size={14} /> 追加
-                          </AddButton>
-                        </TaskRow>
-                      ))}
-                    </TaskList>
-                  )}
-                </ReviewSummaryBlock>
-                <ReviewSummaryBlock>
-                  <ReviewSummaryTitle>期日が2〜3日以内の案件ネクストアクション（任意・先取りして追加できます）</ReviewSummaryTitle>
-                  {soonOptionalNas.length === 0 ? (
-                    <ReviewSummaryEmpty>期日が2〜3日以内の案件ネクストアクションはありません</ReviewSummaryEmpty>
-                  ) : (
-                    <TaskList>
-                      {soonOptionalNas.map((na) => (
-                        <TaskRow key={na.id}>
-                          <TaskName>
-                            {na.companyName || na.productName || '(案件)'}: {na.actionContent}
-                          </TaskName>
-                          <PlannedBadge>期日 {na.actionDueDate}</PlannedBadge>
-                          <AddButton type="button" onClick={() => addNaToNextDayPlan(na)}>
-                            <FiPlus size={14} /> 追加
-                          </AddButton>
-                        </TaskRow>
-                      ))}
-                    </TaskList>
-                  )}
-                </ReviewSummaryBlock>
-                {meetingCandidates.length > 0 && (
-                  <ReviewSummaryBlock>
-                    <ReviewSummaryTitle>翌日の定例/単発ミーティング候補（任意・議事録が自動記録されます）</ReviewSummaryTitle>
-                    <TaskList>
-                      {meetingCandidates.map((meeting) => (
-                        <TaskRow key={`${meeting.dealId}_${meeting.meetingType}`}>
-                          <TaskName>
-                            {meeting.companyName}: {meeting.meetingType}MTG
-                            {meeting.startTime ? `（${meeting.startTime}〜）` : ''}
-                          </TaskName>
-                          <AddButton type="button" onClick={() => addMeetingToNextDayPlan(meeting)}>
-                            <FiPlus size={14} /> 追加
-                          </AddButton>
-                        </TaskRow>
-                      ))}
-                    </TaskList>
-                  </ReviewSummaryBlock>
-                )}
-                {nextDayPlan.some((t) => t.earlyMorningCandidate && !t.plannedStartTime) && (
-                  <ReviewSummaryBlock>
-                    <ReviewSummaryTitle>早起き候補（開始時刻を指定してください）</ReviewSummaryTitle>
-                    <TaskList>
-                      {nextDayPlan.filter((t) => t.earlyMorningCandidate && !t.plannedStartTime).map((t) => (
-                        <TaskRow key={t.localId}>
-                          <TaskName>{t.name}</TaskName>
-                          {t.plannedMinutes != null && <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>}
-                          <TimeInput
-                            type="time"
-                            value={t.plannedStartTime || ''}
-                            onChange={(e) => updateNextDayPlanStartTime(t.localId, e.target.value)}
-                          />
-                        </TaskRow>
-                      ))}
-                    </TaskList>
-                  </ReviewSummaryBlock>
-                )}
-                <ReviewSummaryBlock>
-                  <ReviewSummaryTitle>NA（次のアクション・完了時にまとめて登録されます）</ReviewSummaryTitle>
-                  {nextDayPlan.length === 0 ? (
-                    <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
-                  ) : (
-                    <TaskList>
-                      {nextDayPlan.map((t) => (
-                        <TaskRow key={t.localId}>
-                          <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
-                          {t.naLink && <NaLinkBadge>案件NA</NaLinkBadge>}
-                          {t.meetingLink && <MeetingLinkBadge>🎥議事録自動記録</MeetingLinkBadge>}
-                          <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
-                          {t.plannedMinutes != null && (
-                            <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
-                          )}
-                          <DeleteButton onClick={() => removeNextDayTask(t.localId)}>
-                            <FiTrash2 size={14} />
-                          </DeleteButton>
-                        </TaskRow>
-                      ))}
-                    </TaskList>
-                  )}
-                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-                    <Input
-                      placeholder="タスク名を追加"
-                      value={nextDayTaskName}
-                      onChange={(e) => setNextDayTaskName(e.target.value)}
-                    />
-                    <DateInput
-                      type="date"
-                      value={nextDayTaskDate}
-                      onChange={(e) => setNextDayTaskDate(e.target.value)}
-                      title="対象日（基本は翌日）"
-                    />
-                    <MinutesInput
-                      type="number"
-                      min="1"
-                      placeholder="分"
-                      value={nextDayPlannedMinutes}
-                      onChange={(e) => setNextDayPlannedMinutes(e.target.value)}
-                    />
-                    <TimeInput
-                      type="time"
-                      value={nextDayPlannedStartTime}
-                      onChange={(e) => setNextDayPlannedStartTime(e.target.value)}
-                    />
-                    <AddButton
-                      type="button"
-                      onClick={addNextDayTask}
-                      disabled={!nextDayTaskName.trim() || !nextDayPlannedMinutesValid}
-                    >
-                      <FiPlus size={14} /> 追加
-                    </AddButton>
-                  </div>
-                </ReviewSummaryBlock>
-                {tomorrowPlanItems.length > 0 && (tomorrowPlanGapCheck.gaps.length > 0 || tomorrowPlanGapCheck.overlaps.length > 0) && (
-                  <GapWarningList>
-                    {tomorrowPlanGapCheck.gaps.map((g) => (
-                      <GapWarningItem key={`plan_gap_${g.start}`}>
-                        空いています：{minutesToTime(g.start)}〜{minutesToTime(g.end)}（{g.minutes}分）
-                      </GapWarningItem>
-                    ))}
-                    {tomorrowPlanGapCheck.overlaps.map((o, i) => (
-                      <GapWarningItem key={`plan_overlap_${i}`}>
-                        時刻が重なっています：「{o.a.name}」と「{o.b.name}」
-                      </GapWarningItem>
-                    ))}
-                  </GapWarningList>
-                )}
-                <ReviewFooter>
-                  <AddButton
-                    onClick={handleFinalizeTomorrowPlan}
-                    disabled={saving || !canFinalizeTomorrowPlan}
-                    title={!canFinalizeTomorrowPlan ? '必須のネクストアクションの追加・早起き候補の時刻指定・予定の空き時間の解消が必要です' : undefined}
-                  >
-                    <FiCheck size={14} /> 完了
-                  </AddButton>
-                </ReviewFooter>
+                    {nextDayPlan.some((t) => t.earlyMorningCandidate && !t.plannedStartTime) && (
+                      <ReviewSummaryBlock>
+                        <ReviewSummaryTitle>早起き候補（開始時刻を指定してください）</ReviewSummaryTitle>
+                        <TaskList>
+                          {nextDayPlan.filter((t) => t.earlyMorningCandidate && !t.plannedStartTime).map((t) => (
+                            <TaskRow key={t.localId}>
+                              <TaskName>{t.name}</TaskName>
+                              {t.plannedMinutes != null && <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>}
+                              <TimeInput
+                                type="time"
+                                value={t.plannedStartTime || ''}
+                                onChange={(e) => updateNextDayPlanStartTime(t.localId, e.target.value)}
+                              />
+                            </TaskRow>
+                          ))}
+                        </TaskList>
+                      </ReviewSummaryBlock>
+                    )}
+                    <ReviewSummaryBlock>
+                      <ReviewSummaryTitle>NA（次のアクション・完了時にまとめて登録されます）</ReviewSummaryTitle>
+                      {nextDayPlan.length === 0 ? (
+                        <ReviewSummaryEmpty>NAタスクはありません</ReviewSummaryEmpty>
+                      ) : (
+                        <TaskList>
+                          {nextDayPlan.map((t) => (
+                            <TaskRow key={t.localId}>
+                              <TaskName>{t.name}{t.fromCarryover ? '（未完了の繰越）' : ''}</TaskName>
+                              {t.naLink && <NaLinkBadge>案件NA</NaLinkBadge>}
+                              {t.meetingLink && <MeetingLinkBadge>🎥議事録自動記録</MeetingLinkBadge>}
+                              <PlannedBadge>{t.date}{t.plannedStartTime ? ` ${t.plannedStartTime}` : ''}</PlannedBadge>
+                              {t.plannedMinutes != null && (
+                                <PlannedBadge>予定 {t.plannedMinutes}分</PlannedBadge>
+                              )}
+                              <DeleteButton onClick={() => removeNextDayTask(t.localId)}>
+                                <FiTrash2 size={14} />
+                              </DeleteButton>
+                            </TaskRow>
+                          ))}
+                        </TaskList>
+                      )}
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                        <Input
+                          placeholder="タスク名を追加"
+                          value={nextDayTaskName}
+                          onChange={(e) => setNextDayTaskName(e.target.value)}
+                        />
+                        <DateInput
+                          type="date"
+                          value={nextDayTaskDate}
+                          onChange={(e) => setNextDayTaskDate(e.target.value)}
+                          title="対象日（基本は翌日）"
+                        />
+                        <MinutesInput
+                          type="number"
+                          min="1"
+                          placeholder="分"
+                          value={nextDayPlannedMinutes}
+                          onChange={(e) => setNextDayPlannedMinutes(e.target.value)}
+                        />
+                        <TimeInput
+                          type="time"
+                          value={nextDayPlannedStartTime}
+                          onChange={(e) => setNextDayPlannedStartTime(e.target.value)}
+                        />
+                        <AddButton
+                          type="button"
+                          onClick={addNextDayTask}
+                          disabled={!nextDayTaskName.trim() || !nextDayPlannedMinutesValid}
+                        >
+                          <FiPlus size={14} /> 追加
+                        </AddButton>
+                      </div>
+                    </ReviewSummaryBlock>
+                    {tomorrowPlanItems.length > 0 && (tomorrowPlanGapCheck.gaps.length > 0 || tomorrowPlanGapCheck.overlaps.length > 0) && (
+                      <GapWarningList>
+                        {tomorrowPlanGapCheck.gaps.map((g) => (
+                          <GapWarningItem key={`plan_gap_${g.start}`}>
+                            空いています：{minutesToTime(g.start)}〜{minutesToTime(g.end)}（{g.minutes}分）
+                          </GapWarningItem>
+                        ))}
+                        {tomorrowPlanGapCheck.overlaps.map((o, i) => (
+                          <GapWarningItem key={`plan_overlap_${i}`}>
+                            時刻が重なっています：「{o.a.name}」と「{o.b.name}」
+                          </GapWarningItem>
+                        ))}
+                      </GapWarningList>
+                    )}
+                    <ReviewFooter>
+                      <AddButton
+                        onClick={handleFinalizeTomorrowPlan}
+                        disabled={saving || !canFinalizeTomorrowPlan}
+                        title={!canFinalizeTomorrowPlan ? '必須のネクストアクションの追加・早起き候補の時刻指定・予定の空き時間の解消が必要です' : undefined}
+                      >
+                        <FiCheck size={14} /> 完了
+                      </AddButton>
+                    </ReviewFooter>
+                  </WizardMainColumn>
+                  <WizardSideColumn style={{ maxHeight: '85vh' }}>
+                    <ReviewSummaryTitle>翌日の予定プレビュー</ReviewSummaryTitle>
+                    <PreviewTimelineGrid>
+                      <TimelineHourGutter style={{ height: TIMELINE_HEIGHT }}>
+                        {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                          <TimelineHourLabel key={h} style={{ top: timelineTopPx(h * 60) }}>
+                            {h}:00
+                          </TimelineHourLabel>
+                        ))}
+                      </TimelineHourGutter>
+                      <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
+                        {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                          <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
+                        ))}
+                        {tomorrowPlanItems.length === 0 ? (
+                          <TimelinePlaceholder>まだ翌日の予定がありません</TimelinePlaceholder>
+                        ) : (
+                          <>
+                            {tomorrowPlanItems
+                              .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
+                              .map((t) => {
+                                const start = timeToMinutes(t.plannedStartTime);
+                                return (
+                                  <TimelineBlock
+                                    key={t.localId}
+                                    style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
+                                    title={t.name}
+                                  >
+                                    {t.name}
+                                  </TimelineBlock>
+                                );
+                              })}
+                            {tomorrowPlanGapCheck.gaps.map((g) => (
+                              <TimelineGapBlock
+                                key={`plan_preview_gap_${g.start}`}
+                                $alert
+                                style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
+                              >
+                                {g.minutes >= 20 ? `空き${g.minutes}分` : ''}
+                              </TimelineGapBlock>
+                            ))}
+                          </>
+                        )}
+                      </TimelineColumn>
+                    </PreviewTimelineGrid>
+                  </WizardSideColumn>
+                </WizardSideBySide>
               </>
             )}
           </ReviewBody>
