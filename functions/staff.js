@@ -158,6 +158,146 @@ function createStaffRouter({ admin, db }) {
   });
 
   /**
+   * GET /api/staff/chatwork-contacts?staffId=xxx
+   * 担当者の既存Chatworkコンタクト一覧を取得する
+   * （ルーム作成時に社外メンバーを検索・選択するため。ChatworkのAPIはメールアドレスだけでの
+   *   新規招待に対応しておらず、既にコンタクトの相手からしか選べない）
+   */
+  router.get('/chatwork-contacts', async (req, res) => {
+    if (!requireAppSecret(req, res)) return;
+    try {
+      const { staffId } = req.query;
+      if (!staffId) return res.status(400).json({ error: 'staffId は必須です' });
+      const token = await getSecret(chatworkSecretName(staffId));
+      if (!token) {
+        return res.status(404).json({ error: 'この担当者はChatworkが未連携です' });
+      }
+      const contactsRes = await fetch(`${CHATWORK_API_BASE}/contacts`, {
+        headers: { 'X-ChatWorkToken': token }
+      });
+      if (!contactsRes.ok) {
+        return res.status(502).json({ error: 'Chatwork APIの呼び出しに失敗しました' });
+      }
+      const contacts = await contactsRes.json();
+      return res.status(200).json({
+        contacts: contacts.map((c) => ({
+          accountId: String(c.account_id),
+          name: c.name,
+          organizationName: c.organization_name || ''
+        }))
+      });
+    } catch (error) {
+      console.error('Chatworkコンタクト一覧取得エラー:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  /**
+   * POST /api/staff/chatwork-create-room
+   * body: { staffId: string, name: string, memberAccountIds: string[] }
+   * 担当者のトークンで新しいChatworkルームを作成する。担当者本人は自動的に管理者として含める。
+   * 選択されたメンバー（社内・社外どちらもコンタクト経由）はメンバーとして追加する
+   */
+  router.post('/chatwork-create-room', async (req, res) => {
+    if (!requireAppSecret(req, res)) return;
+    try {
+      const { staffId, name, memberAccountIds } = req.body || {};
+      if (!staffId || !name) {
+        return res.status(400).json({ error: 'staffId, name は必須です' });
+      }
+      const token = await getSecret(chatworkSecretName(staffId));
+      if (!token) {
+        return res.status(404).json({ error: 'この担当者はChatworkが未連携です' });
+      }
+      const meRes = await fetch(`${CHATWORK_API_BASE}/me`, {
+        headers: { 'X-ChatWorkToken': token }
+      });
+      if (!meRes.ok) {
+        return res.status(400).json({ error: 'Chatworkのトークンが無効です' });
+      }
+      const me = await meRes.json();
+      const selfId = String(me.account_id);
+      const memberIds = (Array.isArray(memberAccountIds) ? memberAccountIds : [])
+        .map(String)
+        .filter((id) => id !== selfId);
+
+      const body = new URLSearchParams({
+        name,
+        members_admin_ids: selfId
+      });
+      if (memberIds.length > 0) body.set('members_member_ids', memberIds.join(','));
+
+      const createRes = await fetch(`${CHATWORK_API_BASE}/rooms`, {
+        method: 'POST',
+        headers: {
+          'X-ChatWorkToken': token,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text().catch(() => '');
+        return res.status(502).json({ error: `Chatworkルーム作成に失敗しました: ${text}` });
+      }
+      const created = await createRes.json();
+      return res.status(200).json({ roomId: String(created.room_id) });
+    } catch (error) {
+      console.error('Chatworkルーム作成エラー:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  /**
+   * POST /api/staff/chatwork-invite-link
+   * body: { staffId: string, roomId: string }
+   * まだコンタクトでない相手を招待するためのルーム招待リンクを発行する（無ければ作成、
+   * 既にあれば既存のものを返す）。発行したURLはダッシュボード上に表示し、担当者が
+   * コピーしてメール等で相手に送る運用にする（Chatwork APIにメールアドレスだけでの
+   * 新規招待は無いため）
+   */
+  router.post('/chatwork-invite-link', async (req, res) => {
+    if (!requireAppSecret(req, res)) return;
+    try {
+      const { staffId, roomId } = req.body || {};
+      if (!staffId || !roomId) {
+        return res.status(400).json({ error: 'staffId, roomId は必須です' });
+      }
+      const token = await getSecret(chatworkSecretName(staffId));
+      if (!token) {
+        return res.status(404).json({ error: 'この担当者はChatworkが未連携です' });
+      }
+
+      const existingRes = await fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/link`, {
+        headers: { 'X-ChatWorkToken': token }
+      });
+      if (existingRes.ok) {
+        const existing = await existingRes.json();
+        if (existing.public) {
+          return res.status(200).json({ url: existing.url });
+        }
+      }
+
+      const createRes = await fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/link`, {
+        method: 'POST',
+        headers: {
+          'X-ChatWorkToken': token,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({ need_acceptance: '1' })
+      });
+      if (!createRes.ok) {
+        const text = await createRes.text().catch(() => '');
+        return res.status(502).json({ error: `Chatwork招待リンクの発行に失敗しました: ${text}` });
+      }
+      const created = await createRes.json();
+      return res.status(200).json({ url: created.url });
+    } catch (error) {
+      console.error('Chatwork招待リンク発行エラー:', error);
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  /**
    * POST /api/staff/night-review-complete
    * body: { representative: string, date: string ("YYYY-MM-DD") }
    * 日報画面の「完了」ボタンから呼ばれる。夜の振り返りが終わったことを記録し、

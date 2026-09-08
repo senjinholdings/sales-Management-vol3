@@ -233,9 +233,15 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.49.0
+- **現在バージョン**: v2.50.0
 - **最終更新**: 2026年9月8日
 - **直近の更新内容**:
+  - 案件詳細パネルのMTG設定から、Chatworkルーム・Slackチャンネルの作成・招待をダッシュボード側から行えるように（フェーズ1）
+    - Chatwork: 担当者のトークンで新規ルームを作成し、社内メンバー・担当者の既存コンタクト（社外含む）をその場で追加できる。作成後は`chatworkRoomId`に自動保存（`functions/staff.js`に`chatwork-contacts`/`chatwork-create-room`/`chatwork-invite-link`を追加）
+    - Chatworkはメールアドレスだけでの新規招待に対応していないため、まだコンタクトでない相手向けには「招待リンク」を発行してダッシュボード上に表示する方式（担当者がコピーして送る）
+    - Slack: 新規`functions/slackChannels.js`でチャンネルを作成し、社内メンバーは即時招待（メール→Slack ID解決）、社外（クライアント）メンバーはSlack Connect（`conversations.inviteShared`）でメールアドレス招待する。作成後は`slackChannelId`に自動保存
+    - 現在の共有Slack Bot（`SLACK_BOT_TOKEN`）は社内専用スコープのみのため、Slack側のボタンはSlack Connect有効化・Bot再インストール（ワークスペース管理者による一回限りの作業）が済むまでは権限不足エラーになる想定（Chatwork側の機能には影響しない）
+    - フェーズ2（Chatworkのチャット履歴表示・返信のダッシュボード内埋め込み）・フェーズ3（招待メールのGmail送信・返信の統合）は未実装（設計のみ）
   - モール売上データの督促Slackメッセージに「今回は売上なし」ボタンを追加
     - `functions/mallUpdateGuard.js`が7日以上データ未更新のモール商品をSlackで督促する仕組み（既存）に、実際に売上が無く入稿するデータが無い場合向けのボタンを追加
     - 押すと`mallUpdateChecks/{checkId}`に`noSalesAckedDate`（押した日のJST日付）を記録し、実際に入稿されたのと同じ扱いにする（滞留日数の起算日を、実際の売上データの最終日と`noSalesAckedDate`の新しい方で判定するよう`mallUpdateGuard.js`の`staleDays`計算を変更）。stateは`watching`のままで、次にまた7日以上更新が無ければ通常通り再度督促する

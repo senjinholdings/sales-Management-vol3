@@ -25,6 +25,8 @@ const createTldvRouter = require('./tldv');
 const createCalendarRouter = require('./calendar');
 // 担当者の外部サービス連携ルーター（Chatwork APIトークン登録等）
 const createStaffRouter = require('./staff');
+// ダッシュボードからのSlackチャンネル作成・招待ルーター
+const { createSlackChannelsRouter } = require('./slackChannels');
 // Slackの承認ボタン（お礼メッセージ送信）インタラクションルーター
 const { createSlackInteractionRouter } = require('./slackApproval');
 // 日報の記入漏れ防止（タイマー超過アラート・振り返り未実施リマインド）
@@ -57,6 +59,8 @@ app.use('/api/tldv', createTldvRouter({ admin, db }));
 app.use('/api/meetings', createCalendarRouter({ admin, db }));
 // 担当者連携をマウント
 app.use('/api/staff', createStaffRouter({ admin, db }));
+// Slackチャンネル作成・招待をマウント（同じ/api/staffプレフィックスに相乗り）
+app.use('/api/staff', createSlackChannelsRouter({ admin, db }));
 
 // Firestoreコレクション参照
 const actionLogsRef = db.collection('actionLogs');

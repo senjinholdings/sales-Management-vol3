@@ -173,3 +173,76 @@ export const fetchChatworkRoomMembers = async (staffId, roomId) => {
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data.members;
 };
+
+/**
+ * 担当者の既存Chatworkコンタクト一覧を取得する
+ * （ルーム作成時に社外メンバーを検索・選択するため）
+ * @param {string} staffId - ドキュメントID
+ * @returns {Promise<Array<{accountId: string, name: string, organizationName: string}>>}
+ */
+export const fetchChatworkContacts = async (staffId) => {
+  const res = await fetch(`${APP_API_BASE}/staff/chatwork-contacts?staffId=${encodeURIComponent(staffId)}`, {
+    headers: appApiHeaders()
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.contacts;
+};
+
+/**
+ * 担当者のトークンで新しいChatworkルームを作成する（担当者本人は自動的に管理者として含む）
+ * @param {string} staffId - ドキュメントID
+ * @param {string} name - ルーム名
+ * @param {string[]} memberAccountIds - メンバーとして追加するアカウントID一覧（社内・社外問わず）
+ * @returns {Promise<string>} 作成されたルームID
+ */
+export const createChatworkRoom = async (staffId, name, memberAccountIds) => {
+  const res = await fetch(`${APP_API_BASE}/staff/chatwork-create-room`, {
+    method: 'POST',
+    headers: appApiHeaders(),
+    body: JSON.stringify({ staffId, name, memberAccountIds })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.roomId;
+};
+
+/**
+ * まだコンタクトでない相手を招待するためのルーム招待リンクを発行する
+ * @param {string} staffId - ドキュメントID
+ * @param {string} roomId - ChatworkルームID
+ * @returns {Promise<string>} 招待リンクURL
+ */
+export const createChatworkInviteLink = async (staffId, roomId) => {
+  const res = await fetch(`${APP_API_BASE}/staff/chatwork-invite-link`, {
+    method: 'POST',
+    headers: appApiHeaders(),
+    body: JSON.stringify({ staffId, roomId })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.url;
+};
+
+// ============================================
+// Slackチャンネル作成・招待
+// ============================================
+
+/**
+ * Slackチャンネルを作成し、社内メンバー（メールアドレス解決）を即時招待、
+ * 社外メンバー（メールアドレス）はSlack Connectで招待する
+ * @param {string} companyName - チャンネル名の元になる会社名
+ * @param {string[]} internalEmails - 社内メンバーのメールアドレス一覧
+ * @param {string[]} externalEmails - 社外（クライアント）メンバーのメールアドレス一覧
+ * @returns {Promise<{channelId: string, channelName: string, internalResults: Array, externalResults: Array}>}
+ */
+export const createSlackChannel = async (companyName, internalEmails, externalEmails) => {
+  const res = await fetch(`${APP_API_BASE}/staff/slack-create-channel`, {
+    method: 'POST',
+    headers: appApiHeaders(),
+    body: JSON.stringify({ companyName, internalEmails, externalEmails })
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+};

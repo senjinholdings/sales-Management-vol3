@@ -14,7 +14,10 @@ import PhaseTooltip from './PhaseTooltip.js';
 import { linkifyText } from '../utils/linkify.js';
 import { db } from '../firebase.js';
 import { collection, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore';
-import { fetchAllStaff, fetchChatworkRooms, fetchChatworkRoomMembers } from '../services/staffService.js';
+import {
+  fetchAllStaff, fetchChatworkRooms, fetchChatworkRoomMembers,
+  fetchChatworkContacts, createChatworkRoom, createChatworkInviteLink, createSlackChannel
+} from '../services/staffService.js';
 import {
   updateProject,
   fetchMonthlyData, saveMonthlyData,
@@ -536,6 +539,29 @@ const SmallButton = styled.button`
   background: ${props => props.$primary ? '#3498db' : '#e9ecef'};
   color: ${props => props.$primary ? 'white' : '#495057'};
   &:hover { opacity: 0.9; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+`;
+
+/** Chatworkルーム/Slackチャンネル作成フォーム内の、リンク風の小さいボタン（ラベル横の「＋作成」等） */
+const SmallLinkButton = styled.button`
+  background: none;
+  border: none;
+  padding: 0;
+  color: #3498db;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  &:hover { text-decoration: underline; }
+  &:disabled { color: #95a5a6; cursor: not-allowed; text-decoration: none; }
+`;
+
+/** Chatworkルーム/Slackチャンネル作成フォームを囲む枠 */
+const CreatePanelBox = styled.div`
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: white;
+  border: 1px solid #dde3ea;
+  border-radius: 6px;
 `;
 
 // ============================================
@@ -1066,7 +1092,22 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
   const [slackChannelId, setSlackChannelId] = useState('');
   const [chatworkMentions, setChatworkMentions] = useState([]); // [{id, name}] 選択順
   const [repStaffId, setRepStaffId] = useState(null);
+  const [allStaff, setAllStaff] = useState([]);
   const [chatworkRooms, setChatworkRooms] = useState(null); // null=未取得/未連携
+  // Chatworkルーム作成フォーム
+  const [showRoomForm, setShowRoomForm] = useState(false);
+  const [newRoomName, setNewRoomName] = useState('');
+  const [roomInternalMembers, setRoomInternalMembers] = useState([]); // [{id, name}]
+  const [roomExternalMembers, setRoomExternalMembers] = useState([]); // [{id, name}]
+  const [chatworkContacts, setChatworkContacts] = useState(null); // null=未取得
+  const [creatingRoom, setCreatingRoom] = useState(false);
+  const [inviteLinkUrl, setInviteLinkUrl] = useState('');
+  const [invitingLink, setInvitingLink] = useState(false);
+  // Slackチャンネル作成フォーム
+  const [showChannelForm, setShowChannelForm] = useState(false);
+  const [channelInternalMembers, setChannelInternalMembers] = useState([]); // [{id, name}]
+  const [channelExternalEmails, setChannelExternalEmails] = useState('');
+  const [creatingChannel, setCreatingChannel] = useState(false);
   const [chatworkMembers, setChatworkMembers] = useState(null); // null=未取得
   const [loaded, setLoaded] = useState(false);
 
@@ -1104,6 +1145,7 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
     setRepStaffId(null);
     if (!project.representative) return;
     fetchAllStaff().then((staff) => {
+      if (!cancelled) setAllStaff(staff);
       const rep = staff.find((s) => s.name === project.representative);
       if (!rep) return;
       if (!cancelled) setRepStaffId(rep.id);
@@ -1140,6 +1182,88 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       await upsertClientMeetingSettings(project.companyName, next);
     } catch (error) {
       console.error('Failed to update client meeting settings:', error);
+    }
+  };
+
+  // 「ルームを作成」フォームを開く（担当者本人のコンタクト一覧を取得する）
+  const handleOpenRoomForm = async () => {
+    setShowRoomForm(true);
+    setNewRoomName(project.companyName || '');
+    setRoomInternalMembers([]);
+    setRoomExternalMembers([]);
+    setInviteLinkUrl('');
+    if (!repStaffId) return;
+    setChatworkContacts(null);
+    try {
+      const contacts = await fetchChatworkContacts(repStaffId);
+      setChatworkContacts(contacts);
+    } catch (error) {
+      console.error('Failed to fetch chatwork contacts:', error);
+      setChatworkContacts([]);
+    }
+  };
+
+  const handleCreateRoom = async () => {
+    if (!repStaffId || !newRoomName.trim()) return;
+    setCreatingRoom(true);
+    try {
+      const memberAccountIds = [...roomInternalMembers, ...roomExternalMembers].map(m => m.id);
+      const roomId = await createChatworkRoom(repStaffId, newRoomName.trim(), memberAccountIds);
+      setChatworkRoomId(roomId);
+      await saveSettings({ chatworkRoomId: roomId });
+      setShowRoomForm(false);
+    } catch (error) {
+      console.error('Failed to create chatwork room:', error);
+      alert(`ルームの作成に失敗しました: ${error.message}`);
+    } finally {
+      setCreatingRoom(false);
+    }
+  };
+
+  // まだコンタクトでない相手向けの招待リンクを発行する（ルーム作成後にのみ使える）
+  const handleGenerateInviteLink = async () => {
+    if (!repStaffId || !chatworkRoomId) return;
+    setInvitingLink(true);
+    try {
+      const url = await createChatworkInviteLink(repStaffId, chatworkRoomId);
+      setInviteLinkUrl(url);
+    } catch (error) {
+      console.error('Failed to generate chatwork invite link:', error);
+      alert(`招待リンクの発行に失敗しました: ${error.message}`);
+    } finally {
+      setInvitingLink(false);
+    }
+  };
+
+  const handleOpenChannelForm = () => {
+    setShowChannelForm(true);
+    setChannelInternalMembers([]);
+    setChannelExternalEmails('');
+  };
+
+  const handleCreateChannel = async () => {
+    setCreatingChannel(true);
+    try {
+      const internalEmails = channelInternalMembers
+        .map(m => allStaff.find(s => s.id === m.id)?.email)
+        .filter(Boolean);
+      const externalEmails = channelExternalEmails
+        .split(/[\n,]/)
+        .map(s => s.trim())
+        .filter(Boolean);
+      const result = await createSlackChannel(project.companyName, internalEmails, externalEmails);
+      setSlackChannelId(result.channelId);
+      await saveSettings({ slackChannelId: result.channelId });
+      const failed = [...result.internalResults, ...result.externalResults].filter(r => !r.ok);
+      if (failed.length > 0) {
+        alert(`チャンネルは作成しましたが、一部招待に失敗しました:\n${failed.map(f => `${f.email}: ${f.error}`).join('\n')}`);
+      }
+      setShowChannelForm(false);
+    } catch (error) {
+      console.error('Failed to create slack channel:', error);
+      alert(`チャンネルの作成に失敗しました: ${error.message}`);
+    } finally {
+      setCreatingChannel(false);
     }
   };
 
@@ -1199,7 +1323,12 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
       </div>
       <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <FormGroup $noMargin style={{ flex: '1 1 240px' }}>
-          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>Chatworkのルーム</Label>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            Chatworkのルーム
+            {repStaffId && (
+              <SmallLinkButton type="button" onClick={handleOpenRoomForm}>＋ルームを作成</SmallLinkButton>
+            )}
+          </Label>
           {chatworkRooms ? (
             <SearchablePicker
               selectedId={chatworkRoomId}
@@ -1216,6 +1345,18 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
               placeholder={project.representative ? `${project.representative}がChatwork未連携（担当者管理で連携すると一覧から選べます）` : 'ルームID（担当者未設定）'}
               style={{ fontSize: '0.85rem', padding: '0.5rem' }}
             />
+          )}
+          {chatworkRoomId && (
+            <div style={{ marginTop: '0.35rem' }}>
+              <SmallLinkButton type="button" onClick={handleGenerateInviteLink} disabled={invitingLink}>
+                {invitingLink ? '発行中...' : 'コンタクトでない相手向けの招待リンクを発行'}
+              </SmallLinkButton>
+              {inviteLinkUrl && (
+                <div style={{ fontSize: '0.78rem', color: '#2c3e50', marginTop: '0.3rem', wordBreak: 'break-all' }}>
+                  {inviteLinkUrl}
+                </div>
+              )}
+            </div>
           )}
         </FormGroup>
         <FormGroup $noMargin style={{ flex: '1 1 240px' }}>
@@ -1238,7 +1379,10 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
           )}
         </FormGroup>
         <FormGroup $noMargin style={{ flex: '1 1 200px' }}>
-          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>SlackチャンネルID</Label>
+          <Label style={{ fontSize: '0.78rem', color: '#7f8c8d', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            SlackチャンネルID
+            <SmallLinkButton type="button" onClick={handleOpenChannelForm}>＋チャンネルを作成</SmallLinkButton>
+          </Label>
           <Input
             value={slackChannelId}
             onChange={e => setSlackChannelId(e.target.value)}
@@ -1248,6 +1392,86 @@ const MeetUrlsSection = ({ project, refreshKey }) => {
           />
         </FormGroup>
       </div>
+
+      {showRoomForm && (
+        <CreatePanelBox>
+          <FormGroup $noMargin style={{ marginBottom: '0.5rem' }}>
+            <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>ルーム名</Label>
+            <Input
+              value={newRoomName}
+              onChange={e => setNewRoomName(e.target.value)}
+              style={{ fontSize: '0.85rem', padding: '0.5rem' }}
+            />
+          </FormGroup>
+          <FormGroup $noMargin style={{ marginBottom: '0.5rem' }}>
+            <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>社内メンバー</Label>
+            <MultiSearchablePicker
+              selectedItems={roomInternalMembers}
+              items={allStaff.filter(s => s.chatworkAccountId).map(s => ({ id: s.chatworkAccountId, name: s.name }))}
+              onChange={setRoomInternalMembers}
+              placeholder="名前で検索..."
+              emptyLabel="Chatwork連携済みの社内メンバーがいません"
+            />
+          </FormGroup>
+          <FormGroup $noMargin style={{ marginBottom: '0.5rem' }}>
+            <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>社外メンバー（既存コンタクトから選択）</Label>
+            {chatworkContacts ? (
+              <MultiSearchablePicker
+                selectedItems={roomExternalMembers}
+                items={chatworkContacts.map(c => ({ id: c.accountId, name: `${c.name}${c.organizationName ? `（${c.organizationName}）` : ''}` }))}
+                onChange={setRoomExternalMembers}
+                placeholder="名前で検索..."
+                emptyLabel="一致するコンタクトがいません"
+              />
+            ) : (
+              <div style={{ fontSize: '0.78rem', color: '#95a5a6' }}>コンタクト取得中...</div>
+            )}
+            <div style={{ fontSize: '0.72rem', color: '#95a5a6', marginTop: '0.25rem' }}>
+              まだコンタクトでない相手は、ルーム作成後に発行できる招待リンクで案内してください
+            </div>
+          </FormGroup>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <SmallButton $primary type="button" onClick={handleCreateRoom} disabled={creatingRoom || !newRoomName.trim()}>
+              {creatingRoom ? '作成中...' : '作成する'}
+            </SmallButton>
+            <SmallLinkButton type="button" onClick={() => setShowRoomForm(false)}>キャンセル</SmallLinkButton>
+          </div>
+        </CreatePanelBox>
+      )}
+
+      {showChannelForm && (
+        <CreatePanelBox>
+          <div style={{ fontSize: '0.72rem', color: '#95a5a6', marginBottom: '0.5rem' }}>
+            チャンネル名は会社名から自動生成されます。社外メンバーへの招待はSlack Connect経由のため、相手がメールを承諾するまで参加は確定しません
+          </div>
+          <FormGroup $noMargin style={{ marginBottom: '0.5rem' }}>
+            <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>社内メンバー</Label>
+            <MultiSearchablePicker
+              selectedItems={channelInternalMembers}
+              items={allStaff.filter(s => s.email).map(s => ({ id: s.id, name: s.name }))}
+              onChange={setChannelInternalMembers}
+              placeholder="名前で検索..."
+              emptyLabel="メールアドレス登録済みの社内メンバーがいません"
+            />
+          </FormGroup>
+          <FormGroup $noMargin style={{ marginBottom: '0.5rem' }}>
+            <Label style={{ fontSize: '0.78rem', color: '#7f8c8d' }}>社外メンバーのメールアドレス（1行に1件）</Label>
+            <textarea
+              value={channelExternalEmails}
+              onChange={e => setChannelExternalEmails(e.target.value)}
+              placeholder={'client@example.com'}
+              rows={3}
+              style={{ width: '100%', boxSizing: 'border-box', fontSize: '0.85rem', padding: '0.5rem', fontFamily: 'inherit' }}
+            />
+          </FormGroup>
+          <div style={{ display: 'flex', gap: '0.5rem' }}>
+            <SmallButton $primary type="button" onClick={handleCreateChannel} disabled={creatingChannel}>
+              {creatingChannel ? '作成中...' : '作成する'}
+            </SmallButton>
+            <SmallLinkButton type="button" onClick={() => setShowChannelForm(false)}>キャンセル</SmallLinkButton>
+          </div>
+        </CreatePanelBox>
+      )}
     </div>
   );
 };
