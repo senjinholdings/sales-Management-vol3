@@ -157,6 +157,7 @@ async function postMallAlert(slack, checkRef, check, { product, channel, latestS
         type: 'actions',
         elements: [
           { type: 'button', text: { type: 'plain_text', text: buttonText }, action_id: actionId, value },
+          { type: 'button', text: { type: 'plain_text', text: '今回は売上なし' }, action_id: 'mall_mark_no_sales', value },
           { type: 'button', text: { type: 'plain_text', text: '案件終了済み' }, action_id: 'mall_mark_finished', value }
         ]
       }
@@ -218,7 +219,6 @@ function createMallUpdateChecker({ admin, db }) {
         const latestSalesDate = salesRows
           .filter((r) => r.channel === channel)
           .reduce((max, r) => (r.date && (!max || r.date > max) ? r.date : max), null);
-        const staleDays = daysSince(latestSalesDate);
 
         const checkId = `${product.id}_${channel}`;
         const checkRef = db.collection('mallUpdateChecks').doc(checkId);
@@ -226,6 +226,13 @@ function createMallUpdateChecker({ admin, db }) {
         const check = checkSnap.exists ? checkSnap.data() : { state: 'watching' };
         const now = admin.firestore.Timestamp.now();
         const canEscalate = Date.now() - (check.lastEscalatedAt?.toMillis?.() || 0) >= ESCALATION_THROTTLE_MS;
+
+        // 「今回は売上なし」ボタンで確認済みの日付があれば、実際の売上データより新しい方を
+        // 「入稿があった扱い」の基準日にする（実際に入稿されたのと同じ扱いにするため）
+        const effectiveLatestDate = check.noSalesAckedDate && (!latestSalesDate || check.noSalesAckedDate > latestSalesDate)
+          ? check.noSalesAckedDate
+          : latestSalesDate;
+        const staleDays = daysSince(effectiveLatestDate);
 
         try {
           if (check.state === 'finished') {

@@ -20,6 +20,16 @@ const OpenAI = require('openai');
 const { WebClient } = require('@slack/web-api');
 const { env } = require('./authHelpers');
 
+/** 日付をAsia/Tokyo（UTC+9固定・DSTなし）の "YYYY-MM-DD" に変換する（dailyReportGuard.jsと同じ規則。
+ * 循環require回避のためここに複製する） */
+function toJstDateStr(date) {
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const y = jst.getUTCFullYear();
+  const m = String(jst.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(jst.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 /**
  * 担当者のメールアドレスからSlackユーザーIDを特定する。
  * Botトークンに users:read.email スコープが無いと失敗する
@@ -330,6 +340,7 @@ function createSlackInteractionRouter({ admin, db }) {
               type: 'actions',
               elements: [
                 { type: 'button', text: { type: 'plain_text', text: 'もう一度確認送付する' }, action_id: 'mall_resend_confirmation', value },
+                { type: 'button', text: { type: 'plain_text', text: '今回は売上なし' }, action_id: 'mall_mark_no_sales', value },
                 { type: 'button', text: { type: 'plain_text', text: '案件終了済み' }, action_id: 'mall_mark_finished', value }
               ]
             }
@@ -357,6 +368,34 @@ function createSlackInteractionRouter({ admin, db }) {
             {
               type: 'section',
               text: { type: 'mrkdwn', text: `🏁 案件終了として記録しました（<@${payload.user.id}>が実行）。今後の督促は止めます（次に新しいデータが入ったら自動的に監視を再開します）` }
+            }
+          ]
+        });
+        return;
+      }
+
+      if (action?.action_id === 'mall_mark_no_sales') {
+        const { checkId } = JSON.parse(action.value);
+        // 実際に入稿されたのと同じ扱いにする＝滞留日数の起算日を今日に更新する
+        // （mallUpdateGuard.jsのstaleDays計算で、latestSalesDateとnoSalesAckedDateの
+        // 新しい方を使う。stateはwatchingのまま＝次に7日経てば通常通りまた督促する）
+        await db.collection('mallUpdateChecks').doc(checkId).set({
+          state: 'watching',
+          noSalesAckedDate: toJstDateStr(new Date()),
+          confirmationRequestedAt: null,
+          lastEscalatedAt: null,
+          updatedAt: admin.firestore.Timestamp.now()
+        }, { merge: true });
+
+        const slack = new WebClient(token);
+        await slack.chat.update({
+          channel: payload.channel.id,
+          ts: payload.message.ts,
+          text: '今回は売上なしとして記録しました',
+          blocks: [
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: `📭 今回は売上なしとして記録しました（<@${payload.user.id}>が実行）。入稿があった扱いとして、次にまた7日以上更新が無ければ改めて確認します` }
             }
           ]
         });
