@@ -893,6 +893,15 @@ const TimelineNowLine = styled.div`
   z-index: 5;
 `;
 
+// 手順5（翌日の予定作り）専用の、予定だけの1列プレビュー（時刻軸+予定列のみ。実績列は無い）
+const PreviewTimelineGrid = styled.div`
+  display: grid;
+  grid-template-columns: 42px 1fr;
+  grid-template-rows: 1fr;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+`;
+
 const TimelinePlaceholder = styled.div`
   display: flex;
   align-items: center;
@@ -1546,19 +1555,28 @@ const DailyTimerPage = () => {
         const tomorrowWeekday = WEEKDAYS[new Date(ty, tm - 1, td).getDay()];
         const settingsByCompany = new Map(clientSettings.map((s) => [s.companyName, s]));
 
-        const recurringCandidates = deals
-          .filter((deal) => {
-            const setting = settingsByCompany.get(deal.companyName);
-            return setting && setting.meetUrl && setting.recurringDayOfWeek === tomorrowWeekday;
-          })
-          .map((deal) => ({
-            dealId: deal.id,
-            companyName: deal.companyName || deal.productName || '(社名未設定)',
-            meetUrl: settingsByCompany.get(deal.companyName).meetUrl,
+        // 定例は会社単位の設定（clientMeetingSettingsがcompanyNameキー）のため、
+        // 同じ会社の商材が複数あっても候補は1件にまとめる
+        const recurringCompanyNames = new Set(
+          deals
+            .filter((deal) => {
+              const setting = settingsByCompany.get(deal.companyName);
+              return setting && setting.meetUrl && setting.recurringDayOfWeek === tomorrowWeekday;
+            })
+            .map((deal) => deal.companyName)
+        );
+        const recurringCandidates = Array.from(recurringCompanyNames).map((companyName) => {
+          const setting = settingsByCompany.get(companyName);
+          const dealId = deals.find((d) => d.companyName === companyName)?.id;
+          return {
+            dealId,
+            companyName: companyName || '(社名未設定)',
+            meetUrl: setting.meetUrl,
             meetingType: '定例',
             scheduledDate: tomorrowDate,
-            startTime: settingsByCompany.get(deal.companyName).recurringTime || null
-          }));
+            startTime: setting.recurringTime || null
+          };
+        });
 
         const adhocCandidates = (await Promise.all(deals.map(async (deal) => {
           const slot = await fetchMaterialSlot(deal.id, tomorrowDate);
@@ -1685,9 +1703,9 @@ const DailyTimerPage = () => {
     () => computeScheduleGaps(selectedDayDoc?.tasks || []),
     [selectedDayDoc]
   );
-  // 時刻が重なっているタスクのID集合（一覧のその場で赤く目立たせ、「予定を確定する」が
+  // 予定時刻が重なっているタスクのID集合（確定前の判定。「予定を確定する」が
   // 押せない原因にすぐ気づけるようにする）
-  const overlappingTaskIds = useMemo(() => {
+  const plannedOverlappingTaskIds = useMemo(() => {
     const ids = new Set();
     scheduleCheck.overlaps.forEach((o) => {
       ids.add(o.a.id);
@@ -1719,6 +1737,26 @@ const DailyTimerPage = () => {
     });
     return blocks;
   }, [selectedDayDoc, now]);
+
+  // 実績（sessions）同士が実際に時刻で重なっているタスクのID集合（確定後の判定用）。
+  // 予定確定後は、計画上の重なりではなく「実際に二重に記録された時間」だけを問題にする
+  // （確定後は予定がずれるのが普通のため、確定前の判定とは別に切り出す）
+  const actualOverlappingTaskIds = useMemo(() => {
+    const ids = new Set();
+    const sorted = [...actualBlocks].sort((a, b) => a.startMin - b.startMin);
+    for (let i = 0; i < sorted.length; i++) {
+      for (let j = i + 1; j < sorted.length; j++) {
+        if (sorted[j].startMin >= sorted[i].endMin) break;
+        if (sorted[j].taskId === sorted[i].taskId) continue;
+        ids.add(sorted[i].taskId);
+        ids.add(sorted[j].taskId);
+      }
+    }
+    return ids;
+  }, [actualBlocks]);
+
+  // 確定前は予定時刻の重なり、確定後は実績（sessions）の重なりを見る
+  const overlappingTaskIds = planConfirmed ? actualOverlappingTaskIds : plannedOverlappingTaskIds;
 
   // 実績側の「何も動いていなかった時間」（空白）。今日はまだ来ていない未来分を含めないよう現在時刻までに絞る
   const actualRangeEnd = isTodaySelected
@@ -2983,6 +3021,49 @@ const DailyTimerPage = () => {
             {reviewStep === 5 && (
               <>
                 <WizardIntro>翌日の予定を作りましょう。空いている時間がなくなるまで埋めると完了できます。</WizardIntro>
+                <PreviewTimelineGrid>
+                  <TimelineHourGutter style={{ height: TIMELINE_HEIGHT }}>
+                    {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                      <TimelineHourLabel key={h} style={{ top: timelineTopPx(h * 60) }}>
+                        {h}:00
+                      </TimelineHourLabel>
+                    ))}
+                  </TimelineHourGutter>
+                  <TimelineColumn style={{ height: TIMELINE_HEIGHT }}>
+                    {Array.from({ length: 19 }, (_, i) => 6 + i).map((h) => (
+                      <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
+                    ))}
+                    {tomorrowPlanItems.length === 0 ? (
+                      <TimelinePlaceholder>まだ翌日の予定がありません</TimelinePlaceholder>
+                    ) : (
+                      <>
+                        {tomorrowPlanItems
+                          .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
+                          .map((t) => {
+                            const start = timeToMinutes(t.plannedStartTime);
+                            return (
+                              <TimelineBlock
+                                key={t.localId}
+                                style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
+                                title={t.name}
+                              >
+                                {t.name}
+                              </TimelineBlock>
+                            );
+                          })}
+                        {tomorrowPlanGapCheck.gaps.map((g) => (
+                          <TimelineGapBlock
+                            key={`plan_preview_gap_${g.start}`}
+                            $alert
+                            style={{ top: timelineTopPx(g.start), height: timelineHeightPx(g.start, g.end) }}
+                          >
+                            {g.minutes >= 20 ? `空き${g.minutes}分` : ''}
+                          </TimelineGapBlock>
+                        ))}
+                      </>
+                    )}
+                  </TimelineColumn>
+                </PreviewTimelineGrid>
                 <ReviewSummaryBlock>
                   <ReviewSummaryTitle>期日が明日の案件ネクストアクション（必須・すべて追加しないと完了できません）</ReviewSummaryTitle>
                   {tomorrowMandatoryNas.length === 0 ? (
