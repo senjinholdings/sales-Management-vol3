@@ -3345,19 +3345,21 @@ const DailyTimerPage = () => {
                   <TimelineHourLine key={h} style={{ top: timelineTopPx(h * 60) }} />
                 ))}
                 {planConfirmed ? (
-                  selectedDayDoc.planSnapshot.tasks.map((t) => {
-                    const start = timeToMinutes(t.plannedStartTime);
-                    return (
-                      <TimelineBlock
-                        key={t.id}
-                        style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + (t.plannedMinutes || 0)) }}
-                        onClick={() => handleTimelineBlockClick(t.id)}
-                        title={`${t.name}（${formatTimeHM(t.plannedStartTime)}〜）`}
-                      >
-                        {t.name}
-                      </TimelineBlock>
-                    );
-                  })
+                  selectedDayDoc.planSnapshot.tasks
+                    .filter((t) => t.plannedStartTime && t.plannedMinutes != null)
+                    .map((t) => {
+                      const start = timeToMinutes(t.plannedStartTime);
+                      return (
+                        <TimelineBlock
+                          key={t.id}
+                          style={{ top: timelineTopPx(start), height: timelineHeightPx(start, start + t.plannedMinutes) }}
+                          onClick={() => handleTimelineBlockClick(t.id)}
+                          title={`${t.name}（${formatTimeHM(t.plannedStartTime)}〜）`}
+                        >
+                          {t.name}
+                        </TimelineBlock>
+                      );
+                    })
                 ) : isTodaySelected ? (
                   <>
                     {(selectedDayDoc?.tasks || [])
