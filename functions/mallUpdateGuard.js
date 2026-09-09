@@ -35,7 +35,6 @@ const FIRESTORE_DOCS_BASE = `https://firestore.googleapis.com/v1/projects/${MALL
 
 const NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR'; // #営業_日報
 const REP_EMAIL = 'hikaru.arahata@senjinholdings.com';
-const MANAGER_EMAIL = 'yoh.masuda@senjinholdings.com';
 
 const STALE_DAYS = 7;
 const ESCALATION_THROTTLE_MS = 30 * 60 * 1000; // 30分（同じ督促を連投しない間隔）
@@ -107,12 +106,10 @@ function daysSince(dateStr) {
   return (Date.now() - d.getTime()) / (24 * 60 * 60 * 1000);
 }
 
+// 以前は増田さん宛にもメンションしていたが、リマインド系の通知からは外すことになった
 async function buildMentions(slack) {
-  const [repId, managerId] = await Promise.all([
-    resolveSlackUserId(slack, REP_EMAIL),
-    resolveSlackUserId(slack, MANAGER_EMAIL)
-  ]);
-  return [repId, managerId].filter(Boolean).map((id) => `<@${id}>`).join(' ');
+  const repId = await resolveSlackUserId(slack, REP_EMAIL);
+  return repId ? `<@${repId}>` : '';
 }
 
 /**
