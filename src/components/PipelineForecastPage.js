@@ -195,6 +195,32 @@ const fetchDealActiveNa = async (dealId, subCol) => {
   return best;
 };
 
+/**
+ * 案件の最新の営業記録（dateが最も新しいレコード）のbudgetを返す。
+ * 案件本体のexpectedBudgetは登録時に一度書かれるだけで、その後に営業記録側で
+ * 予算を更新しても自動転記されない（CLAUDE.mdのデータ構造セクション参照）ため、
+ * この画面の想定予算は営業記録の最新値を正として都度導出する。
+ * dateと1円以上のbudgetを持つレコードが1件も無ければnull（呼び出し側で
+ * expectedBudgetにフォールバック）
+ */
+const fetchLatestRecordBudget = async (dealId, subCol) => {
+  try {
+    const recordsSnap = await getDocs(collection(db, 'progressDashboard', dealId, subCol));
+    let latest = null;
+    recordsSnap.forEach((recDoc) => {
+      const rd = recDoc.data();
+      if (!rd.date) return;
+      const budget = typeof rd.budget === 'string' ? Number(rd.budget) : rd.budget;
+      if (!Number.isFinite(budget) || budget <= 0) return;
+      if (!latest || rd.date > latest.date) latest = { date: rd.date, budget };
+    });
+    return latest ? latest.budget : null;
+  } catch (error) {
+    // 権限やデータ不整合でこの案件だけ読めない場合はexpectedBudgetにフォールバック
+    return null;
+  }
+};
+
 // ============================================
 // Styled Components
 // ============================================
@@ -828,14 +854,16 @@ function PipelineForecastPage() {
       );
 
       const withNa = await Promise.all(filtered.map(async (d) => {
-        const [na, weeklySnap, nextWeeklySnap] = await Promise.all([
+        const [na, weeklySnap, nextWeeklySnap, latestBudget] = await Promise.all([
           fetchDealActiveNa(d.id, subCol).catch(() => null),
           getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null),
-          getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', nextWeekId)).catch(() => null)
+          getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', nextWeekId)).catch(() => null),
+          fetchLatestRecordBudget(d.id, subCol)
         ]);
         const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
         return {
           ...d,
+          expectedBudget: latestBudget ?? d.expectedBudget,
           landingProbability: weekly?.probability != null ? weekly.probability : (PHASE_PROBABILITY[d.status] || 0),
           landingStatusNote: weekly?.statusNote || '',
           predictedNextWeek: !!nextWeeklySnap?.data()?.predictedToClose,
@@ -857,7 +885,10 @@ function PipelineForecastPage() {
         const weeklySnap = await getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null);
         const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
         if (!weekly?.predictedToClose) return null;
-        return { ...d, missedReason: weekly.missedReason || '' };
+        // 成約予定リストは区分を問わないため、案件ごとのisExistingProjectに対応する側を見る
+        const dealSubCol = d.isExistingProject === true ? 'salesRecords' : 'newCaseSalesRecords';
+        const latestBudget = await fetchLatestRecordBudget(d.id, dealSubCol);
+        return { ...d, expectedBudget: latestBudget ?? d.expectedBudget, missedReason: weekly.missedReason || '' };
       }));
       setPredictedDeals(predicted.filter(Boolean));
     } catch (error) {
@@ -883,10 +914,14 @@ function PipelineForecastPage() {
           d.representative === REP_NAME && OPEN_PHASES.includes(d.status) && !d.excludedFromForecast
         );
         const forecasts = await Promise.all(repOpenDeals.map(async (d) => {
-          const weeklySnap = await getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null);
+          const dealSubCol = d.isExistingProject === true ? 'salesRecords' : 'newCaseSalesRecords';
+          const [weeklySnap, latestBudget] = await Promise.all([
+            getDoc(doc(db, 'progressDashboard', d.id, 'weeklyForecasts', selectedWeekId)).catch(() => null),
+            fetchLatestRecordBudget(d.id, dealSubCol)
+          ]);
           const weekly = weeklySnap?.exists() ? weeklySnap.data() : null;
           const probability = weekly?.probability != null ? weekly.probability : (PHASE_PROBABILITY[d.status] || 0);
-          return { isExistingProject: !!d.isExistingProject, value: (d.expectedBudget || 0) * probability / 100 };
+          return { isExistingProject: !!d.isExistingProject, value: ((latestBudget ?? d.expectedBudget) || 0) * probability / 100 };
         }));
         if (!cancelled) setCombinedForecasts(forecasts);
       } catch (error) {
