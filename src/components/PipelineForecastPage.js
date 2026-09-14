@@ -1015,13 +1015,16 @@ function PipelineForecastPage() {
     }));
   }, [currentMonthInfo, recordsForType]);
 
+  // 表示中の週（selectedWeekId。週選択で過去に戻れる）に確定した案件を出す。
+  // 以前は常に実際の「今週」で絞っていたため、週選択で過去週に戻ってもここだけ
+  // 動かず、実際の今週にまだ何も確定していないと常に空欄に見えるバグがあった
   const thisWeekRecords = useMemo(() => {
     if (!isCurrentQuarter) return [];
-    const { start, end } = getWeekRange(new Date());
+    const { start, end } = selectedWeekRange;
     return recordsForType
       .filter((r) => r.date >= start && r.date <= end)
       .sort((a, b) => b.date - a.date);
-  }, [isCurrentQuarter, recordsForType]);
+  }, [isCurrentQuarter, recordsForType, selectedWeekRange]);
 
   const handleProbabilityInput = (dealId, value) => {
     setDeals((prev) => prev.map((d) => (d.id === dealId ? { ...d, landingProbability: value } : d)));
@@ -1340,9 +1343,9 @@ function PipelineForecastPage() {
 
           {isCurrentQuarter && (
             <SectionCard>
-              <SectionTitle>今週確定した案件</SectionTitle>
+              <SectionTitle>{weekOptions.find((w) => w.id === selectedWeekId)?.label}に確定した案件</SectionTitle>
               {thisWeekRecords.length === 0 ? (
-                <EmptyText>今週はまだ確定した案件がありません</EmptyText>
+                <EmptyText>{weekOptions.find((w) => w.id === selectedWeekId)?.label}に確定した案件はありません</EmptyText>
               ) : (
                 <RecordTable>
                   {thisWeekRecords.map((r, i) => (
