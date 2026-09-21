@@ -206,6 +206,7 @@ function ClosedDealsList() {
   const [dateTo, setDateTo] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [repFilter, setRepFilter] = useState('');
+  const [typeFilter, setTypeFilter] = useState(''); // ''=すべて / '新規' / '継続'（recordTypeの値）
   const [sortKey, setSortKey] = useState(null);
   const [sortDir, setSortDir] = useState('asc');
   const [selectedProject, setSelectedProject] = useState(null);
@@ -341,6 +342,9 @@ function ClosedDealsList() {
       // 担当者フィルタ
       if (repFilter && rec.salesRep !== repFilter) return false;
 
+      // 新規/既存フィルタ（レコードのrecordTypeで判定。バッジ表示と同じ値）
+      if (typeFilter && rec.recordType !== typeFilter) return false;
+
       return true;
     });
 
@@ -360,7 +364,7 @@ function ClosedDealsList() {
     }
 
     return result;
-  }, [records, dateFrom, dateTo, searchTerm, repFilter, sortKey, sortDir]);
+  }, [records, dateFrom, dateTo, searchTerm, repFilter, typeFilter, sortKey, sortDir]);
 
   // サマリー計算
   const summary = useMemo(() => {
@@ -371,7 +375,7 @@ function ClosedDealsList() {
   }, [filteredRecords]);
 
   const quarter = getQuarterRange();
-  const hasFilters = dateFrom || dateTo || searchTerm || repFilter;
+  const hasFilters = dateFrom || dateTo || searchTerm || repFilter || typeFilter;
 
   if (isLoading) {
     return (
@@ -405,6 +409,14 @@ function ClosedDealsList() {
               <option key={rep} value={rep}>{rep}</option>
             ))}
           </SelectInput>
+          <SelectInput
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+          >
+            <option value="">新規/既存: すべて</option>
+            <option value="新規">新規のみ</option>
+            <option value="継続">既存（継続）のみ</option>
+          </SelectInput>
         </FilterRow>
         <FilterRow>
           <FiCalendar size={16} color="#666" />
@@ -421,7 +433,7 @@ function ClosedDealsList() {
             onChange={(e) => setDateTo(e.target.value)}
           />
           {hasFilters ? (
-            <ResetButton onClick={() => { setDateFrom(''); setDateTo(''); setSearchTerm(''); setRepFilter(''); }}>
+            <ResetButton onClick={() => { setDateFrom(''); setDateTo(''); setSearchTerm(''); setRepFilter(''); setTypeFilter(''); }}>
               全リセット
             </ResetButton>
           ) : (
