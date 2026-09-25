@@ -1473,4 +1473,4 @@ function createContractsRouter({ admin, db }) {
   return router;
 }
 
-module.exports = { createContractsRouter };
+module.exports = { createContractsRouter, getTemplateDb };

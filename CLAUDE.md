@@ -264,9 +264,13 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.56.0
+- **現在バージョン**: v2.57.0
 - **最終更新**: 2026年9月25日
 - **直近の更新内容**:
+  - AI(OpenAI)の利用量・概算費用の記録を追加（account-sales-boardの「設定 → システム費用」で両アプリ分をまとめて見る）
+    - サーバー側でAIを呼ぶときは`new OpenAI()`ではなく`createTrackedOpenAI({ apiKey, feature })`（`functions/aiUsage.js`）を使う。呼び出すたびにトークン数・Web検索回数・概算費用をaccount-sales-boardのFirestoreの`aiUsageLogs`に記録する（`aiUsage.js`はaccount-sales-boardと同じ中身）
+    - 記録先への書き込みには、account-sales-boardのGoogle Cloudプロジェクトで`sales-management-staging@appspot.gserviceaccount.com`にFirestoreへの書き込み権限（現在はDatastoreオーナー）が必要。閲覧者に下げると記録が止まる（AIの機能自体は止まらない）
+    - 対象: 契約書のAI修正・矛盾チェック、お礼メッセージの書き直し。画面から直接呼ぶ`src/services/gptService.js`（議事録分析・目標差分の提案）は本番のビルドにAPIキーが入っておらず動いていないため対象外
   - 契約書まわりのGoogleドキュメント・ドライブの操作を、account-sales-boardで連携済みの増田さんのGoogle連携で行うように変更（ドメイン全体の委任＝Workspace管理者の設定が不要に）
     - `functions/contractsRouter.js`の`getGoogleClients`が、account-sales-boardのSecret Managerから`GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GMAIL_REFRESH_TOKEN_masuda`を読んで使う（vol3には複製しない）。**account-sales-boardのGoogle Cloudプロジェクトで`sales-management-staging@appspot.gserviceaccount.com`に「Secret Manager のシークレット アクセサー」を付けないと動かない**
     - 記入済み契約書・締結済み契約書のファイルの持ち主は常に増田さん。契約書管理の「Googleドキュメントを操作するアカウント」の選択欄は廃止（表示のみ）。`appConfig/contractOutput.googleAccountEmail`は使わない

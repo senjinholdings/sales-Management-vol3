@@ -1,4 +1,4 @@
-const OpenAI = require('openai');
+const { createTrackedOpenAI } = require('./aiUsage');
 
 // 案件ごとの契約書をAIに直してもらうときの、AIへの頼み方と返事の受け取り方。
 //
@@ -154,7 +154,7 @@ const CHECK_SYSTEM_PROMPT = [
 // 指示に沿って直すべき箇所を、契約書全体から挙げてもらう。書き込みは一切しない。
 async function proposeContractEdits({ apiKey, text, instruction, focus, facts, answers }) {
   const lines = splitLines(text);
-  const openai = new OpenAI({ apiKey });
+  const openai = createTrackedOpenAI({ apiKey, feature: '契約書のAI修正' });
   const completion = await openai.chat.completions.create({
     model: REVISION_MODEL,
     response_format: { type: 'json_object' },
@@ -213,7 +213,7 @@ async function proposeContractEdits({ apiKey, text, instruction, focus, facts, a
 // 今の本文を通しで読み、矛盾・直し忘れが残っていないかだけを報告する。
 async function checkContractConsistency({ apiKey, text, facts }) {
   const lines = splitLines(text);
-  const openai = new OpenAI({ apiKey });
+  const openai = createTrackedOpenAI({ apiKey, feature: '契約書の矛盾チェック' });
   const completion = await openai.chat.completions.create({
     model: REVISION_MODEL,
     response_format: { type: 'json_object' },
