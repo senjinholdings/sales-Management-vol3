@@ -1,6 +1,7 @@
 const { Readable } = require('stream');
 const express = require('express');
 const { google } = require('googleapis');
+const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
 const { WebClient } = require('@slack/web-api');
 const { proposeContractEdits, checkContractConsistency } = require('./contractRevisionAi');
 const {
@@ -17,9 +18,9 @@ const { getOrCreateRoomInviteLink } = require('./chatworkInviteLink');
 //
 // account-sales-board(functions/contractsRouter.js)の契約書締結依頼をそのまま移したもの。
 // 手順・文言・データの形はあちらに揃えてあり、違うのは次の点だけ:
-//  - Googleドキュメント・ドライブの操作: あちらは担当者本人のGoogle連携(OAuth)を使うが、
-//    こちらはGoogleアカウントでログインしない(共通ID/PW)ため、MTG登録(calendar.js)と同じ
-//    ドメイン全体の委任のサービスアカウントで、設定画面で選んだ社内アカウントになりすまして操作する。
+//  - Googleドキュメント・ドライブの操作: あちらは操作している担当者本人のGoogle連携(OAuth)を使うが、
+//    こちらはGoogleアカウントでログインしない(共通ID/PW)ため、account-sales-boardで連携済みの
+//    増田さんのGoogle連携を借りて、常に増田さんのアカウントとして操作する(運用で決めたこと)。
 //  - 案件は progressDashboard。Chatworkルーム・Slackチャンネルは会社単位の clientMeetingSettings にある。
 //  - 案件に担当者(連絡先)の一覧が無いため、メールで共有するときは宛先をフォームで直接入力する。
 //  - 依頼者は案件の営業担当(representative)として記録する(ログインユーザーを識別できないため)。
@@ -99,12 +100,35 @@ function getTemplateDb(admin) {
   return app.firestore();
 }
 
-// Googleドキュメント・ドライブを操作する範囲。ドメイン全体の委任の設定(Workspace管理者)で、
-// サービスアカウントのクライアントIDにこの2つを許可しておく必要がある。
-const GOOGLE_SCOPES = [
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/documents',
-];
+// Googleドキュメント・ドライブの操作に使うGoogle連携。account-sales-boardで増田さんが
+// 「Googleと連携する」で許可したもの(refresh token)と、その連携のOAuthクライアントを、
+// account-sales-boardのSecret Managerから読む(こちらに複製は持たない。あちらで連携し直せば
+// こちらもそのまま新しい連携を使う)。シークレット名はaccount-sales-boardの
+// functions/googleOAuth.js と同じ(GMAIL_REFRESH_TOKEN_{担当者})。
+// 読むには、account-sales-boardのGoogle Cloudプロジェクトで TEMPLATE_READER_SERVICE_ACCOUNT に
+// 「Secret Manager のシークレット アクセサー」を付けておく必要がある。
+// 増田さんの連携のスコープはdriveを含み、Docs APIもdriveスコープで読み書きできる。
+const GOOGLE_ACTOR_REPRESENTATIVE = 'masuda';
+const GOOGLE_ACTOR_EMAIL = 'yoh.masuda@senjinholdings.com';
+const secretManager = new SecretManagerServiceClient();
+
+async function readAccountSalesBoardSecret(name) {
+  try {
+    const [version] = await secretManager.accessSecretVersion({
+      name: `projects/${TEMPLATE_PROJECT_ID}/secrets/${name}/versions/latest`,
+    });
+    return version.payload.data.toString('utf8').trim();
+  } catch (error) {
+    if (error.code === 5) return null; // NOT_FOUND
+    if (error.code === 7) { // PERMISSION_DENIED
+      const wrapped = new Error('account-sales-boardのGoogle連携を読めませんでした。account-sales-boardのGoogle Cloudプロジェクトで、'
+        + `${TEMPLATE_READER_SERVICE_ACCOUNT} に「Secret Manager のシークレット アクセサー」のロールを付けてください`);
+      wrapped.status = 500;
+      throw wrapped;
+    }
+    throw error;
+  }
+}
 
 function createContractsRouter({ admin, db }) {
   const router = express.Router();
@@ -242,34 +266,29 @@ function createContractsRouter({ admin, db }) {
     };
   }
 
-  // Googleドキュメント・ドライブの操作は、設定画面で選んだ社内アカウントになりすまして行う
+  // Googleドキュメント・ドライブの操作は、常に増田さんのGoogleアカウントとして行う
   // (このアプリはGoogleアカウントでログインしないため、操作している人本人のアカウントは使えない)。
-  // 仕組みはMTG登録(calendar.js)と同じドメイン全体の委任のサービスアカウント。
-  // 作ったファイルの持ち主はこのアカウントになる。記入済み契約書はaccount-sales-boardの雛形を
-  // 複製して作るので、このアカウントがその雛形のGoogleドキュメントを開ける必要がある
-  // (account-sales-boardの項目入り版は作った時点で社内に共有されているので、社内アカウントなら開ける)。
+  // 作ったファイルの持ち主は増田さんになる。記入済み契約書はaccount-sales-boardの雛形を複製して作るので、
+  // 増田さんがその雛形を開ける必要がある(account-sales-boardで普段使っている雛形なら開ける)。
   async function getGoogleClients() {
-    const settings = await readContractSettings();
-    const actorEmail = settings.googleAccountEmail;
-    if (!actorEmail) {
-      const error = new Error('Googleドキュメントを操作するアカウントが未設定です（マスター管理の契約書管理で選んでください）');
-      error.status = 400;
-      throw error;
-    }
-    const keyJson = env('TLDV_CALENDAR_SA_KEY');
-    if (!keyJson) {
-      const error = new Error('サービスアカウントの鍵（TLDV_CALENDAR_SA_KEY）が未設定です');
+    const [clientId, clientSecret, refreshToken] = await Promise.all([
+      readAccountSalesBoardSecret('GOOGLE_OAUTH_CLIENT_ID'),
+      readAccountSalesBoardSecret('GOOGLE_OAUTH_CLIENT_SECRET'),
+      readAccountSalesBoardSecret(`GMAIL_REFRESH_TOKEN_${GOOGLE_ACTOR_REPRESENTATIVE}`),
+    ]);
+    if (!clientId || !clientSecret) {
+      const error = new Error('account-sales-boardのGoogle連携の設定（OAuthクライアント）が見つかりません');
       error.status = 500;
       throw error;
     }
-    const credentials = JSON.parse(keyJson);
-    const auth = new google.auth.JWT({
-      email: credentials.client_email,
-      key: credentials.private_key,
-      scopes: GOOGLE_SCOPES,
-      subject: actorEmail,
-    });
-    return { auth, drive: google.drive({ version: 'v3', auth }), actorEmail };
+    if (!refreshToken) {
+      const error = new Error('増田さんのGoogle連携がまだありません（account-sales-boardの設定画面から「Googleと連携する」を押してください）');
+      error.status = 400;
+      throw error;
+    }
+    const auth = new google.auth.OAuth2(clientId, clientSecret);
+    auth.setCredentials({ refresh_token: refreshToken });
+    return { auth, drive: google.drive({ version: 'v3', auth }), actorEmail: GOOGLE_ACTOR_EMAIL };
   }
 
   // Google API が返した理由をそのまま画面にも出す。以前は理由を握りつぶして
@@ -278,10 +297,10 @@ function createContractsRouter({ admin, db }) {
   // 思って調べ続けることになった(実際にそうなった)。原因の切り分けは画面でできるようにする。
   function googleApiErrorMessage(error, what) {
     const detail = error?.response?.data?.error?.message || error?.errors?.[0]?.message || error?.message || '';
-    // ドメイン全体の委任でこの範囲が許可されていないと unauthorized_client になる。
+    // 増田さんのGoogle連携が切れている(取り消された・期限切れ)と invalid_grant になる。
     // 原因が分からないまま調べ続けないよう、何をすればよいかを添える。
-    const hint = /unauthorized_client|invalid_grant/i.test(`${detail} ${error?.response?.data?.error || ''}`)
-      ? '（Google Workspaceの管理コンソールで、サービスアカウントのドメイン全体の委任にドライブとドキュメントの権限を追加してください）'
+    const hint = /invalid_grant/i.test(`${detail} ${error?.response?.data?.error || ''}`)
+      ? '（増田さんのGoogle連携が切れています。account-sales-boardの設定画面から「Googleと連携する」をやり直してください）'
       : '';
     return `${what}。${detail || '原因が取得できませんでした'}${hint}`;
   }
@@ -350,7 +369,6 @@ function createContractsRouter({ admin, db }) {
 
   // 契約書まわりの設定(秘密情報ではないのでFirestoreのappConfigに置き、設定画面から変える)。
   //  folderId:           記入済み契約書の保存先Driveフォルダ(未設定なら既定のフォルダ)
-  //  googleAccountEmail: Googleドキュメント・ドライブを操作する社内アカウント(なりすまし先)
   //  testChannelId:      「テストグループに送る」を選んだときの投稿先Slackチャンネル
   // 保存先フォルダとテストグループは、vol3で入れていなければaccount-sales-boardの設定をそのまま使う
   // （同じ契約書チーム・同じ雛形で運用しているので、既定は揃えておく）。
@@ -385,7 +403,8 @@ function createContractsRouter({ admin, db }) {
     const ownTestChannelId = data.testChannelId ? String(data.testChannelId).trim() : '';
     return {
       folderId: ownFolderId || shared.folderId || DEFAULT_CONTRACT_OUTPUT_FOLDER_ID,
-      googleAccountEmail: data.googleAccountEmail ? String(data.googleAccountEmail).trim() : '',
+      // Googleドキュメントを操作するアカウント(表示用。常に増田さん)。
+      googleAccountEmail: GOOGLE_ACTOR_EMAIL,
       testChannelId: ownTestChannelId || shared.testChannelId,
       // 画面の入力欄に出すのはvol3で入れた値だけ（空ならaccount-sales-boardと同じ、の意味）。
       own: { folderId: ownFolderId, testChannelId: ownTestChannelId },
@@ -414,18 +433,11 @@ function createContractsRouter({ admin, db }) {
   // 送られてきたキーだけを書き込む(1項目だけ保存したときに他の項目を空で上書きしないため)。
   router.put('/contract-settings', async (req, res) => {
     try {
-      const { folderId, googleAccountEmail, testChannelId } = req.body || {};
+      const { folderId, testChannelId } = req.body || {};
       const update = {};
       if (folderId !== undefined) {
         // 空にしたらaccount-sales-boardと同じフォルダを使う。
         update.folderId = extractDriveFolderId(folderId);
-      }
-      if (googleAccountEmail !== undefined) {
-        const value = String(googleAccountEmail || '').trim();
-        if (value && !/^[^@\s]+@[^@\s]+$/.test(value)) {
-          return res.status(400).json({ error: 'メールアドレスの形式が正しくありません' });
-        }
-        update.googleAccountEmail = value;
       }
       if (testChannelId !== undefined) {
         const value = String(testChannelId || '').trim();
