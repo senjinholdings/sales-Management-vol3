@@ -16,7 +16,7 @@
 
 const crypto = require('crypto');
 const express = require('express');
-const OpenAI = require('openai');
+const { createTrackedOpenAI } = require('./aiUsage');
 const { WebClient } = require('@slack/web-api');
 const { env } = require('./authHelpers');
 
@@ -153,7 +153,7 @@ async function buildMentionPrefix(db, companyName) {
  * ＝担当者がトークンを使う判断をした時だけコストが発生する。
  */
 async function regenerateThankYouMessage({ apiKey, title, transcript, tldvSummary, instruction }) {
-  const openai = new OpenAI({ apiKey });
+  const openai = createTrackedOpenAI({ apiKey, feature: 'お礼メッセージの書き直し' });
   const completion = await openai.chat.completions.create({
     model: 'gpt-4o-mini',
     messages: [
