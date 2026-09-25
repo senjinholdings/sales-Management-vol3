@@ -1,7 +1,6 @@
 const { Readable } = require('stream');
 const express = require('express');
 const { google } = require('googleapis');
-const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
 const { WebClient } = require('@slack/web-api');
 const { proposeContractEdits, checkContractConsistency } = require('./contractRevisionAi');
 const {
@@ -11,6 +10,9 @@ const {
 const { requireAppSecret, env } = require('./authHelpers');
 const { getSecret, chatworkSecretName } = require('./secrets');
 const { getOrCreateRoomInviteLink } = require('./chatworkInviteLink');
+const {
+  getTemplateDb, readAccountSalesBoardSecret, getOpenAiApiKey, TEMPLATE_READER_SERVICE_ACCOUNT,
+} = require('./accountSalesBoard');
 
 // 案件ごとの締結依頼・締結状況(progressDashboard/{id}/contractRequests)と
 // 記入済み契約書(progressDashboard/{id}/generatedContracts)を扱う。
@@ -86,49 +88,14 @@ async function postToSlack(text, channelId) {
   return slack.chat.postMessage({ channel: channelId, text });
 }
 
-// 契約書の雛形はaccount-sales-boardのFirestore(雛形マスタ contracts)から読む。
-// 認証はこのCloud Functions自身の実行アカウント(下のサービスアカウント)で行うので、
-// account-sales-boardのGoogle Cloudプロジェクトでこのアカウントに「Cloud Datastore 閲覧者」を
-// 付けておく必要がある(読み取りだけ。秘密情報をここに持たない)。
-const TEMPLATE_PROJECT_ID = 'account-sales-board';
-const TEMPLATE_READER_SERVICE_ACCOUNT = 'sales-management-staging@appspot.gserviceaccount.com';
-const TEMPLATE_APP_NAME = 'accountSalesBoardTemplates';
-
-function getTemplateDb(admin) {
-  const existing = admin.apps.find((a) => a && a.name === TEMPLATE_APP_NAME);
-  const app = existing || admin.initializeApp({ projectId: TEMPLATE_PROJECT_ID }, TEMPLATE_APP_NAME);
-  return app.firestore();
-}
-
 // Googleドキュメント・ドライブの操作に使うGoogle連携。account-sales-boardで増田さんが
 // 「Googleと連携する」で許可したもの(refresh token)と、その連携のOAuthクライアントを、
 // account-sales-boardのSecret Managerから読む(こちらに複製は持たない。あちらで連携し直せば
 // こちらもそのまま新しい連携を使う)。シークレット名はaccount-sales-boardの
 // functions/googleOAuth.js と同じ(GMAIL_REFRESH_TOKEN_{担当者})。
-// 読むには、account-sales-boardのGoogle Cloudプロジェクトで TEMPLATE_READER_SERVICE_ACCOUNT に
-// 「Secret Manager のシークレット アクセサー」を付けておく必要がある。
 // 増田さんの連携のスコープはdriveを含み、Docs APIもdriveスコープで読み書きできる。
 const GOOGLE_ACTOR_REPRESENTATIVE = 'masuda';
 const GOOGLE_ACTOR_EMAIL = 'yoh.masuda@senjinholdings.com';
-const secretManager = new SecretManagerServiceClient();
-
-async function readAccountSalesBoardSecret(name) {
-  try {
-    const [version] = await secretManager.accessSecretVersion({
-      name: `projects/${TEMPLATE_PROJECT_ID}/secrets/${name}/versions/latest`,
-    });
-    return version.payload.data.toString('utf8').trim();
-  } catch (error) {
-    if (error.code === 5) return null; // NOT_FOUND
-    if (error.code === 7) { // PERMISSION_DENIED
-      const wrapped = new Error('account-sales-boardのGoogle連携を読めませんでした。account-sales-boardのGoogle Cloudプロジェクトで、'
-        + `${TEMPLATE_READER_SERVICE_ACCOUNT} に「Secret Manager のシークレット アクセサー」のロールを付けてください`);
-      wrapped.status = 500;
-      throw wrapped;
-    }
-    throw error;
-  }
-}
 
 function createContractsRouter({ admin, db }) {
   const router = express.Router();
@@ -956,9 +923,9 @@ function createContractsRouter({ admin, db }) {
         if (!body.trim()) {
           return res.status(400).json({ error: '契約書の本文が読み込めていません' });
         }
-        const apiKey = env('OPENAI_API_KEY');
+        const apiKey = await getOpenAiApiKey();
         if (!apiKey) {
-          return res.status(500).json({ error: 'OPENAI_API_KEYが未設定です' });
+          return res.status(500).json({ error: 'OpenAIのAPIキーが見つかりません（account-sales-boardのOPENAI_API_KEY）' });
         }
         // どの案件のどの契約書に対する依頼なのかは確かめておく(存在しないIDでも
         // 通ってしまうと、この入口がただのAI呼び出し口になってしまうため)。
@@ -988,9 +955,9 @@ function createContractsRouter({ admin, db }) {
         if (!body.trim()) {
           return res.status(400).json({ error: '契約書の本文が読み込めていません' });
         }
-        const apiKey = env('OPENAI_API_KEY');
+        const apiKey = await getOpenAiApiKey();
         if (!apiKey) {
-          return res.status(500).json({ error: 'OPENAI_API_KEYが未設定です' });
+          return res.status(500).json({ error: 'OpenAIのAPIキーが見つかりません（account-sales-boardのOPENAI_API_KEY）' });
         }
         const { data } = await loadGeneratedContractDoc(req.params.id, req.params.documentId);
         const facts = await contractFactsFor(req.params.id, data);
@@ -1473,4 +1440,4 @@ function createContractsRouter({ admin, db }) {
   return router;
 }
 
-module.exports = { createContractsRouter, getTemplateDb };
+module.exports = { createContractsRouter };
