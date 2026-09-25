@@ -37,7 +37,6 @@ import DailyTimerPage from './components/DailyTimerPage.js';
 import PipelineForecastPage from './components/PipelineForecastPage.js';
 import MallCalendarPage from './components/MallCalendarPage.js';
 import ContractsSettingsPage from './components/ContractsSettingsPage.js';
-import ContractDetailPage from './components/ContractDetailPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import { db } from './firebase.js';
@@ -615,7 +614,6 @@ function AdminApp() {
           <Route path="/pipeline-forecast" element={<PipelineForecastPage />} />
           <Route path="/mall-calendar" element={<MallCalendarPage />} />
           <Route path="/contract-master" element={<ContractsSettingsPage />} />
-          <Route path="/contract-master/:groupKey" element={<ContractDetailPage />} />
         </Routes>
       </MainContent>
       </AppContainer>

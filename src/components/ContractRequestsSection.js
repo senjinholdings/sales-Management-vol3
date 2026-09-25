@@ -220,15 +220,6 @@ export default function ContractRequestsSection({
   // 確認画面の間はフォーム項目を隠し、条件を変えたければ一旦戻って(プレビュー破棄)選び直す。
   // 送る前に作る「記入済み契約書」。入力内容を変えたら作り直しになるので、
   // 変更を検知したら破棄する(古い値の入った契約書のリンクを送ってしまわないため)。
-  // この場で入力項目そのものを足すためのもの。契約書の設定(requestFields)を更新するので、
-  // 以降の依頼にもその項目が出る。設定画面へ行き来せずに済ませたい、という運用のため。
-  const [presets, setPresets] = useState([]);
-  const [newFieldFor, setNewFieldFor] = useState(null); // 追加フォームを開いている契約書のid
-  const [newFieldLabel, setNewFieldLabel] = useState('');
-  const [newFieldRequired, setNewFieldRequired] = useState(true);
-  const [addingField, setAddingField] = useState(false);
-  const [addFieldError, setAddFieldError] = useState('');
-
   const [generatedDocs, setGeneratedDocs] = useState([]);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState('');
@@ -263,12 +254,6 @@ export default function ContractRequestsSection({
   }, []);
 
   useEffect(() => { loadContracts(); }, [loadContracts]);
-
-  // 入力項目名のマスタ。ここで項目を足すときの候補として出す
-  // (設定画面で登録した項目名と表記がぶれないようにするため)。
-  useEffect(() => {
-    api.listContractFieldPresets().then(setPresets).catch(() => setPresets([]));
-  }, []);
 
   // 契約書名(groupKey)ごとにversionが最大のものだけを選択肢にする(過去の版を誤って選ばせないため)。
   const latestContracts = useMemo(() => {
@@ -401,45 +386,6 @@ export default function ContractRequestsSection({
     department,
     sendToTestChannel,
   });
-
-  const openAddField = (contractId) => {
-    setNewFieldFor(contractId);
-    setNewFieldLabel('');
-    setNewFieldRequired(true);
-    setAddFieldError('');
-  };
-
-  // 契約書の入力項目(requestFields)に1つ足す。雛形の{{項目名}}と対応させたい場合は
-  // 設定の契約書詳細でマーク付けする必要があるが、依頼文に1行足したいだけなら
-  // ここで足すだけで足りる。
-  const handleAddField = async (contract) => {
-    const label = newFieldLabel.trim();
-    if (!label) {
-      setAddFieldError('項目名を入力してください');
-      return;
-    }
-    if ((contract.requestFields || []).some((f) => f.label === label)) {
-      setAddFieldError('同じ名前の項目がすでにあります');
-      return;
-    }
-    setAddingField(true);
-    setAddFieldError('');
-    try {
-      await api.updateContract(contract.id, {
-        requestFields: [
-          ...(contract.requestFields || []).map((f) => ({ id: f.id, label: f.label, required: f.required !== false })),
-          { label, required: newFieldRequired },
-        ],
-      });
-      setNewFieldFor(null);
-      setNewFieldLabel('');
-      loadContracts();
-    } catch (err) {
-      setAddFieldError(err.message);
-    } finally {
-      setAddingField(false);
-    }
-  };
 
   const handleGenerateDocuments = async () => {
     if (!contractId) {
@@ -668,7 +614,7 @@ export default function ContractRequestsSection({
         <div style={{ padding: '12px 0', borderTop: '1px solid #e5e7eb' }}>
           {contractsError && <FieldError>{contractsError}</FieldError>}
           {contracts !== null && latestContracts.length === 0 && !contractsError && (
-            <EmptyNote>契約書が登録されていません。先にマスター管理 → 契約書管理で登録してください</EmptyNote>
+            <EmptyNote>契約書の雛形がありません。account-sales-boardの契約書管理で登録してください（こちらと共通の雛形です）</EmptyNote>
           )}
           {latestContracts.length > 0 && !showPreview && (
             <>
@@ -833,45 +779,19 @@ export default function ContractRequestsSection({
                           );
                         })}
                       </FormGrid>
-                      {/* 依頼を書いている途中で「この項目も要る」と気づくことがあるので、
-                          設定画面へ行かずにここで足せるようにする。足した項目は契約書の設定に
-                          入るので、以降の依頼にも出る。 */}
-                      {newFieldFor === c.id ? (
-                        <div style={{ marginTop: 6, padding: 10, background: '#f9fafb', borderRadius: 8 }}>
-                          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <Input
-                              value={newFieldLabel}
-                              onChange={(e) => setNewFieldLabel(e.target.value)}
-                              placeholder="項目名（例: 実施期間）"
-                              list={`contract-field-presets-${c.id}`}
-                              style={{ flex: '1 1 200px' }}
-                            />
-                            <datalist id={`contract-field-presets-${c.id}`}>
-                              {presets.map((pre) => <option key={pre.id} value={pre.label} />)}
-                            </datalist>
-                            <Label style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 0, whiteSpace: 'nowrap' }}>
-                              <input
-                                type="checkbox"
-                                checked={newFieldRequired}
-                                onChange={(e) => setNewFieldRequired(e.target.checked)}
-                              />
-                              必須
-                            </Label>
-                            <Button type="button" $variant="primary" disabled={addingField} onClick={() => handleAddField(c)}>
-                              {addingField ? '追加中...' : '追加'}
-                            </Button>
-                            <Button type="button" disabled={addingField} onClick={() => setNewFieldFor(null)}>キャンセル</Button>
-                          </div>
-                          <MetaLine style={{ marginTop: 4 }}>
-                            この契約書の設定に追加されるので、次回以降の依頼にも出ます。
-                          </MetaLine>
-                          {addFieldError && <FieldError>{addFieldError}</FieldError>}
-                        </div>
-                      ) : (
-                        <Button type="button" style={{ marginTop: 6 }} onClick={() => openAddField(c.id)}>
-                          ＋入力項目を追加
-                        </Button>
-                      )}
+                      {/* 入力項目は雛形の設定(account-sales-boardの契約書管理)で決まる。
+                          足りない項目はあちらで足すと、こちらの依頼にもそのまま出る。 */}
+                      <MetaLine style={{ marginTop: 6 }}>
+                        入力項目を足したいときは、account-sales-boardの契約書管理で
+                        <a
+                          href={`https://account-sales-board.web.app/settings/contracts/${encodeURIComponent(c.groupKey)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          この雛形の依頼設定
+                        </a>
+                        を開いて追加してください（追加したら、この画面を閉じて開き直すと出ます）。
+                      </MetaLine>
                     </div>
                   ))}
                 </div>
