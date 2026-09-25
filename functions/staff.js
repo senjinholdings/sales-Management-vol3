@@ -12,6 +12,7 @@ const { WebClient } = require('@slack/web-api');
 const { getSecret, setSecret, hasSecret, chatworkSecretName } = require('./secrets');
 const { requireAppSecret, env } = require('./authHelpers');
 const { computeActualMinutes, isRunningTask } = require('./dailyReportGuard');
+const { getOrCreateRoomInviteLink } = require('./chatworkInviteLink');
 
 const CHATWORK_API_BASE = 'https://api.chatwork.com/v2';
 const NIGHT_REVIEW_NOTIFY_CHANNEL_ID = 'C09UJMZ7JNR'; // #営業_日報
@@ -265,30 +266,11 @@ function createStaffRouter({ admin, db }) {
         return res.status(404).json({ error: 'この担当者はChatworkが未連携です' });
       }
 
-      const existingRes = await fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/link`, {
-        headers: { 'X-ChatWorkToken': token }
-      });
-      if (existingRes.ok) {
-        const existing = await existingRes.json();
-        if (existing.public) {
-          return res.status(200).json({ url: existing.url });
-        }
+      const result = await getOrCreateRoomInviteLink({ token, roomId });
+      if (result.error) {
+        return res.status(502).json({ error: result.error });
       }
-
-      const createRes = await fetch(`${CHATWORK_API_BASE}/rooms/${roomId}/link`, {
-        method: 'POST',
-        headers: {
-          'X-ChatWorkToken': token,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({ need_acceptance: '1' })
-      });
-      if (!createRes.ok) {
-        const text = await createRes.text().catch(() => '');
-        return res.status(502).json({ error: `Chatwork招待リンクの発行に失敗しました: ${text}` });
-      }
-      const created = await createRes.json();
-      return res.status(200).json({ url: created.url });
+      return res.status(200).json({ url: result.url });
     } catch (error) {
       console.error('Chatwork招待リンク発行エラー:', error);
       return res.status(500).json({ error: error.message });

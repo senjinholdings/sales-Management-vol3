@@ -103,6 +103,38 @@ progressDashboard: {
   // ...
 }
 
+// 契約書の雛形マスタ（account-sales-boardと同じ形。版は上書きせず積む。groupKey内でversion最大が現在の版）
+contracts: {
+  name: string, groupKey: string,   // "contract:{契約書名}"
+  url: string, note: string, version: number,
+  kind: 'basic' | 'individual',     // 基本契約書/個別契約書
+  requestFields: [{ id, label, required }], // 締結依頼時の入力項目（雛形の{{項目名}}と対応。マークから作り直さない）
+  isMarkupCopy: boolean             // 項目入り版（元の雛形の複製。マーク付け・文章の直しはこちらだけ）
+}
+contractFieldPresets: { label: string }  // 入力項目名のマスタ（全契約書で共有）
+appConfig/contractOutput: {
+  folderId: string,           // 記入済み契約書の保存先Driveフォルダ
+  googleAccountEmail: string, // Googleドキュメントを操作する社内アカウント（ドメイン全体の委任でなりすます先）
+  testChannelId: string       // 「テストグループに送る」の投稿先Slackチャンネル
+}
+// 案件の締結依頼・締結記録（progressDashboard/{id}/contractRequests）
+contractRequests: {
+  contractId, contractName, contractUrl, contractVersion,
+  individualContract: { id, name, url, version } | null,
+  fieldValues: [{ label, value }], counterpartyName, department,
+  generatedDocuments: [{ id, contractId, contractName, name, url }],
+  shareChannel: 'email' | 'chatwork' | 'slack',
+  emailContact: { name, email } | null, cloudSignEmail,
+  notes, message,             // messageは実際にSlackへ送った本文
+  slackChannelId, sentToTestChannel,
+  status: 'requested' | 'signed' | 'cancelled', requestedAt, requestedBy, signedAt,
+  source: 'upload',           // 締結済みの契約書をアップロードして登録したもの（その場合のみ）
+  uploadedVersions: [{ fileName, url, note, uploadedAt, uploadedBy }]
+}
+// 案件ごとの記入済み契約書（progressDashboard/{id}/generatedContracts）
+generatedContracts: { contractId, contractName, docId, name, url, originalText, fieldValues, sharing, revisions }
+// ※旧・第一想起③の依頼（トップレベルのcontractRequestsコレクション）は新規作成を停止。過去分は残置
+
 // アクションログ
 actionLogs: {
   dealId: string,              // 案件ID
@@ -232,9 +264,19 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.53.0
-- **最終更新**: 2026年9月21日
+- **現在バージョン**: v2.54.0
+- **最終更新**: 2026年9月25日
 - **直近の更新内容**:
+  - 契約書締結依頼をaccount-sales-boardと同じ仕組みに置き換え（雛形管理・記入済み契約書・AI修正・締結記録）
+    - マスター管理に「契約書管理」を追加（`/contract-master`）。雛形の登録（リンク/ファイル）・版管理・種別（基本/個別）・入力項目・項目入り版への{{項目名}}マーク付け・入力項目マスタ。画面・APIはaccount-sales-boardから移したもの（`ContractsSettingsPage.js`/`ContractDetailPage.js`/`ContractTemplateMarkup.js`、`functions/contractsRouter.js`を`/api/contract`にマウント）
+    - 依頼画面（`ContractRequestModal.js`→`ContractRequestsSection.js`）: 雛形を選んで入力項目から記入済み契約書（Googleドキュメント）を作成→「文章を直す」でAI修正提案（契約書全体に対して提案・人が保存したときだけ書き込み）→依頼文をプレビュー・修正→Slackの契約書チーム（account-sales-boardと同じチャンネル・メンション）へ送信。テストグループ送信あり
+    - 入口は2つのまま: 第一想起の「契約締結依頼」ボタン（ヒアリング内容を同名の入力項目に初期値として入れる。送るとフェーズ7へ進み、NA「③契約締結依頼を提出する」を完了にする）と、受注情報の入力（旧来の事業部・連絡グループ等の簡易欄を廃止し、「受注確定のあと、続けて契約締結依頼を出す」で同じ依頼画面を開く）
+    - 案件詳細パネルに「契約書」タブを追加（依頼の記録・「締結済みにする」「取り下げる」・締結済み契約書のアップロード・記入済み契約書の手直し。依頼ボタンは置かない）
+    - 締結済みにしたら（締結済みにする・アップロード）進行ステージの「契約締結」を自動でDone（`completeContractStageIfSigned`、対象案件でステージ1のときのみ）。受注前に締結した案件は受注保存時（`saveReceivedOrder`）にDone。第一想起の③は`firstRecallContractStatus: 'signed'`になる
+    - Googleドキュメント・ドライブの操作は、MTG登録と同じドメイン全体の委任のサービスアカウント（`TLDV_CALENDAR_SA_KEY`）で、契約書管理の共通設定で選んだ社内アカウントになりすまして行う。**Workspace管理者がこのサービスアカウントのクライアントIDにドライブ（`auth/drive`）・ドキュメント（`auth/documents`）の範囲を追加しないと動かない**
+    - 案件に先方担当者の一覧が無いため、メール共有時の宛先（担当者名・メール・クラウドサイン送付先）は依頼フォームで入力する。Chatworkルーム・Slackチャンネルは会社単位のMTG設定から読む
+    - 旧③（スプレッドシート連携GASへの送信・トップレベル`contractRequests`への保存）と受注モーダルのSlack Webhook送信は廃止
+    - Cloud Functionsのapi関数のtimeoutSecondsを120秒に、JSONの受信上限を12MBに変更（契約書ファイルのアップロード用）
   - 成約案件一覧に新規/既存の絞り込みプルダウンを追加（すべて/新規のみ/既存（継続）のみ。レコードの`recordType`で判定、サマリーカードも絞り込み後の値で再計算。「全リセット」の対象にも追加。他の変更なし）
   - パイプライン振り返りページの想定予算を、案件本体の`expectedBudget`ではなく最新の営業記録の`budget`で表示するように変更
     - `expectedBudget`は案件登録時に一度書かれるだけで、その後に営業記録側で予算を更新しても自動転記されないため、案件パネルの営業記録とパイプラインの金額が食い違っていた（例: キラトス案件は登録時200万のまま、営業記録は600万に更新済み）

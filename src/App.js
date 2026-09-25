@@ -36,6 +36,8 @@ import KeyAccountMasterPage from './components/KeyAccountMasterPage.js';
 import DailyTimerPage from './components/DailyTimerPage.js';
 import PipelineForecastPage from './components/PipelineForecastPage.js';
 import MallCalendarPage from './components/MallCalendarPage.js';
+import ContractsSettingsPage from './components/ContractsSettingsPage.js';
+import ContractDetailPage from './components/ContractDetailPage.js';
 import { UndoProvider } from './contexts/UndoContext.js';
 import authService from './services/authService.js';
 import { db } from './firebase.js';
@@ -566,6 +568,12 @@ function AdminApp() {
                   担当者管理
                 </NavDropdownLink>
               </NavDropdownItem>
+              <NavDropdownItem>
+                <NavDropdownLink to="/contract-master" onClick={closeMobileMenu}>
+                  <FiFileText />
+                  契約書管理
+                </NavDropdownLink>
+              </NavDropdownItem>
             </NavDropdownMenu>
           </NavDropdown>
         </NavList>
@@ -606,6 +614,8 @@ function AdminApp() {
           <Route path="/daily-timer" element={<DailyTimerPage />} />
           <Route path="/pipeline-forecast" element={<PipelineForecastPage />} />
           <Route path="/mall-calendar" element={<MallCalendarPage />} />
+          <Route path="/contract-master" element={<ContractsSettingsPage />} />
+          <Route path="/contract-master/:groupKey" element={<ContractDetailPage />} />
         </Routes>
       </MainContent>
       </AppContainer>

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import { FiCalendar, FiDollarSign, FiSave, FiX, FiUser, FiSend } from 'react-icons/fi';
 import { fetchAllStaff } from '../services/staffService.js';
+import ContractRequestModal from './ContractRequestModal.js';
 
 const ModalOverlay = styled.div`
   position: fixed;
@@ -210,34 +211,6 @@ const SuccessIcon = styled.div`
   margin-bottom: 1rem;
 `;
 
-const SLACK_WEBHOOK_URL = process.env.REACT_APP_SLACK_WEBHOOK_URL || '';
-
-const sendContractRequestToSlack = async (deal, contractData) => {
-  const templateHolder = contractData.contractTemplateHolder === 'ours' ? '弊社' : '先方';
-  const text = `📝 *契約書締結依頼*\n\n` +
-    `<@U018HC2JY1L> <@U018GS87H7Y>\n\n` +
-    `*会社名:* ${deal.companyName || deal.productName}\n` +
-    `*事業部:* ${contractData.department || '未選択'}\n` +
-    `*連絡グループ:* ${contractData.contactGroup}\n` +
-    `*契約雛形:* ${templateHolder}が保有\n` +
-    `*契約内容:*\n${contractData.contractDetails}`;
-
-  try {
-    await fetch(SLACK_WEBHOOK_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      body: JSON.stringify({
-        text,
-        link_names: 1,
-      }),
-    });
-    return true;
-  } catch (error) {
-    console.error('Slack送信エラー:', error);
-    return false;
-  }
-};
-
 function ReceivedOrderModal({
   isOpen,
   onClose,
@@ -260,11 +233,15 @@ function ReceivedOrderModal({
     endDate: '',
     salesRep: '',
     operatorRep: '',
-    contactGroup: '',
-    contractTemplateHolder: 'ours',
-    contractDetails: '',
-    department: '',
   });
+  // 受注を確定したあと、そのまま契約締結依頼の画面を開くか。
+  // 以前はこのモーダルの中に契約書締結依頼の簡易欄（事業部・連絡グループ・契約内容）があり、
+  // Slackに流すだけで記録が残らなかった。今は第一想起の③と同じ契約締結依頼の画面
+  // （雛形から記入済み契約書を作ってSlackの契約書チームに送る）を受注の直後に開く。
+  const [requestContractAfterSave, setRequestContractAfterSave] = useState(true);
+  // 受注確定後に開く契約締結依頼の対象。受注を保存すると親がこのモーダルを閉じて
+  // dealを外すことがあるので、開いた時点の案件をここに持っておく。
+  const [contractRequestDeal, setContractRequestDeal] = useState(null);
   const [errors, setErrors] = useState({});
   const [staffList, setStaffList] = useState([]);
 
@@ -291,7 +268,17 @@ function ReceivedOrderModal({
     }
   }, [deal]);
 
-  if (!isOpen || !deal) return null;
+  const contractRequestModal = (
+    <ContractRequestModal
+      isOpen={!!contractRequestDeal}
+      onClose={() => setContractRequestDeal(null)}
+      deal={contractRequestDeal}
+      source="order"
+      onSaved={() => alert('契約締結依頼を送信しました。')}
+    />
+  );
+
+  if (!isOpen || !deal) return contractRequestModal;
 
   // フォーム入力ハンドラー
   const handleInputChange = (e) => {
@@ -347,14 +334,8 @@ function ReceivedOrderModal({
         operatorRep: formData.operatorRep
       });
 
-      // Slack契約書締結依頼送信
-      if (formData.contactGroup || formData.contractDetails) {
-        await sendContractRequestToSlack(deal, {
-          contactGroup: formData.contactGroup,
-          contractTemplateHolder: formData.contractTemplateHolder,
-          contractDetails: formData.contractDetails,
-          department: formData.department,
-        });
+      if (requestContractAfterSave) {
+        setContractRequestDeal(deal);
       }
     } catch (error) {
       console.error('受注情報保存エラー:', error);
@@ -370,10 +351,6 @@ function ReceivedOrderModal({
       endDate: '',
       salesRep: '',
       operatorRep: '',
-      contactGroup: '',
-      contractTemplateHolder: 'ours',
-      contractDetails: '',
-      department: '',
     });
     setErrors({});
     onClose();
@@ -386,6 +363,8 @@ function ReceivedOrderModal({
   };
 
   return (
+    <>
+    {contractRequestModal}
     <ModalOverlay onClick={handleCancel}>
       <ModalContent onClick={(e) => e.stopPropagation()}>
         <ModalHeader>
@@ -521,70 +500,22 @@ function ReceivedOrderModal({
           </FormGroup>
 
           <div style={{ borderTop: '2px solid #e9ecef', paddingTop: '1rem', marginTop: '0.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', color: '#3498db', fontWeight: 600 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#3498db', fontWeight: 600 }}>
               <FiSend />
-              契約書締結依頼（Slack送信）
+              契約書締結依頼
             </div>
-
-            <FormGroup>
-              <Label>事業部 *</Label>
-              <Select
-                name="department"
-                value={formData.department}
-                onChange={handleInputChange}
-                disabled={isLoading}
-              >
-                <option value="">選択してください</option>
-                <option value="メディア">メディア</option>
-                <option value="広告">広告</option>
-              </Select>
-            </FormGroup>
-
-            <FormGroup>
-              <Label>連絡グループ</Label>
-              <Input
-                type="text"
-                name="contactGroup"
-                value={formData.contactGroup}
-                onChange={handleInputChange}
-                placeholder="例：Slackグループ名、メールグループ等"
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.9rem' }}>
+              <input
+                type="checkbox"
+                checked={requestContractAfterSave}
+                onChange={(e) => setRequestContractAfterSave(e.target.checked)}
                 disabled={isLoading}
               />
-            </FormGroup>
-
-            <FormGroup>
-              <Label>契約雛形</Label>
-              <Select
-                name="contractTemplateHolder"
-                value={formData.contractTemplateHolder}
-                onChange={handleInputChange}
-                disabled={isLoading}
-              >
-                <option value="ours">弊社が保有</option>
-                <option value="theirs">先方が保有</option>
-              </Select>
-            </FormGroup>
-
-            <FormGroup>
-              <Label>契約内容</Label>
-              <textarea
-                name="contractDetails"
-                value={formData.contractDetails}
-                onChange={handleInputChange}
-                placeholder="契約の概要を簡単に記入..."
-                disabled={isLoading}
-                style={{
-                  width: '100%',
-                  minHeight: '80px',
-                  padding: '0.75rem',
-                  border: '2px solid #e9ecef',
-                  borderRadius: '8px',
-                  fontSize: '1rem',
-                  resize: 'vertical',
-                  fontFamily: 'inherit',
-                }}
-              />
-            </FormGroup>
+              受注確定のあと、続けて契約締結依頼を出す
+            </label>
+            <div style={{ fontSize: '0.8rem', color: '#6b7280', marginTop: '0.25rem' }}>
+              契約書の雛形を選んで記入済み契約書を作り、Slackの契約書チームに依頼を送る画面が開きます。
+            </div>
           </div>
 
           <ButtonGroup>
@@ -609,6 +540,7 @@ function ReceivedOrderModal({
         </Form>
       </ModalContent>
     </ModalOverlay>
+    </>
   );
 }
 
