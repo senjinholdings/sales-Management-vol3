@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
-import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget, FiFileText, FiCalendar, FiCheckSquare, FiShare2 } from 'react-icons/fi';
+import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget, FiFileText, FiCalendar, FiCheckSquare } from 'react-icons/fi';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
 import ContractRequestModal from './ContractRequestModal.js';
 import ContractRequestsSection from './ContractRequestsSection.js';
@@ -210,11 +210,6 @@ const ContractButton = styled(BriefButton)`
 const ScheduleButton = styled(BriefButton)`
   background: #27ae60;
   &:hover { background: #219a52; }
-`;
-
-const AccountTrackButton = styled(BriefButton)`
-  background: #7f8c8d;
-  &:hover { background: #626e6f; }
 `;
 
 const DetailButton = styled(BriefButton)`
@@ -4043,20 +4038,6 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
   const firstRecallContractStatus = project.firstRecallContractStatus || 'waiting';
   const isContractReady = ['ready', 'requested', 'signed'].includes(firstRecallContractStatus);
 
-  // アカウント営業（増田管轄の大型自主提案）への分類変更。
-  // 以降はAccountSalesDashboard.jsで管理され、新規/既存案件ダッシュボード・案件一覧からは除外される
-  const handleMoveToAccountTrack = async () => {
-    if (!window.confirm(`「${project.companyName || project.productName}」をアカウント営業に移動しますか？\n以降、新規/既存案件ダッシュボードには表示されず、アカウント営業ダッシュボードで管理されます。`)) return;
-    try {
-      await updateProject(project.id, { salesTrack: 'account' });
-      alert('アカウント営業に移動しました。');
-      if (onProjectUpdate) onProjectUpdate({ ...project, salesTrack: 'account' });
-    } catch (error) {
-      console.error('Failed to move to account track:', error);
-      alert('移動に失敗しました');
-    }
-  };
-
   const briefButton = (
     <BriefButton onClick={() => setShowBriefModal(true)}>
       <FiTarget />
@@ -4091,14 +4072,6 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
                 <FiFileText />
                 契約締結依頼
               </ContractButton>
-            </HeaderActions>
-          )}
-          {project.salesTrack !== 'account' && (
-            <HeaderActions>
-              <AccountTrackButton onClick={handleMoveToAccountTrack}>
-                <FiShare2 />
-                アカウント営業に移動
-              </AccountTrackButton>
             </HeaderActions>
           )}
           <HeaderGrid>

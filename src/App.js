@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link } from 'react-router-dom';
 import styled from 'styled-components';
-import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiStar, FiTrendingUp, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget, FiClock, FiShoppingBag } from 'react-icons/fi';
+import { FiPlus, FiList, FiGrid, FiBarChart, FiUsers, FiUser, FiFileText, FiLogOut, FiDollarSign, FiHome, FiCalendar, FiClipboard, FiRepeat, FiBriefcase, FiMenu, FiX, FiChevronDown, FiTarget, FiClock, FiShoppingBag } from 'react-icons/fi';
 import { analyzeMeetingNotes, isGPTServiceAvailable, debugAPIStatus, checkAPIKeyStatus } from './services/gptService.js';
 import LoginPage from './components/LoginPage.js';
 import ProtectedRoute from './components/ProtectedRoute.js';
@@ -16,23 +16,15 @@ import HomeDashboard from './components/HomeDashboard.js';
 import NewDealsDashboard from './components/NewDealsDashboard.js';
 import ExistingDealsDashboard from './components/ExistingDealsDashboard.js';
 import Breadcrumb from './components/Breadcrumb.js';
-import InfluencerRegisterPage from './components/InfluencerRegisterPage.js';
-import InfluencerListPage from './components/InfluencerListPage.js';
-import CastingManagePage from './components/CastingManagePage.js';
 import StaffMasterPage from './components/StaffMasterPage.js';
 import NextActionManagementPage from './components/NextActionManagementPage.js';
 import ProposalMenuMasterPage from './components/ProposalMenuMasterPage.js';
 import LeadSourceMasterPage from './components/LeadSourceMasterPage.js';
 import ProjectManagementPage from './components/ProjectManagementPage.js';
-import WeeklyReportPage from './components/WeeklyReportPage.js';
 import ClosedDealsList from './components/ClosedDealsList.js';
 import SalesResultsList from './components/SalesResultsList.js';
 import ProposalDealsList from './components/ProposalDealsList.js';
 import OperatorDashboard from './components/OperatorDashboard.js';
-import CoreCustomerPage from './components/CoreCustomerPage.js';
-import AccountSalesDashboard from './components/AccountSalesDashboard.js';
-import AccountDealsListPage from './components/AccountDealsListPage.js';
-import KeyAccountMasterPage from './components/KeyAccountMasterPage.js';
 import DailyTimerPage from './components/DailyTimerPage.js';
 import PipelineForecastPage from './components/PipelineForecastPage.js';
 import MallCalendarPage from './components/MallCalendarPage.js';
@@ -446,39 +438,6 @@ function AdminApp() {
                   案件一覧
                 </NavDropdownLink>
               </NavDropdownItem>
-              <NavDropdownItem>
-                <NavDropdownLink to="/core-customers" onClick={closeMobileMenu}>
-                  <FiStar />
-                  コア顧客
-                </NavDropdownLink>
-              </NavDropdownItem>
-            </NavDropdownMenu>
-          </NavDropdown>
-          <NavDropdown className={openDropdown === 'account' ? 'mobile-open' : ''}>
-            <NavDropdownButton onClick={() => toggleDropdown('account')}>
-              <FiTarget />
-              アカウント営業
-              <FiChevronDown size={12} style={{ marginLeft: 'auto' }} />
-            </NavDropdownButton>
-            <NavDropdownMenu>
-              <NavDropdownItem>
-                <NavDropdownLink to="/account-sales-dashboard" onClick={closeMobileMenu}>
-                  <FiBarChart />
-                  ダッシュボード
-                </NavDropdownLink>
-              </NavDropdownItem>
-              <NavDropdownItem>
-                <NavDropdownLink to="/account-deals-list" onClick={closeMobileMenu}>
-                  <FiList />
-                  案件一覧
-                </NavDropdownLink>
-              </NavDropdownItem>
-              <NavDropdownItem>
-                <NavDropdownLink to="/key-accounts" onClick={closeMobileMenu}>
-                  <FiList />
-                  対象企業リスト
-                </NavDropdownLink>
-              </NavDropdownItem>
             </NavDropdownMenu>
           </NavDropdown>
           <NavItem>
@@ -518,12 +477,6 @@ function AdminApp() {
               モールカレンダー
             </NavLink>
           </NavItem>
-          <NavItem>
-            <NavLink to="/weekly-report" onClick={closeMobileMenu}>
-              <FiClipboard />
-              週報
-            </NavLink>
-          </NavItem>
           <NavDropdown className={openDropdown === 'master' ? 'mobile-open' : ''}>
             <NavDropdownButton onClick={() => toggleDropdown('master')}>
               <FiUsers />
@@ -547,18 +500,6 @@ function AdminApp() {
                 <NavDropdownLink to="/lead-source-master" onClick={closeMobileMenu}>
                   <FiList />
                   流入経路マスター
-                </NavDropdownLink>
-              </NavDropdownItem>
-              <NavDropdownItem>
-                <NavDropdownLink to="/if/list" onClick={closeMobileMenu}>
-                  <FiStar />
-                  インフルエンサー
-                </NavDropdownLink>
-              </NavDropdownItem>
-              <NavDropdownItem>
-                <NavDropdownLink to="/casting/manage" onClick={closeMobileMenu}>
-                  <FiTrendingUp />
-                  キャスティング管理
                 </NavDropdownLink>
               </NavDropdownItem>
               <NavDropdownItem>
@@ -597,19 +538,10 @@ function AdminApp() {
           <Route path="/closed-deals" element={<ClosedDealsList />} />
           <Route path="/proposal-deals" element={<ProposalDealsList />} />
           <Route path="/continuation-management" element={<ContinuationManagementPage />} />
-          <Route path="/if/register" element={<InfluencerRegisterPage />} />
-          <Route path="/if/register/:id" element={<InfluencerRegisterPage />} />
-          <Route path="/if/list" element={<InfluencerListPage />} />
-          <Route path="/casting/manage" element={<CastingManagePage />} />
           <Route path="/project-management" element={<ProjectManagementPage />} />
           <Route path="/staff-master" element={<StaffMasterPage />} />
           <Route path="/next-action-management" element={<NextActionManagementPage />} />
-          <Route path="/weekly-report" element={<WeeklyReportPage />} />
           <Route path="/operator-dashboard" element={<OperatorDashboard />} />
-          <Route path="/core-customers" element={<CoreCustomerPage />} />
-          <Route path="/account-sales-dashboard" element={<AccountSalesDashboard />} />
-          <Route path="/account-deals-list" element={<AccountDealsListPage />} />
-          <Route path="/key-accounts" element={<KeyAccountMasterPage />} />
           <Route path="/daily-timer" element={<DailyTimerPage />} />
           <Route path="/pipeline-forecast" element={<PipelineForecastPage />} />
           <Route path="/mall-calendar" element={<MallCalendarPage />} />

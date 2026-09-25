@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import styled from 'styled-components';
-import { FiUser, FiCalendar, FiCheck, FiEdit2, FiTarget, FiDownload, FiAlertTriangle } from 'react-icons/fi';
+import { FiUser, FiCalendar, FiCheck, FiTarget, FiDownload, FiAlertTriangle } from 'react-icons/fi';
 import { db } from '../firebase.js';
-import { collection, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
+import { collection, getDocs } from 'firebase/firestore';
 import { fetchStaffByRole } from '../services/staffService.js';
 import { updateSalesRecord } from '../services/projectService.js';
 import { STATUS_COLORS, CONTINUATION_STATUS_COLORS } from '../data/constants.js';
@@ -139,32 +139,6 @@ const TargetValue = styled.div`
   color: ${props => props.color || '#2c3e50'};
 `;
 
-const TargetInput = styled.input`
-  padding: 0.35rem 0.5rem;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 0.85rem;
-  width: 140px;
-  text-align: right;
-`;
-
-const TargetSaveBtn = styled.button`
-  padding: 0.3rem 0.6rem;
-  border: none;
-  border-radius: 4px;
-  background: #27ae60;
-  color: white;
-  cursor: pointer;
-  font-size: 0.8rem;
-  &:hover { background: #219a52; }
-`;
-
-const ProgressBar = styled.div`
-  flex: 1;
-  min-width: 120px;
-  max-width: 200px;
-`;
-
 const Table = styled.table`
   width: 100%;
   border-collapse: collapse;
@@ -298,11 +272,6 @@ function OperatorDashboard() {
     return `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
   });
 
-  // 目標値
-  const [targetValue, setTargetValue] = useState(0);
-  const [editingTarget, setEditingTarget] = useState('');
-  const [isEditingTarget, setIsEditingTarget] = useState(false);
-
   // 既存案件データ
   const [existingDeals, setExistingDeals] = useState([]);
   // CSV出力用：全案件（ステータス不問）
@@ -407,47 +376,12 @@ function OperatorDashboard() {
     }
   }, []);
 
-  // 目標値取得
-  const fetchTarget = useCallback(async () => {
-    if (!selectedOperator || !selectedMonth) return;
-    try {
-      const targetRef = doc(db, 'operatorTargets', `${selectedOperator}_${selectedMonth}`);
-      const targetDoc = await getDoc(targetRef);
-      if (targetDoc.exists()) {
-        setTargetValue(targetDoc.data().target || 0);
-      } else {
-        setTargetValue(0);
-      }
-    } catch (error) {
-      console.error('目標値取得エラー:', error);
-    }
-  }, [selectedOperator, selectedMonth]);
-
-  // 目標値保存
-  const saveTarget = async () => {
-    if (!selectedOperator || !selectedMonth) return;
-    try {
-      const targetRef = doc(db, 'operatorTargets', `${selectedOperator}_${selectedMonth}`);
-      const value = parseInt(editingTarget) || 0;
-      await setDoc(targetRef, { target: value, updatedAt: new Date() });
-      setTargetValue(value);
-      setIsEditingTarget(false);
-    } catch (error) {
-      console.error('目標値保存エラー:', error);
-      alert('保存に失敗しました');
-    }
-  };
-
   useEffect(() => {
     fetchData();
     fetchStaffByRole('operator').then(staff => {
       setOperators(staff.map(s => s.name));
     }).catch(err => console.error('運用者リスト取得エラー:', err));
   }, [fetchData]);
-
-  useEffect(() => {
-    fetchTarget();
-  }, [fetchTarget]);
 
   // 選択月の予算実績
   const monthlyActual = useMemo(() => {
@@ -672,8 +606,6 @@ function OperatorDashboard() {
     return options;
   }, []);
 
-  const achievementRate = targetValue > 0 ? Math.round((monthlyActual / targetValue) * 100) : 0;
-  const barWidth = Math.min(achievementRate, 100);
 
   if (isLoading) {
     return <PageContainer><LoadingMessage>データを読み込み中...</LoadingMessage></PageContainer>;
@@ -721,11 +653,11 @@ function OperatorDashboard() {
             </Card>
           )}
 
-          {/* 運用者の目標実績 */}
+          {/* 運用者の実績 */}
           <TargetCard>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
               <FiTarget size={18} color="#2c3e50" />
-              <span style={{ fontWeight: 'bold', color: '#2c3e50' }}>運用者の目標実績</span>
+              <span style={{ fontWeight: 'bold', color: '#2c3e50' }}>運用者の実績</span>
             </div>
             <TargetRow>
               <Select
@@ -752,46 +684,9 @@ function OperatorDashboard() {
               {selectedOperator && (
                 <>
                   <TargetMetric>
-                    <TargetLabel>目標</TargetLabel>
-                    {isEditingTarget ? (
-                      <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
-                        <TargetInput
-                          type="number"
-                          value={editingTarget}
-                          onChange={(e) => setEditingTarget(e.target.value)}
-                          placeholder="目標金額"
-                        />
-                        <TargetSaveBtn onClick={saveTarget}>保存</TargetSaveBtn>
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}
-                        onClick={() => { setEditingTarget(targetValue.toString()); setIsEditingTarget(true); }}>
-                        <TargetValue>{formatCurrency(targetValue)}</TargetValue>
-                        <FiEdit2 size={12} color="#999" />
-                      </div>
-                    )}
-                  </TargetMetric>
-                  <TargetMetric>
                     <TargetLabel>実績</TargetLabel>
                     <TargetValue color="#3498db">{formatCurrency(monthlyActual)}</TargetValue>
                   </TargetMetric>
-                  <TargetMetric>
-                    <TargetLabel>達成率</TargetLabel>
-                    <TargetValue color={achievementRate >= 100 ? '#27ae60' : achievementRate >= 50 ? '#f39c12' : '#e74c3c'}>
-                      {achievementRate}%
-                    </TargetValue>
-                  </TargetMetric>
-                  <ProgressBar>
-                    <div style={{ height: '16px', background: '#e9ecef', borderRadius: '4px', overflow: 'hidden' }}>
-                      <div style={{
-                        width: `${barWidth}%`,
-                        height: '100%',
-                        background: achievementRate >= 100 ? '#27ae60' : achievementRate >= 50 ? '#f39c12' : '#e74c3c',
-                        borderRadius: '4px',
-                        transition: 'width 0.3s ease'
-                      }} />
-                    </div>
-                  </ProgressBar>
                 </>
               )}
             </TargetRow>

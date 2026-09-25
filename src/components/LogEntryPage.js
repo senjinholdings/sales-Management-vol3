@@ -929,26 +929,6 @@ function LogEntryPage() {
         dealId: dealDocId
       });
       
-      // IFキャスティング選択時は自動でキャスティング管理に登録
-      if (formData.proposalMenu === 'IFキャスティング') {
-        try {
-          const castingProposalData = {
-            projectName: formData.companyName,
-            dealId: dealDocId,
-            influencers: [], // 空の配列で初期化
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          };
-          
-          const castingRef = collection(db, 'castingProposals');
-          await addDoc(castingRef, castingProposalData);
-          console.log('✅ キャスティング管理に自動登録完了');
-        } catch (castingError) {
-          console.error('キャスティング管理への登録エラー:', castingError);
-          // メインの処理は成功しているので、エラーは警告に留める
-        }
-      }
-      
       setSubmitMessage({
         type: 'success',
         text: 'アクションログが正常に保存されました！'
