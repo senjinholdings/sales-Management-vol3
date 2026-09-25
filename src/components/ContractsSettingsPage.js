@@ -21,6 +21,8 @@ export default function ContractsSettingsPage() {
   //    記入済み契約書の作成・修正などはここで選んだ社内アカウントとして行う
   //  - 記入済み契約書の保存先Driveフォルダ: 案件をまたいで1つのフォルダに集める
   //  - テストグループ: 「テストグループに送る」を選んだときの投稿先Slackチャンネル
+  // 保存先フォルダとテストグループは、空のままならaccount-sales-boardの設定と同じものを使う
+  // （入力欄に出すのはvol3で入れた値だけ。実際に使われる値は欄の下に出す）。
   const [settings, setSettings] = useState(null); // { folderId, folderUrl, googleAccountEmail, testChannelId }
   const [folderInput, setFolderInput] = useState('');
   const [accountInput, setAccountInput] = useState('');
@@ -49,9 +51,9 @@ export default function ContractsSettingsPage() {
 
   const applySettings = (data) => {
     setSettings(data);
-    setFolderInput(data.folderUrl);
+    setFolderInput(data.own?.folderId ? data.folderUrl : '');
     setAccountInput(data.googleAccountEmail || '');
-    setTestChannelInput(data.testChannelId || '');
+    setTestChannelInput(data.own?.testChannelId || '');
   };
 
   const loadSettings = useCallback(() => {
@@ -117,15 +119,16 @@ export default function ContractsSettingsPage() {
             <Input
               value={folderInput}
               onChange={(e) => { setFolderInput(e.target.value); setSettingsSaved(false); }}
-              placeholder="https://drive.google.com/drive/folders/..."
+              placeholder="空欄ならaccount-sales-boardと同じフォルダ"
             />
             <MetaLine style={{ marginTop: 2 }}>
               締結依頼のときに作る「記入済み契約書」の置き場所です。案件をまたいでこの1つのフォルダに集めます。
-              上のアカウントから書き込める必要があります。
+              上のアカウントから書き込める必要があります。空欄ならaccount-sales-boardと同じフォルダを使います。
               {settings && (
                 <>
                   <br />
-                  現在の保存先：<a href={settings.folderUrl} target="_blank" rel="noopener noreferrer">{settings.folderUrl}</a>
+                  現在の保存先{settings.own?.folderId ? '' : '（account-sales-boardと同じ）'}：
+                  <a href={settings.folderUrl} target="_blank" rel="noopener noreferrer">{settings.folderUrl}</a>
                 </>
               )}
             </MetaLine>
@@ -135,16 +138,23 @@ export default function ContractsSettingsPage() {
             <Input
               value={testChannelInput}
               onChange={(e) => { setTestChannelInput(e.target.value); setSettingsSaved(false); }}
-              placeholder="C0123456789"
+              placeholder="空欄ならaccount-sales-boardと同じチャンネル"
             />
             <MetaLine style={{ marginTop: 2 }}>
-              締結依頼で「テストグループに送る」を選んだときの送り先です。未設定のままテスト送信を選ぶと、
-              本番には送らずにエラーで止めます。
+              締結依頼で「テストグループに送る」を選んだときの送り先です。空欄ならaccount-sales-boardと同じチャンネルに送ります。
+              どちらにも無いままテスト送信を選ぶと、本番には送らずにエラーで止めます。
+              {settings && (
+                <>
+                  <br />
+                  現在の送り先{settings.own?.testChannelId ? '' : '（account-sales-boardと同じ）'}：
+                  {settings.testChannelId || '未設定'}
+                </>
+              )}
             </MetaLine>
           </FormField>
         </FormGrid>
         <ActionGroup style={{ marginTop: 8 }}>
-          <Button type="submit" $variant="primary" disabled={folderSaving || !folderInput.trim()}>
+          <Button type="submit" $variant="primary" disabled={folderSaving}>
             {folderSaving ? '保存中...' : '保存'}
           </Button>
           {settingsSaved && <MetaLine>保存しました</MetaLine>}
