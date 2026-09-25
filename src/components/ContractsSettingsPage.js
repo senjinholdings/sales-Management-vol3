@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  PageWrap, PageTitle, Section, SectionTitle, MetaLine, Button, Input, Select,
+  PageWrap, PageTitle, Section, SectionTitle, MetaLine, Button, Input,
   FormField, FormGrid, Label, FieldError, EmptyNote, ActionGroup, CardGrid, Badge,
 } from './contractUi.js';
 import { api } from '../services/contractApi.js';
-import { fetchAllStaff } from '../services/staffService.js';
 
 // 契約書管理。雛形はaccount-sales-boardの契約書管理で登録したものをそのまま使う
 // （両方のアプリで同じ雛形を使うので、雛形の登録・版の追加・入力項目・{{項目名}}のマーク付けは
@@ -17,17 +16,14 @@ export default function ContractsSettingsPage() {
   const [error, setError] = useState('');
 
   // vol3だけの共通設定。
-  //  - Googleドキュメントを操作するアカウント: このアプリはGoogleでログインしないため、
-  //    記入済み契約書の作成・修正などはここで選んだ社内アカウントとして行う
+  //  - Googleドキュメントの操作は、account-sales-boardで連携済みの増田さんのアカウントで行う（表示のみ・変更不可）
   //  - 記入済み契約書の保存先Driveフォルダ: 案件をまたいで1つのフォルダに集める
   //  - テストグループ: 「テストグループに送る」を選んだときの投稿先Slackチャンネル
   // 保存先フォルダとテストグループは、空のままならaccount-sales-boardの設定と同じものを使う
   // （入力欄に出すのはvol3で入れた値だけ。実際に使われる値は欄の下に出す）。
   const [settings, setSettings] = useState(null); // { folderId, folderUrl, googleAccountEmail, testChannelId }
   const [folderInput, setFolderInput] = useState('');
-  const [accountInput, setAccountInput] = useState('');
   const [testChannelInput, setTestChannelInput] = useState('');
-  const [staffWithEmail, setStaffWithEmail] = useState([]);
   const [folderSaving, setFolderSaving] = useState(false);
   const [folderError, setFolderError] = useState('');
   const [settingsSaved, setSettingsSaved] = useState(false);
@@ -52,7 +48,6 @@ export default function ContractsSettingsPage() {
   const applySettings = (data) => {
     setSettings(data);
     setFolderInput(data.own?.folderId ? data.folderUrl : '');
-    setAccountInput(data.googleAccountEmail || '');
     setTestChannelInput(data.own?.testChannelId || '');
   };
 
@@ -64,11 +59,6 @@ export default function ContractsSettingsPage() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadSettings(); }, [loadSettings]);
-  useEffect(() => {
-    fetchAllStaff()
-      .then((staff) => setStaffWithEmail(staff.filter((s) => s.email)))
-      .catch(() => setStaffWithEmail([]));
-  }, []);
 
   const handleSaveFolder = async (e) => {
     e.preventDefault();
@@ -78,7 +68,6 @@ export default function ContractsSettingsPage() {
     try {
       const data = await api.saveContractSettings({
         folderId: folderInput,
-        googleAccountEmail: accountInput,
         testChannelId: testChannelInput,
       });
       applySettings(data);
@@ -99,19 +88,13 @@ export default function ContractsSettingsPage() {
         <FormGrid>
           <FormField>
             <Label>Googleドキュメントを操作するアカウント</Label>
-            <Select value={accountInput} onChange={(e) => { setAccountInput(e.target.value); setSettingsSaved(false); }}>
-              <option value="">（未設定）</option>
-              {accountInput && !staffWithEmail.some((s) => s.email === accountInput) && (
-                <option value={accountInput}>{accountInput}</option>
-              )}
-              {staffWithEmail.map((s) => (
-                <option key={s.id} value={s.email}>{s.name}（{s.email}）</option>
-              ))}
-            </Select>
+            <MetaLine>
+              {settings?.googleAccountEmail || '増田さん'}（account-sales-boardで連携済みのGoogleアカウント）
+            </MetaLine>
             <MetaLine style={{ marginTop: 2 }}>
-              記入済み契約書の作成・修正と、締結済み契約書のアップロードは、このアカウントとして行います
-              （作ったファイルの持ち主もこのアカウントになります）。記入済み契約書はaccount-sales-boardの雛形を
-              複製して作るので、このアカウントがその雛形を開ける必要があります。担当者マスターでメールアドレスを登録した人から選べます。
+              記入済み契約書の作成・修正と、締結済み契約書のアップロードは、すべてこのアカウントで行います
+              （作ったファイルの持ち主も増田さんになります）。連携が切れたときは、account-sales-boardの設定画面から
+              「Googleと連携する」をやり直してください。
             </MetaLine>
           </FormField>
           <FormField>

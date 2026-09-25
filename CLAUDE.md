@@ -115,7 +115,6 @@ contracts: {
 }
 appConfig/contractOutput: {
   folderId: string,           // 記入済み契約書の保存先Driveフォルダ（空ならaccount-sales-boardと同じ）
-  googleAccountEmail: string, // Googleドキュメントを操作する社内アカウント（ドメイン全体の委任でなりすます先）
   testChannelId: string       // 「テストグループに送る」の投稿先Slackチャンネル（空ならaccount-sales-boardと同じ）
 }
 // 案件の締結依頼・締結記録（progressDashboard/{id}/contractRequests）
@@ -265,9 +264,13 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.55.0
+- **現在バージョン**: v2.56.0
 - **最終更新**: 2026年9月25日
 - **直近の更新内容**:
+  - 契約書まわりのGoogleドキュメント・ドライブの操作を、account-sales-boardで連携済みの増田さんのGoogle連携で行うように変更（ドメイン全体の委任＝Workspace管理者の設定が不要に）
+    - `functions/contractsRouter.js`の`getGoogleClients`が、account-sales-boardのSecret Managerから`GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`/`GMAIL_REFRESH_TOKEN_masuda`を読んで使う（vol3には複製しない）。**account-sales-boardのGoogle Cloudプロジェクトで`sales-management-staging@appspot.gserviceaccount.com`に「Secret Manager のシークレット アクセサー」を付けないと動かない**
+    - 記入済み契約書・締結済み契約書のファイルの持ち主は常に増田さん。契約書管理の「Googleドキュメントを操作するアカウント」の選択欄は廃止（表示のみ）。`appConfig/contractOutput.googleAccountEmail`は使わない
+    - 増田さんの連携が切れたら（invalid_grant）、account-sales-boardの設定画面で「Googleと連携する」をやり直せばvol3もそのまま直る
   - 契約書の雛形をaccount-sales-boardと共通にした（vol3での雛形登録・編集をやめ、account-sales-boardの雛形マスタを読み取りで使う）
     - Cloud Functionsがaccount-sales-boardのFirestoreの`contracts`を読む（`getTemplateDb`、読み取りのみ）。認証はvol3のCloud Functionsの実行アカウント`sales-management-staging@appspot.gserviceaccount.com`で、**account-sales-boardのGoogle Cloudプロジェクトでこのアカウントに「Cloud Datastore 閲覧者」ロールを付けないと雛形が読めない**（読めないときは画面にその旨を表示）
     - 契約書管理（`/contract-master`）は共通設定（操作アカウント・保存先フォルダ・テストグループ）と雛形の一覧（読み取り専用、account-sales-boardの編集画面へのリンク付き）だけにした。雛形の登録・版追加・種別・入力項目・マーク付けの画面とAPI（`ContractDetailPage.js`/`ContractTemplateMarkup.js`、`POST /contracts`等）は削除
@@ -280,7 +283,7 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
     - 入口は2つのまま: 第一想起の「契約締結依頼」ボタン（ヒアリング内容を同名の入力項目に初期値として入れる。送るとフェーズ7へ進み、NA「③契約締結依頼を提出する」を完了にする）と、受注情報の入力（旧来の事業部・連絡グループ等の簡易欄を廃止し、「受注確定のあと、続けて契約締結依頼を出す」で同じ依頼画面を開く）
     - 案件詳細パネルに「契約書」タブを追加（依頼の記録・「締結済みにする」「取り下げる」・締結済み契約書のアップロード・記入済み契約書の手直し。依頼ボタンは置かない）
     - 締結済みにしたら（締結済みにする・アップロード）進行ステージの「契約締結」を自動でDone（`completeContractStageIfSigned`、対象案件でステージ1のときのみ）。受注前に締結した案件は受注保存時（`saveReceivedOrder`）にDone。第一想起の③は`firstRecallContractStatus: 'signed'`になる
-    - Googleドキュメント・ドライブの操作は、MTG登録と同じドメイン全体の委任のサービスアカウント（`TLDV_CALENDAR_SA_KEY`）で、契約書管理の共通設定で選んだ社内アカウントになりすまして行う。**Workspace管理者がこのサービスアカウントのクライアントIDにドライブ（`auth/drive`）・ドキュメント（`auth/documents`）の範囲を追加しないと動かない**
+    - Googleドキュメント・ドライブの操作は、当初はドメイン全体の委任のサービスアカウントで行っていた（v2.56.0で増田さんのGoogle連携に変更）
     - 案件に先方担当者の一覧が無いため、メール共有時の宛先（担当者名・メール・クラウドサイン送付先）は依頼フォームで入力する。Chatworkルーム・Slackチャンネルは会社単位のMTG設定から読む
     - 旧③（スプレッドシート連携GASへの送信・トップレベル`contractRequests`への保存）と受注モーダルのSlack Webhook送信は廃止
     - Cloud Functionsのapi関数のtimeoutSecondsを120秒に、JSONの受信上限を12MBに変更（契約書ファイルのアップロード用）
