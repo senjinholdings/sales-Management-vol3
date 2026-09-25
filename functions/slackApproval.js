@@ -17,6 +17,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const { createTrackedOpenAI } = require('./aiUsage');
+const { getOpenAiApiKey } = require('./accountSalesBoard');
 const { WebClient } = require('@slack/web-api');
 const { env } = require('./authHelpers');
 
@@ -195,8 +196,9 @@ async function handleRegenerate({ admin, db, meetingId, dealId, channelId, messa
   if (!dealSnap.exists) throw new Error('案件が見つかりません');
   const deal = dealSnap.data();
 
-  const openaiKey = env('OPENAI_API_KEY');
-  if (!openaiKey) throw new Error('OPENAI_API_KEY が未設定です');
+  // vol3自身のキーは期限切れのため、account-sales-boardのキーを借りる（accountSalesBoard.js）
+  const openaiKey = await getOpenAiApiKey();
+  if (!openaiKey) throw new Error('OpenAIのAPIキーが見つかりません');
 
   const newMessage = await regenerateThankYouMessage({
     apiKey: openaiKey,

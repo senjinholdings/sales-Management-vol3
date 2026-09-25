@@ -264,9 +264,12 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.57.0
+- **現在バージョン**: v2.58.0
 - **最終更新**: 2026年9月25日
 - **直近の更新内容**:
+  - サーバー側のAI（契約書のAI修正・矛盾チェック、お礼メッセージの書き直し）のOpenAIキーを、期限切れのvol3のキーからaccount-sales-boardのキーに切り替え
+    - `functions/accountSalesBoard.js`の`getOpenAiApiKey`がaccount-sales-boardのSecret Managerの`OPENAI_API_KEY`を読む（読めないときだけvol3の`OPENAI_API_KEY`に戻す）。費用はaccount-sales-boardのキーにまとまり、システム費用の画面では「営業管理vol3」として分かれて出る
+    - account-sales-boardの資源を借りる処理（雛形のFirestore・Secret Managerの読み取り）を`functions/accountSalesBoard.js`にまとめた（`contractsRouter.js`から移動）
   - AI(OpenAI)の利用量・概算費用の記録を追加（account-sales-boardの「設定 → システム費用」で両アプリ分をまとめて見る）
     - サーバー側でAIを呼ぶときは`new OpenAI()`ではなく`createTrackedOpenAI({ apiKey, feature })`（`functions/aiUsage.js`）を使う。呼び出すたびにトークン数・Web検索回数・概算費用をaccount-sales-boardのFirestoreの`aiUsageLogs`に記録する（`aiUsage.js`はaccount-sales-boardと同じ中身）
     - 記録先への書き込みには、account-sales-boardのGoogle Cloudプロジェクトで`sales-management-staging@appspot.gserviceaccount.com`にFirestoreへの書き込み権限（現在はDatastoreオーナー）が必要。閲覧者に下げると記録が止まる（AIの機能自体は止まらない）

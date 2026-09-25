@@ -38,7 +38,8 @@ const { createMallUpdateChecker } = require('./mallUpdateGuard');
 // 緊急クエスト（増田さんの投稿への🚨スタンプで日報に最優先タスクを自動登録）
 const { createUrgentQuestRouter } = require('./urgentQuest');
 // 契約書の雛形管理・記入済み契約書の作成とAI修正・締結依頼（account-sales-boardと同じ仕組み）
-const { createContractsRouter, getTemplateDb } = require('./contractsRouter');
+const { createContractsRouter } = require('./contractsRouter');
+const { getTemplateDb } = require('./accountSalesBoard');
 // AIを呼ぶたびに使用量と概算費用を記録する。記録先はaccount-sales-boardのFirestore（費用の画面はあちら）
 const { configureAiUsage } = require('./aiUsage');
 configureAiUsage({ db: getTemplateDb(admin), app: 'sales-Management-vol3' });
