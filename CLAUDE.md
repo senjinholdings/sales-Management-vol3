@@ -114,9 +114,9 @@ contracts: {
   isMarkupCopy: boolean             // 項目入り版（元の雛形の複製。マーク付け・文章の直しはこちらだけ）
 }
 appConfig/contractOutput: {
-  folderId: string,           // 記入済み契約書の保存先Driveフォルダ
+  folderId: string,           // 記入済み契約書の保存先Driveフォルダ（空ならaccount-sales-boardと同じ）
   googleAccountEmail: string, // Googleドキュメントを操作する社内アカウント（ドメイン全体の委任でなりすます先）
-  testChannelId: string       // 「テストグループに送る」の投稿先Slackチャンネル
+  testChannelId: string       // 「テストグループに送る」の投稿先Slackチャンネル（空ならaccount-sales-boardと同じ）
 }
 // 案件の締結依頼・締結記録（progressDashboard/{id}/contractRequests）
 contractRequests: {
@@ -273,6 +273,7 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
     - 契約書管理（`/contract-master`）は共通設定（操作アカウント・保存先フォルダ・テストグループ）と雛形の一覧（読み取り専用、account-sales-boardの編集画面へのリンク付き）だけにした。雛形の登録・版追加・種別・入力項目・マーク付けの画面とAPI（`ContractDetailPage.js`/`ContractTemplateMarkup.js`、`POST /contracts`等）は削除
     - 依頼フォームの「＋入力項目を追加」は、account-sales-boardの雛形の依頼設定へのリンクに置き換え
     - 締結依頼・記入済み契約書・締結記録は従来どおりvol3側（`progressDashboard/{id}/contractRequests`・`generatedContracts`）
+    - 共通設定の保存先フォルダ・テストグループは、vol3で空欄ならaccount-sales-boardの設定（`appConfig/contractOutput.folderId`、`appConfig/slackChannels.testChannelId`→無ければ`taskReminderChannelId`）をそのまま使う
   - 契約書締結依頼をaccount-sales-boardと同じ仕組みに置き換え（雛形管理・記入済み契約書・AI修正・締結記録）
     - マスター管理に「契約書管理」を追加（`/contract-master`）。雛形の登録（リンク/ファイル）・版管理・種別（基本/個別）・入力項目・項目入り版への{{項目名}}マーク付け・入力項目マスタ。画面・APIはaccount-sales-boardから移したもの（`ContractsSettingsPage.js`/`ContractDetailPage.js`/`ContractTemplateMarkup.js`、`functions/contractsRouter.js`を`/api/contract`にマウント）
     - 依頼画面（`ContractRequestModal.js`→`ContractRequestsSection.js`）: 雛形を選んで入力項目から記入済み契約書（Googleドキュメント）を作成→「文章を直す」でAI修正提案（契約書全体に対して提案・人が保存したときだけ書き込み）→依頼文をプレビュー・修正→Slackの契約書チーム（account-sales-boardと同じチャンネル・メンション）へ送信。テストグループ送信あり

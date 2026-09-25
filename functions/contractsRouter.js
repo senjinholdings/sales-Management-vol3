@@ -352,13 +352,43 @@ function createContractsRouter({ admin, db }) {
   //  folderId:           記入済み契約書の保存先Driveフォルダ(未設定なら既定のフォルダ)
   //  googleAccountEmail: Googleドキュメント・ドライブを操作する社内アカウント(なりすまし先)
   //  testChannelId:      「テストグループに送る」を選んだときの投稿先Slackチャンネル
+  // 保存先フォルダとテストグループは、vol3で入れていなければaccount-sales-boardの設定をそのまま使う
+  // （同じ契約書チーム・同じ雛形で運用しているので、既定は揃えておく）。
+  // あちらの設定の置き場所は account-sales-board の appConfig/contractOutput.folderId と、
+  // appConfig/slackChannels.testChannelId（未設定なら taskReminderChannelId。あちらと同じ決め方）。
+  // 読めなかったときは使わないだけで、エラーにはしない（vol3の設定か既定値で動く）。
+  async function readAccountSalesBoardSettings() {
+    try {
+      const [outputSnap, slackSnap] = await Promise.all([
+        templateDb.collection('appConfig').doc('contractOutput').get(),
+        templateDb.collection('appConfig').doc('slackChannels').get(),
+      ]);
+      const output = outputSnap.exists ? outputSnap.data() : {};
+      const slack = slackSnap.exists ? slackSnap.data() : {};
+      return {
+        folderId: extractDriveFolderId(output.folderId),
+        testChannelId: String(slack.testChannelId || slack.taskReminderChannelId || '').trim(),
+      };
+    } catch (error) {
+      console.error('account-sales-boardの契約書設定の取得に失敗:', error.message);
+      return { folderId: '', testChannelId: '' };
+    }
+  }
+
   async function readContractSettings() {
-    const snap = await db.collection('appConfig').doc('contractOutput').get();
+    const [snap, shared] = await Promise.all([
+      db.collection('appConfig').doc('contractOutput').get(),
+      readAccountSalesBoardSettings(),
+    ]);
     const data = snap.exists ? snap.data() : {};
+    const ownFolderId = extractDriveFolderId(data.folderId);
+    const ownTestChannelId = data.testChannelId ? String(data.testChannelId).trim() : '';
     return {
-      folderId: extractDriveFolderId(data.folderId) || DEFAULT_CONTRACT_OUTPUT_FOLDER_ID,
+      folderId: ownFolderId || shared.folderId || DEFAULT_CONTRACT_OUTPUT_FOLDER_ID,
       googleAccountEmail: data.googleAccountEmail ? String(data.googleAccountEmail).trim() : '',
-      testChannelId: data.testChannelId ? String(data.testChannelId).trim() : '',
+      testChannelId: ownTestChannelId || shared.testChannelId,
+      // 画面の入力欄に出すのはvol3で入れた値だけ（空ならaccount-sales-boardと同じ、の意味）。
+      own: { folderId: ownFolderId, testChannelId: ownTestChannelId },
     };
   }
 
@@ -387,9 +417,8 @@ function createContractsRouter({ admin, db }) {
       const { folderId, googleAccountEmail, testChannelId } = req.body || {};
       const update = {};
       if (folderId !== undefined) {
-        const value = extractDriveFolderId(folderId);
-        if (!value) return res.status(400).json({ error: 'フォルダのURLかIDを入力してください' });
-        update.folderId = value;
+        // 空にしたらaccount-sales-boardと同じフォルダを使う。
+        update.folderId = extractDriveFolderId(folderId);
       }
       if (googleAccountEmail !== undefined) {
         const value = String(googleAccountEmail || '').trim();
