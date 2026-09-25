@@ -156,15 +156,6 @@ const TypeBadge = styled.span`
   background: ${props => props.$type === '新規' ? '#3498db' : '#27ae60'};
 `;
 
-const TrackBadge = styled.span`
-  padding: 0.2rem 0.6rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: white;
-  background: ${props => props.$track === 'account' ? '#8e44ad' : '#7f8c8d'};
-`;
-
 const LoadingMessage = styled.div`
   text-align: center;
   padding: 3rem;
@@ -232,7 +223,8 @@ function ClosedDealsList() {
 
       // 各案件のsalesRecords(既存)/newCaseSalesRecords(新規)からフェーズ8のレコードを取得
       const allRecords = [];
-      await Promise.all(dealsList.map(async (deal) => {
+      // アカウント営業の案件はaccount-sales-boardで管理しているので出さない
+      await Promise.all(dealsList.filter(d => d.salesTrack !== 'account').map(async (deal) => {
         const subCol = deal.isExistingProject ? 'salesRecords' : 'newCaseSalesRecords';
         try {
           const salesSnap = await getDocs(
@@ -249,7 +241,6 @@ function ClosedDealsList() {
               date: rd.date || '',
               confirmedDate: rd.confirmedDate || rd.date || '',
               recordType: rd.recordType || '新規',
-              salesTrack: deal.salesTrack || null,
               companyName: deal.companyName || '',
               productName: deal.productName || '',
               budget: typeof rd.budget === 'string' ? Number(rd.budget) || 0 : rd.budget || 0,
@@ -473,7 +464,6 @@ function ClosedDealsList() {
                 <Th $sortable onClick={() => handleSort('confirmedDate')}>成約日{renderSortIcon('confirmedDate')}</Th>
                 <Th $sortable onClick={() => handleSort('date')}>登録日{renderSortIcon('date')}</Th>
                 <Th $sortable onClick={() => handleSort('recordType')}>新規/既存{renderSortIcon('recordType')}</Th>
-                <Th $sortable onClick={() => handleSort('salesTrack')}>営業種別{renderSortIcon('salesTrack')}</Th>
                 <Th $sortable onClick={() => handleSort('companyName')}>会社名{renderSortIcon('companyName')}</Th>
                 <Th $sortable onClick={() => handleSort('productName')}>商材名{renderSortIcon('productName')}</Th>
                 <Th $sortable onClick={() => handleSort('budget')} style={{ textAlign: 'right' }}>予算{renderSortIcon('budget')}</Th>
@@ -518,11 +508,6 @@ function ClosedDealsList() {
                   </Td>
                   <Td>{rec.date}</Td>
                   <Td><TypeBadge $type={rec.recordType}>{rec.recordType}</TypeBadge></Td>
-                  <Td>
-                    <TrackBadge $track={rec.salesTrack}>
-                      {rec.salesTrack === 'account' ? 'アカウント営業' : 'ソリューション営業'}
-                    </TrackBadge>
-                  </Td>
                   <Td>{rec.companyName}</Td>
                   <Td>{rec.productName}</Td>
                   <Td style={{ textAlign: 'right' }}>{formatCurrency(rec.budget)}</Td>

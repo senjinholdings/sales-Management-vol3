@@ -32,16 +32,13 @@ React.js + Firebase で構築された営業進捗管理システム。管理者
 - **成約案件管理**: 確定日ベースの売上管理
 
 ### 2. 案件管理機能（第一想起取れるくん専用）
-- **投稿本数管理**: 月別・日別の投稿数記録、受注案件のみ表示、実施月ベース自動登録
-- **投稿カレンダー**: 全体スケジュールの可視化
 - **ToDo管理**: 営業日ベースのタスク自動生成、期限切れアラート表示、完了済みタスクの「タスクDone」セクション
-- **週報**: 四半期KGI/KPI設定と週次進捗入力、サービス別実績の自動集計
+- ※投稿本数管理・投稿カレンダー・週報はv2.59.0で削除（使われていなかったため。データは残置）
 
 ### 3. マスター管理
 - **紹介者マスター**: 紹介者情報の管理
 - **提案メニューマスター**: 提案メニューのカスタマイズ
-- **インフルエンサー管理**: CSV一括登録対応
-- **キャスティング管理**: IFキャスティング案件の進捗管理
+- ※インフルエンサー管理・キャスティング管理はv2.59.0で削除（使われていなかったため。データは残置）
 
 ### 4. パートナー専用機能
 - 部署別管理（Buzz、コンサル、デジコン、マーケD）
@@ -264,9 +261,16 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.58.0
+- **現在バージョン**: v2.59.0
 - **最終更新**: 2026年9月25日
 - **直近の更新内容**:
+  - 使われていない画面と、account-sales-boardへ移したアカウント営業の画面を削除（account-sales-boardへの統合の準備）
+    - 削除した画面: 週報（`/weekly-report`）、コア顧客（`/core-customers`）、インフルエンサー（`/if/*`）、キャスティング管理（`/casting/manage`）、アカウント営業のダッシュボード・案件一覧・対象企業リスト（`/account-sales-dashboard`・`/account-deals-list`・`/key-accounts`）。どこからも開かれていなかった投稿本数管理・投稿カレンダーのファイルも削除
+    - アクションログで提案メニュー「IFキャスティング」を選んだときにキャスティング管理へ自動登録する処理も削除
+    - 運用管理の「運用者の目標」（`operatorTargets`）の入力・達成率を削除（実績と月別実施案件CSVは残す）
+    - アカウント営業はaccount-sales-boardで管理しているので、vol3からは消した: 案件パネルの「アカウント営業に移動」ボタン、ホームのアカウント営業の目標・実績・内訳の列、成約案件一覧の「営業種別」列（アカウント営業の案件は成約案件一覧にも出さない）
+    - 使われているかどうかは、Firestoreの各データの最終更新日を読み取りだけで集計して判断した（2026年9月25日時点。週報・投稿本数・キャスティングは2025年12月、コア顧客は2026年4月が最後）
+    - Firestoreのデータ（`weeklyReports`・`postingSchedules`・`coreCustomers`・`castingProposals`・`operatorTargets`・`salesTargets/{四半期}-account`・アカウント営業の案件）は消していない。画面が無くなっただけ
   - サーバー側のAI（契約書のAI修正・矛盾チェック、お礼メッセージの書き直し）のOpenAIキーを、期限切れのvol3のキーからaccount-sales-boardのキーに切り替え
     - `functions/accountSalesBoard.js`の`getOpenAiApiKey`がaccount-sales-boardのSecret Managerの`OPENAI_API_KEY`を読む（読めないときだけvol3の`OPENAI_API_KEY`に戻す）。費用はaccount-sales-boardのキーにまとまり、システム費用の画面では「営業管理vol3」として分かれて出る
     - account-sales-boardの資源を借りる処理（雛形のFirestore・Secret Managerの読み取り）を`functions/accountSalesBoard.js`にまとめた（`contractsRouter.js`から移動）

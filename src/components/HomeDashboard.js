@@ -621,7 +621,6 @@ function HomeDashboard() {
   const [deals, setDeals] = useState([]); // 新規+既存の全案件
   const [newQuarterTarget, setNewQuarterTarget] = useState(10000000); // ソリューション営業(新規)目標値
   const [existingQuarterTarget, setExistingQuarterTarget] = useState(5000000); // ソリューション営業(既存)目標値
-  const [accountQuarterTarget, setAccountQuarterTarget] = useState(0); // アカウント営業目標値
   const [selectedRepresentative, setSelectedRepresentative] = useState(''); // 担当者サマリー用
   const [salesRepList, setSalesRepList] = useState([]); // スタッフマスターからの営業者リスト
   const { options: quarterOptions, current: currentQuarterKey } = useMemo(() => generateQuarterOptions(), []);
@@ -634,10 +633,9 @@ function HomeDashboard() {
   // 計算結果のstate
   const [quarterActualNew, setQuarterActualNew] = useState(0); // ソリューション営業(新規)四半期実績
   const [quarterActualExisting, setQuarterActualExisting] = useState(0); // ソリューション営業(既存)四半期実績
-  const [quarterActualAccount, setQuarterActualAccount] = useState(0); // アカウント営業四半期実績
   const [quarterForecast, setQuarterForecast] = useState([]);
   const [quarterlyPersonalSales, setQuarterlyPersonalSales] = useState([]); // 個人四半期売上
-  const [quarterMonthlyActual, setQuarterMonthlyActual] = useState([]); // 四半期内の月別売上（ソリューション新規+既存+アカウント営業）
+  const [quarterMonthlyActual, setQuarterMonthlyActual] = useState([]); // 四半期内の月別売上（新規+既存）
   const [monthlyPersonalSales, setMonthlyPersonalSales] = useState([]);
   const [monthForecast, setMonthForecast] = useState([]);
   const [clientBudgetSummary, setClientBudgetSummary] = useState([]);
@@ -646,7 +644,6 @@ function HomeDashboard() {
   const [showTargetModal, setShowTargetModal] = useState(false);
   const [editingNewTarget, setEditingNewTarget] = useState('');
   const [editingExistingTarget, setEditingExistingTarget] = useState('');
-  const [editingAccountTarget, setEditingAccountTarget] = useState('');
 
   // 四半期のキーを取得（目標値保存用）
   const getQuarterKey = () => selectedQuarter;
@@ -667,12 +664,6 @@ function HomeDashboard() {
       if (existingTargetDoc.exists()) {
         setExistingQuarterTarget(existingTargetDoc.data().target || 5000000);
       }
-      // アカウント営業目標（AccountSalesDashboard.jsと同じキーを参照し、目標値を一致させる）
-      const accountTargetRef = doc(db, 'salesTargets', `${quarterKey}-account`);
-      const accountTargetDoc = await getDoc(accountTargetRef);
-      if (accountTargetDoc.exists()) {
-        setAccountQuarterTarget(accountTargetDoc.data().target || 0);
-      }
     } catch (error) {
       console.error('目標値取得エラー:', error);
     }
@@ -684,7 +675,6 @@ function HomeDashboard() {
       const quarterKey = getQuarterKey();
       const newTargetValue = parseInt(editingNewTarget) || 0;
       const existingTargetValue = parseInt(editingExistingTarget) || 0;
-      const accountTargetValue = parseInt(editingAccountTarget) || 0;
 
       await setDoc(doc(db, 'salesTargets', quarterKey), {
         target: newTargetValue,
@@ -694,14 +684,9 @@ function HomeDashboard() {
         target: existingTargetValue,
         updatedAt: new Date()
       });
-      await setDoc(doc(db, 'salesTargets', `${quarterKey}-account`), {
-        target: accountTargetValue,
-        updatedAt: new Date()
-      });
 
       setNewQuarterTarget(newTargetValue);
       setExistingQuarterTarget(existingTargetValue);
-      setAccountQuarterTarget(accountTargetValue);
       setShowTargetModal(false);
       alert('目標値を保存しました');
     } catch (error) {
@@ -714,7 +699,6 @@ function HomeDashboard() {
   const openTargetModal = () => {
     setEditingNewTarget(newQuarterTarget.toString());
     setEditingExistingTarget(existingQuarterTarget.toString());
-    setEditingAccountTarget(accountQuarterTarget.toString());
     setShowTargetModal(true);
   };
 
@@ -782,23 +766,11 @@ function HomeDashboard() {
     const now = new Date();
 
     // ヘルパー: salesRecordsからrecordTypeと成約日で期間内レコードを抽出（confirmedDate優先、なければdate）
-    // アカウント営業（salesTrack === 'account'）はソリューション営業の新規/既存とは別集計のため、ここでは常に除外する
+    // アカウント営業（salesTrack === 'account'）はaccount-sales-boardで管理しているため、ここでは常に除外する
     const getRecordsInRange = (type, start, end) => {
       return salesRecords.filter(rec => {
         if (rec.salesTrack === 'account') return false;
         if (rec.recordType !== type) return false;
-        if (rec.phase !== 'フェーズ8') return false;
-        const d = rec.confirmedDate || rec.date;
-        if (!d) return false;
-        const recDate = new Date(d);
-        return recDate >= start && recDate <= end;
-      });
-    };
-
-    // ヘルパー: アカウント営業の期間内実績を抽出（新規/継続を問わず合算）
-    const getAccountRecordsInRange = (start, end) => {
-      return salesRecords.filter(rec => {
-        if (rec.salesTrack !== 'account') return false;
         if (rec.phase !== 'フェーズ8') return false;
         const d = rec.confirmedDate || rec.date;
         if (!d) return false;
@@ -826,13 +798,10 @@ function HomeDashboard() {
     // 1. 四半期実績（新規・既存を分けて集計 — salesRecordsのbudgetベース）
     const quarterNewRecords = getRecordsInRange('新規', quarter.start, quarter.end);
     const quarterExistingRecords = getRecordsInRange('継続', quarter.start, quarter.end);
-    const quarterAccountRecords = getAccountRecordsInRange(quarter.start, quarter.end);
     const quarterTotalNew = quarterNewRecords.reduce((sum, rec) => sum + rec.budget, 0);
     const quarterTotalExisting = quarterExistingRecords.reduce((sum, rec) => sum + rec.budget, 0);
-    const quarterTotalAccount = quarterAccountRecords.reduce((sum, rec) => sum + rec.budget, 0);
     setQuarterActualNew(quarterTotalNew);
     setQuarterActualExisting(quarterTotalExisting);
-    setQuarterActualAccount(quarterTotalAccount);
 
     // 2. 四半期売上見込み（担当者別）
     // = 新規案件フェーズ1-7 × 受注確率 ＋ salesRecords四半期実績（新規+継続）
@@ -877,7 +846,7 @@ function HomeDashboard() {
     })).sort((a, b) => b.amount - a.amount);
     setMonthlyPersonalSales(monthlySalesData);
 
-    // 3.26. 四半期内の月別売上（積み上げ棒グラフ用：ソリューション営業の新規+既存＋アカウント営業）
+    // 3.26. 四半期内の月別売上（積み上げ棒グラフ用：新規+既存）
     const quarterMonths = [];
     const currentMonthIndex = now.getMonth();
     for (let i = 0; i < 3; i++) {
@@ -889,40 +858,30 @@ function HomeDashboard() {
 
       const mNewRecs = getRecordsInRange('新規', monthStart, monthEnd);
       const mExistRecs = getRecordsInRange('継続', monthStart, monthEnd);
-      const mAccountRecs = getAccountRecordsInRange(monthStart, monthEnd);
       const newSales = mNewRecs.reduce((sum, rec) => sum + rec.budget, 0);
       const existingSales = mExistRecs.reduce((sum, rec) => sum + rec.budget, 0);
-      const accountSales = mAccountRecs.reduce((sum, rec) => sum + rec.budget, 0);
 
       quarterMonths.push({
         label: monthLabel,
         newValue: newSales,
         existingValue: existingSales,
-        accountValue: accountSales,
-        value: newSales + existingSales + accountSales,
+        value: newSales + existingSales,
         isCurrentMonth
       });
     }
     setQuarterMonthlyActual(quarterMonths);
 
-    // 3.5. 個人四半期売上（担当者別。ソリューション営業とアカウント営業を分けて集計）
+    // 3.5. 個人四半期売上（担当者別）
     const repQuarterlySales = {};
     [...quarterNewRecords, ...quarterExistingRecords].forEach(rec => {
       const rep = rec.representative;
-      if (!repQuarterlySales[rep]) repQuarterlySales[rep] = { solution: 0, account: 0 };
-      repQuarterlySales[rep].solution += rec.budget;
-    });
-    quarterAccountRecords.forEach(rec => {
-      const rep = rec.representative;
-      if (!repQuarterlySales[rep]) repQuarterlySales[rep] = { solution: 0, account: 0 };
-      repQuarterlySales[rep].account += rec.budget;
+      if (!repQuarterlySales[rep]) repQuarterlySales[rep] = 0;
+      repQuarterlySales[rep] += rec.budget;
     });
 
-    const quarterlySalesData = Object.entries(repQuarterlySales).map(([name, { solution, account }]) => ({
+    const quarterlySalesData = Object.entries(repQuarterlySales).map(([name, amount]) => ({
       name,
-      solutionAmount: solution,
-      accountAmount: account,
-      amount: solution + account
+      amount
     })).sort((a, b) => b.amount - a.amount);
     setQuarterlyPersonalSales(quarterlySalesData);
 
@@ -950,27 +909,18 @@ function HomeDashboard() {
     })).sort((a, b) => b.value - a.value);
     setMonthForecast(monthForecastData);
 
-    // 6. クライアント別獲得予算（四半期実績と同じロジック: confirmedDateベース。
-    //    ソリューション営業とアカウント営業の両方を含め、内訳が分かるようにする）
+    // 6. クライアント別獲得予算（四半期実績と同じロジック: confirmedDateベース）
     const clientMap = {};
     [...quarterNewRecords, ...quarterExistingRecords].forEach(rec => {
       const name = rec.companyName || '不明';
-      if (!clientMap[name]) clientMap[name] = { solutionBudget: 0, accountBudget: 0, count: 0 };
-      clientMap[name].solutionBudget += rec.budget;
-      clientMap[name].count += 1;
-    });
-    quarterAccountRecords.forEach(rec => {
-      const name = rec.companyName || '不明';
-      if (!clientMap[name]) clientMap[name] = { solutionBudget: 0, accountBudget: 0, count: 0 };
-      clientMap[name].accountBudget += rec.budget;
+      if (!clientMap[name]) clientMap[name] = { budget: 0, count: 0 };
+      clientMap[name].budget += rec.budget;
       clientMap[name].count += 1;
     });
     const clientData = Object.entries(clientMap)
       .map(([name, data]) => ({
         name,
-        solutionBudget: data.solutionBudget,
-        accountBudget: data.accountBudget,
-        budget: data.solutionBudget + data.accountBudget,
+        budget: data.budget,
         count: data.count
       }))
       .sort((a, b) => b.budget - a.budget);
@@ -1073,7 +1023,7 @@ function HomeDashboard() {
   return (
     <DashboardContainer>
       <Header>
-        <Title>営業ダッシュボード（新規・既存・アカウント営業）</Title>
+        <Title>営業ダッシュボード（新規・既存）</Title>
         <select
           value={selectedQuarter}
           onChange={(e) => setSelectedQuarter(e.target.value)}
@@ -1099,7 +1049,6 @@ function HomeDashboard() {
             {[
               { label: 'ソリューション営業（新規）', actual: quarterActualNew, target: newQuarterTarget, color: '#3498db' },
               { label: 'ソリューション営業（既存）', actual: quarterActualExisting, target: existingQuarterTarget, color: '#27ae60' },
-              { label: 'アカウント営業', actual: quarterActualAccount, target: accountQuarterTarget, color: '#8e44ad' },
             ].map(({ label, actual, target, color }) => {
               const pct = target > 0 ? Math.round((actual / target) * 100) : 0;
               const barWidth = Math.min(pct, 100);
@@ -1133,14 +1082,13 @@ function HomeDashboard() {
             四半期内月別売上実績（{quarter.label}）
           </CardTitle>
           <div style={{ padding: '1rem' }}>
-            {/* 積み上げ棒グラフ（新規=青、既存=緑、アカウント営業=紫） */}
+            {/* 積み上げ棒グラフ（新規=青、既存=緑） */}
             <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '1rem' }}>
               {quarterMonthlyActual.map((month, index) => {
                 const maxValue = Math.max(...quarterMonthlyActual.map(m => m.value), 1);
                 const totalHeight = Math.max((month.value / maxValue) * 150, 15);
                 const newHeight = month.value > 0 ? (month.newValue / month.value) * totalHeight : 0;
                 const existingHeight = month.value > 0 ? (month.existingValue / month.value) * totalHeight : 0;
-                const accountHeight = month.value > 0 ? (month.accountValue / month.value) * totalHeight : 0;
                 return (
                   <div key={index} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1, maxWidth: '120px' }}>
                     <div style={{
@@ -1152,23 +1100,13 @@ function HomeDashboard() {
                       {formatCurrency(month.value)}
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '150px' }}>
-                      {/* アカウント営業（上段・紫） */}
-                      {accountHeight > 0 && (
-                        <div style={{
-                          width: '60px',
-                          height: `${accountHeight}px`,
-                          background: '#8e44ad',
-                          borderRadius: '4px 4px 0 0',
-                          transition: 'all 0.3s ease'
-                        }} />
-                      )}
-                      {/* 既存（中段・緑） */}
+                      {/* 既存（上段・緑） */}
                       {existingHeight > 0 && (
                         <div style={{
                           width: '60px',
                           height: `${existingHeight}px`,
                           background: '#2ecc71',
-                          borderRadius: accountHeight > 0 ? '0' : '4px 4px 0 0',
+                          borderRadius: '4px 4px 0 0',
                           transition: 'all 0.3s ease'
                         }} />
                       )}
@@ -1178,7 +1116,7 @@ function HomeDashboard() {
                           width: '60px',
                           height: `${newHeight}px`,
                           background: '#3498db',
-                          borderRadius: (existingHeight > 0 || accountHeight > 0) ? '0' : '4px 4px 0 0',
+                          borderRadius: existingHeight > 0 ? '0' : '4px 4px 0 0',
                           transition: 'all 0.3s ease'
                         }} />
                       )}
@@ -1203,7 +1141,6 @@ function HomeDashboard() {
             <div style={{ display: 'flex', justifyContent: 'center', gap: '1.5rem', marginBottom: '0.5rem', fontSize: '0.8rem' }}>
               <span><span style={{ display: 'inline-block', width: '12px', height: '12px', background: '#3498db', borderRadius: '2px', marginRight: '4px', verticalAlign: 'middle' }}></span>ソリューション営業（新規）</span>
               <span><span style={{ display: 'inline-block', width: '12px', height: '12px', background: '#2ecc71', borderRadius: '2px', marginRight: '4px', verticalAlign: 'middle' }}></span>ソリューション営業（既存）</span>
-              <span><span style={{ display: 'inline-block', width: '12px', height: '12px', background: '#8e44ad', borderRadius: '2px', marginRight: '4px', verticalAlign: 'middle' }}></span>アカウント営業</span>
             </div>
             <TotalRow>
               <span>四半期合計</span>
@@ -1251,9 +1188,7 @@ function HomeDashboard() {
             <thead>
               <tr>
                 <Th>担当者</Th>
-                <Th style={{ textAlign: 'right' }}>ソリューション営業</Th>
-                <Th style={{ textAlign: 'right' }}>アカウント営業</Th>
-                <Th style={{ textAlign: 'right' }}>合計</Th>
+                <Th style={{ textAlign: 'right' }}>売上</Th>
               </tr>
             </thead>
             <tbody>
@@ -1261,14 +1196,12 @@ function HomeDashboard() {
                 quarterlyPersonalSales.map((person, index) => (
                   <tr key={index}>
                     <Td>{person.name}</Td>
-                    <Td style={{ textAlign: 'right' }}>{formatCurrency(person.solutionAmount)}</Td>
-                    <Td style={{ textAlign: 'right' }}>{formatCurrency(person.accountAmount)}</Td>
                     <Td style={{ textAlign: 'right', fontWeight: 'bold' }}>{formatCurrency(person.amount)}</Td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <Td colSpan={4} style={{ textAlign: 'center', color: '#999' }}>
+                  <Td colSpan={2} style={{ textAlign: 'center', color: '#999' }}>
                     この四半期の確定売上はありません
                   </Td>
                 </tr>
@@ -1331,8 +1264,6 @@ function HomeDashboard() {
                   <thead>
                     <tr>
                       <DealListTh>クライアント</DealListTh>
-                      <DealListTh style={{ textAlign: 'right' }}>ソリューション営業</DealListTh>
-                      <DealListTh style={{ textAlign: 'right' }}>アカウント営業</DealListTh>
                       <DealListTh style={{ textAlign: 'right' }}>獲得予算合計</DealListTh>
                       <DealListTh style={{ textAlign: 'right' }}>件数</DealListTh>
                     </tr>
@@ -1341,8 +1272,6 @@ function HomeDashboard() {
                     {clientBudgetSummary.map(client => (
                       <tr key={client.name}>
                         <DealListTd>{client.name}</DealListTd>
-                        <DealListTd style={{ textAlign: 'right' }}>{formatCurrency(client.solutionBudget)}</DealListTd>
-                        <DealListTd style={{ textAlign: 'right' }}>{formatCurrency(client.accountBudget)}</DealListTd>
                         <DealListTd style={{ textAlign: 'right', fontWeight: 'bold', color: '#27ae60' }}>{formatCurrency(client.budget)}</DealListTd>
                         <DealListTd style={{ textAlign: 'right' }}>{client.count}件</DealListTd>
                       </tr>
@@ -1351,8 +1280,6 @@ function HomeDashboard() {
                   <tfoot>
                     <tr style={{ borderTop: '2px solid #e9ecef', fontWeight: 'bold' }}>
                       <DealListTd>合計</DealListTd>
-                      <DealListTd style={{ textAlign: 'right' }}>{formatCurrency(clientBudgetSummary.reduce((sum, c) => sum + c.solutionBudget, 0))}</DealListTd>
-                      <DealListTd style={{ textAlign: 'right' }}>{formatCurrency(clientBudgetSummary.reduce((sum, c) => sum + c.accountBudget, 0))}</DealListTd>
                       <DealListTd style={{ textAlign: 'right', color: '#2c3e50' }}>{formatCurrency(clientBudgetSummary.reduce((sum, c) => sum + c.budget, 0))}</DealListTd>
                       <DealListTd style={{ textAlign: 'right' }}>{clientBudgetSummary.reduce((sum, c) => sum + c.count, 0)}件</DealListTd>
                     </tr>
@@ -1516,18 +1443,8 @@ function HomeDashboard() {
               placeholder="既存目標金額（例: 5000000）"
               min="0"
             />
-            <div style={{ marginBottom: '0.5rem', color: '#8e44ad', fontWeight: 'bold' }}>
-              アカウント営業の目標
-            </div>
-            <ModalInput
-              type="number"
-              value={editingAccountTarget}
-              onChange={(e) => setEditingAccountTarget(e.target.value)}
-              placeholder="アカウント営業目標金額（例: 3000000）"
-              min="0"
-            />
             <div style={{ fontSize: '0.85rem', color: '#999', marginBottom: '1rem' }}>
-              合計目標: {formatCurrency((parseInt(editingNewTarget) || 0) + (parseInt(editingExistingTarget) || 0) + (parseInt(editingAccountTarget) || 0))}
+              合計目標: {formatCurrency((parseInt(editingNewTarget) || 0) + (parseInt(editingExistingTarget) || 0))}
             </div>
             <ModalButtons>
               <ModalButton className="cancel" onClick={() => setShowTargetModal(false)}>
