@@ -37,6 +37,8 @@ const { createMorningDigest } = require('./morningDigest');
 const { createMallUpdateChecker } = require('./mallUpdateGuard');
 // 緊急クエスト（増田さんの投稿への🚨スタンプで日報に最優先タスクを自動登録）
 const { createUrgentQuestRouter } = require('./urgentQuest');
+// 契約書の雛形管理・記入済み契約書の作成とAI修正・締結依頼（account-sales-boardと同じ仕組み）
+const { createContractsRouter } = require('./contractsRouter');
 
 // CORS を設定
 app.use(cors({
@@ -51,7 +53,9 @@ app.use('/api/slack', createSlackInteractionRouter({ admin, db }));
 app.use('/api/slack', createUrgentQuestRouter({ admin, db }));
 
 // JSONパースを有効化
-app.use(express.json());
+// limitを明示しているのは、express.jsonの既定が100KBで、契約書のファイル（雛形・締結済み契約書）を
+// base64でJSONに入れて送ると足りないため（契約書ファイルの上限8MB＋base64の膨らみ分）
+app.use(express.json({ limit: '12mb' }));
 
 // tl;dv連携をマウント
 app.use('/api/tldv', createTldvRouter({ admin, db }));
@@ -61,6 +65,8 @@ app.use('/api/meetings', createCalendarRouter({ admin, db }));
 app.use('/api/staff', createStaffRouter({ admin, db }));
 // Slackチャンネル作成・招待をマウント（同じ/api/staffプレフィックスに相乗り）
 app.use('/api/staff', createSlackChannelsRouter({ admin, db }));
+// 契約書まわりをマウント（パスはaccount-sales-boardの /api 配下と同じ形を /api/contract 配下に置く）
+app.use('/api/contract', createContractsRouter({ admin, db }));
 
 // Firestoreコレクション参照
 const actionLogsRef = db.collection('actionLogs');
@@ -440,7 +446,10 @@ exports.api = functions.runWith({
     'TLDV_CALENDAR_SA_KEY',
     'MEETING_SCHEDULE_SECRET',
     'SLACK_SIGNING_SECRET'
-  ]
+  ],
+  // 契約書のAI修正提案（全文を読ませる）や記入済み契約書の作成（複製→差し込み→読み直し）は
+  // 既定の60秒を超えることがあるため伸ばしておく（account-sales-boardと同じ値）
+  timeoutSeconds: 120
 }).https.onRequest(app);
 
 // 日報: タイマーの止め忘れ・つけ忘れチェック（10分おき）

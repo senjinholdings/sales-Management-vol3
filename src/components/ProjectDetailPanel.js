@@ -3,6 +3,8 @@ import styled, { keyframes } from 'styled-components';
 import { FiX, FiPlus, FiTrash2, FiEdit2, FiSend, FiChevronDown, FiChevronRight, FiExternalLink, FiCheck, FiTarget, FiFileText, FiCalendar, FiCheckSquare, FiShare2 } from 'react-icons/fi';
 import FirstRecallBriefModal from './FirstRecallBriefModal.js';
 import ContractRequestModal from './ContractRequestModal.js';
+import ContractRequestsSection from './ContractRequestsSection.js';
+import { markContractSigned } from '../utils/contractRequestSync.js';
 import ScheduleConfirmModal from './ScheduleConfirmModal.js';
 import MeetingScheduleModal from './MeetingScheduleModal.js';
 import DetailConfirmModal from './DetailConfirmModal.js';
@@ -4206,6 +4208,12 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           >
             議事録
           </Tab>
+          <Tab
+            $active={activeTab === 'contracts'}
+            onClick={() => setActiveTab('contracts')}
+          >
+            契約書
+          </Tab>
         </TabBar>
 
         {/* タブコンテンツ */}
@@ -4225,6 +4233,21 @@ const ProjectDetailPanel = ({ project, onClose, onProjectUpdate, mode, onPhase8S
           )}
           {activeTab === 'minutes' && (
             <MinutesTab project={project} />
+          )}
+          {activeTab === 'contracts' && (
+            // 締結依頼の記録・締結済みにする操作・締結済みのアップロード・記入済み契約書の手直し。
+            // 依頼を出すのは受注情報の入力と第一想起の「契約締結依頼」の2か所から（ここには出さない）。
+            <ContractRequestsSection
+              deal={project}
+              allowRequest={false}
+              onSigned={async () => {
+                try {
+                  await markContractSigned(project);
+                } catch (error) {
+                  console.error('契約締結: 案件の状態の更新に失敗しました', error);
+                }
+              }}
+            />
           )}
         </TabContent>
       </Panel>

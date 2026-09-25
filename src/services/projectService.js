@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { PROJECT_STAGES } from '../data/constants.js';
 import { addBusinessDays } from '../utils/businessDays.js';
+import { isStageTargetProject } from '../utils/stageProgress.js';
 
 /**
  * 案件管理のFirestore操作サービス
@@ -322,6 +323,32 @@ export const undoStageWithSync = async (projectId, stageNo) => {
 };
 
 /**
+ * 契約書が締結済みなら、進行ステージの「契約締結」（ステージ1）をDoneにする。
+ * 締結済みにした時（契約書の「締結済みにする」・締結済みのアップロード）と、受注を保存した時の
+ * 両方から呼ぶ（第一想起の案件は受注前に契約を締結するため、締結した時点ではまだ
+ * 進行ステージの対象になっておらず、受注した時に改めて見る必要がある）。
+ * - 進行ステージの対象案件（基準日以降の受注）でなければ何もしない
+ * - ステージ1がすでにDone、またはステージ1以外まで進んでいれば何もしない（二重に完了させない）
+ * - 締結済みの判定は案件の契約書（progressDashboard/{id}/contractRequests）の status === 'signed'
+ * Doneの操作は運用管理の「Done」ボタンと同じ completeStageWithSync を通す（ステージ連動NAも同じく動く）。
+ * @param {string} projectId - 案件ID
+ * @returns {Promise<boolean>} Doneにしたらtrue
+ */
+export const completeContractStageIfSigned = async (projectId) => {
+  const project = await fetchProjectById(projectId);
+  if (!project || !isStageTargetProject(project)) return false;
+  if (project.stageProgress?.completedAt?.['1']) return false;
+  if ((project.stageProgress?.currentStage || 1) !== 1) return false;
+
+  const snap = await getDocs(collection(db, 'progressDashboard', projectId, 'contractRequests'));
+  const hasSigned = snap.docs.some((d) => d.data().status === 'signed');
+  if (!hasSigned) return false;
+
+  await completeStageWithSync(projectId, 1);
+  return true;
+};
+
+/**
  * ネクストアクションを追加する
  * @param {string} projectId - 案件ID
  * @param {string} tab - タブ種別 ("operator" or "sales")
@@ -532,6 +559,14 @@ export const saveReceivedOrder = async (dealId, orderData) => {
       recordType: '新規',
       createdAt: new Date()
     }, 'salesRecords');
+  }
+
+  // 受注前に契約書を締結済みにしていた案件（第一想起など）は、受注した時点で
+  // 進行ステージの「契約締結」をDoneにする。失敗しても受注の保存は巻き戻さない。
+  try {
+    await completeContractStageIfSigned(dealId);
+  } catch (error) {
+    console.error('契約締結ステージの自動完了に失敗しました:', error);
   }
 };
 

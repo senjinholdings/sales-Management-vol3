@@ -90,6 +90,7 @@ const routeConfig = {
   '/daily-timer': { name: '日報', icon: null },
   '/weekly-report': { name: '週報', icon: null },
   '/mall-calendar': { name: 'モールカレンダー', icon: null },
+  '/contract-master': { name: '契約書管理', icon: null },
   
   // パートナー用ルート
   '/partner': { name: 'ホーム', icon: FiHome },
@@ -148,6 +149,11 @@ function Breadcrumb() {
     if (pathname.includes('/product/')) {
       currentPageName = '案件詳細';
       currentPagePath = isPartnerView ? '/partner/product' : '/product';
+    }
+    // 契約書詳細ページ（/contract-master/:groupKey）
+    else if (pathname.startsWith('/contract-master/')) {
+      currentPageName = '契約書の詳細';
+      currentPagePath = pathname;
     }
     // 完全一致チェック
     else if (routeConfig[pathname]) {
