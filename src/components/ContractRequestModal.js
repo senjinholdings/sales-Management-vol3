@@ -12,7 +12,7 @@ import { markContractRequested, markContractSigned } from '../utils/contractRequ
 //  - 受注情報の入力（ReceivedOrderModal）で「続けて契約締結依頼を出す」を選んだとき … source="order"
 //
 // 以前の③はここで課金タイプ・金額などを専用の入力欄で集め、スプレッドシート連携(GAS)に送るだけで
-// 契約書チームには届いていなかった。今は雛形（マスター管理 → 契約書管理）を選び、雛形の入力項目に
+// 契約書チームには届いていなかった。今は雛形（account-sales-boardと共通。登録はあちらの契約書管理）を選び、雛形の入力項目に
 // 値を入れて記入済み契約書を作り、依頼文をSlackの契約書チームに送る（account-sales-boardと同じ）。
 // 第一想起のヒアリング内容は、雛形の入力項目の初期値として使う（項目名が一致するものだけ）。
 

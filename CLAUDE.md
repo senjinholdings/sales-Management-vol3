@@ -103,7 +103,9 @@ progressDashboard: {
   // ...
 }
 
-// 契約書の雛形マスタ（account-sales-boardと同じ形。版は上書きせず積む。groupKey内でversion最大が現在の版）
+// 契約書の雛形マスタ ※vol3のFirestoreには置かない。account-sales-boardのFirestoreのcontractsを読み取りだけで使う
+// （functions/contractsRouter.jsのgetTemplateDb。登録・編集はaccount-sales-boardの契約書管理で行う）
+// 版は上書きせず積む。groupKey内でversion最大が現在の版
 contracts: {
   name: string, groupKey: string,   // "contract:{契約書名}"
   url: string, note: string, version: number,
@@ -111,7 +113,6 @@ contracts: {
   requestFields: [{ id, label, required }], // 締結依頼時の入力項目（雛形の{{項目名}}と対応。マークから作り直さない）
   isMarkupCopy: boolean             // 項目入り版（元の雛形の複製。マーク付け・文章の直しはこちらだけ）
 }
-contractFieldPresets: { label: string }  // 入力項目名のマスタ（全契約書で共有）
 appConfig/contractOutput: {
   folderId: string,           // 記入済み契約書の保存先Driveフォルダ
   googleAccountEmail: string, // Googleドキュメントを操作する社内アカウント（ドメイン全体の委任でなりすます先）
@@ -264,9 +265,14 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.54.0
+- **現在バージョン**: v2.55.0
 - **最終更新**: 2026年9月25日
 - **直近の更新内容**:
+  - 契約書の雛形をaccount-sales-boardと共通にした（vol3での雛形登録・編集をやめ、account-sales-boardの雛形マスタを読み取りで使う）
+    - Cloud Functionsがaccount-sales-boardのFirestoreの`contracts`を読む（`getTemplateDb`、読み取りのみ）。認証はvol3のCloud Functionsの実行アカウント`sales-management-staging@appspot.gserviceaccount.com`で、**account-sales-boardのGoogle Cloudプロジェクトでこのアカウントに「Cloud Datastore 閲覧者」ロールを付けないと雛形が読めない**（読めないときは画面にその旨を表示）
+    - 契約書管理（`/contract-master`）は共通設定（操作アカウント・保存先フォルダ・テストグループ）と雛形の一覧（読み取り専用、account-sales-boardの編集画面へのリンク付き）だけにした。雛形の登録・版追加・種別・入力項目・マーク付けの画面とAPI（`ContractDetailPage.js`/`ContractTemplateMarkup.js`、`POST /contracts`等）は削除
+    - 依頼フォームの「＋入力項目を追加」は、account-sales-boardの雛形の依頼設定へのリンクに置き換え
+    - 締結依頼・記入済み契約書・締結記録は従来どおりvol3側（`progressDashboard/{id}/contractRequests`・`generatedContracts`）
   - 契約書締結依頼をaccount-sales-boardと同じ仕組みに置き換え（雛形管理・記入済み契約書・AI修正・締結記録）
     - マスター管理に「契約書管理」を追加（`/contract-master`）。雛形の登録（リンク/ファイル）・版管理・種別（基本/個別）・入力項目・項目入り版への{{項目名}}マーク付け・入力項目マスタ。画面・APIはaccount-sales-boardから移したもの（`ContractsSettingsPage.js`/`ContractDetailPage.js`/`ContractTemplateMarkup.js`、`functions/contractsRouter.js`を`/api/contract`にマウント）
     - 依頼画面（`ContractRequestModal.js`→`ContractRequestsSection.js`）: 雛形を選んで入力項目から記入済み契約書（Googleドキュメント）を作成→「文章を直す」でAI修正提案（契約書全体に対して提案・人が保存したときだけ書き込み）→依頼文をプレビュー・修正→Slackの契約書チーム（account-sales-boardと同じチャンネル・メンション）へ送信。テストグループ送信あり

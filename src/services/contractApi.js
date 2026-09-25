@@ -1,4 +1,4 @@
-// 契約書まわり（雛形管理・記入済み契約書・AI修正・締結依頼）のAPI呼び出し。
+// 契約書まわり（雛形の読み取り・記入済み契約書・AI修正・締結依頼）のAPI呼び出し。
 // account-sales-board(src/services/apiClient.js)の契約書部分と同じ名前・同じ引数にしてあり、
 // 画面のコンポーネントはあちらからほぼそのまま移してある。
 // 認証は他の自前APIと同じ x-app-secret（staffService.js と同じ）。
@@ -40,21 +40,8 @@ async function request(path, options = {}) {
 const post = (path, data) => request(path, { method: 'POST', body: JSON.stringify(data || {}) });
 
 export const api = {
-  // 契約書の雛形マスタ
+  // 契約書の雛形（account-sales-boardの雛形マスタを読み取りだけで使う。登録・編集はあちらで行う）
   listContracts: () => request('/contracts'),
-  createContract: (data) => post('/contracts', data),
-  uploadContract: (data) => post('/contracts/upload', data),
-  renameContract: (groupKey, name) => post('/contracts/rename', { groupKey, name }),
-  // kind(基本/個別)・requestFields(入力項目)だけを更新する。バージョンは増えない。
-  updateContract: (id, data) => request(`/contracts/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
-  // 契約書雛形(Googleドキュメント)への{{項目名}}マーク付け。
-  listContractFieldPresets: () => request('/contract-field-presets'),
-  createContractFieldPreset: (label) => post('/contract-field-presets', { label }),
-  deleteContractFieldPreset: (id) => request(`/contract-field-presets/${id}`, { method: 'DELETE' }),
-  createContractMarkupCopy: (id) => post(`/contracts/${id}/markup-copy`),
-  getContractTemplate: (id) => request(`/contracts/${id}/template`),
-  addContractTemplateMarker: (id, data) => post(`/contracts/${id}/template/markers`, data),
-  editContractTemplateText: (id, data) => post(`/contracts/${id}/template/text`, data),
   // 共通設定（Googleドキュメントを操作するアカウント・保存先フォルダ・テストグループ）
   getContractSettings: () => request('/contract-settings'),
   saveContractSettings: (data) => request('/contract-settings', { method: 'PUT', body: JSON.stringify(data) }),

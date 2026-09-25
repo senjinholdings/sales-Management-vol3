@@ -4,7 +4,7 @@
 //    直した1箇所だけ見せても、その条項が他の条項と矛盾していないかは分からないので、
 //    生成直後の本文と今の本文を全文並べて見せる。
 // 2. 画面で直接書き換えた本文を、Googleドキュメントに反映するための「変更箇所」の抽出
-//    （ContractTemplateMarkup.js / ContractDocumentRevision.js）
+//    （ContractDocumentRevision.js。account-sales-boardでは雛形の編集画面でも使っている）
 //    Googleドキュメントは「この範囲をこの文字にする」という単位でしか書き換えられないため、
 //    編集後の全文から「どこがどう変わったか」を割り出して、その範囲だけを送る。
 //

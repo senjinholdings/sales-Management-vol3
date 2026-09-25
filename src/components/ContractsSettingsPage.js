@@ -1,55 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
-  PageWrap, PageTitle, Section, SectionTitle, MetaLine, Button, Input, Select, TextArea,
+  PageWrap, PageTitle, Section, SectionTitle, MetaLine, Button, Input, Select,
   FormField, FormGrid, Label, FieldError, EmptyNote, ActionGroup, CardGrid, Badge,
 } from './contractUi.js';
 import { api } from '../services/contractApi.js';
-import { readFileAsBase64 } from '../utils/readFileAsBase64.js';
 import { fetchAllStaff } from '../services/staffService.js';
 
-// 契約書の一覧。更新は上書きせず常に新しいバージョンを追加していく方式
-// (現在の版はグループ内でversion最大のもの)。URLの登録もできるが、手元のファイルをそのまま登録もできる
-// (アップロードした分はサーバー側でDriveに置き、そのリンクを登録する)。
-//
-// 種別・入力項目・雛形のマーク付け・バージョン履歴は契約書1件ごとの話なので、
-// ここには置かず詳細ページ(ContractDetailPage.js)で行う。全部を一覧のカードに
-// 詰め込むと、契約書が増えるほど何がどれの設定なのか分からなくなるため。
-// この画面に残すのは、全契約書に共通するもの(入力項目マスタ・共通設定)と、
-// 新規登録・一覧だけにする。
-// サーバー側の上限(functions/contractsRouter.js の UPLOAD_MAX_BYTES)と同じ。
-// 送ってから断られるより、選んだ時点で分かるほうがよいのでここでも見る。
-const UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
+// 契約書管理。雛形はaccount-sales-boardの契約書管理で登録したものをそのまま使う
+// （両方のアプリで同じ雛形を使うので、雛形の登録・版の追加・入力項目・{{項目名}}のマーク付けは
+// account-sales-board側だけで行う。こちらにも同じ編集画面を持つと、直しが片方にしか入らない）。
+// この画面にあるのは、vol3だけの共通設定と、使える雛形の一覧（読み取りのみ）。
+const ACCOUNT_SALES_BOARD_CONTRACTS_URL = 'https://account-sales-board.web.app/settings/contracts';
 
 export default function ContractsSettingsPage() {
-  const navigate = useNavigate();
   const [contracts, setContracts] = useState(null);
   const [error, setError] = useState('');
 
-  const [name, setName] = useState('');
-  const [url, setUrl] = useState('');
-  const [note, setNote] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-
-  // 雛形の渡し方。'link'は今まで通りURLを登録するだけ、'upload'は手元のファイルを
-  // Driveに置いてそのリンクを登録する。
-  const [source, setSource] = useState('link');
-  const [file, setFile] = useState(null);
-
-  // 既存の契約書名を選ぶか、新しい契約書名を入力するかを切り替える。
-  // 同じ名前で登録すると新しいバージョンになる、という媒体資料管理の「サービス名」と同じ考え方。
-  const [addingNew, setAddingNew] = useState(false);
-  const [newName, setNewName] = useState('');
-
-
-  // 入力項目名のマスタ（全契約書で共有）。雛形のマーク付けで選ぶ選択肢になる。
-  const [presets, setPresets] = useState([]);
-  const [presetLabel, setPresetLabel] = useState('');
-  const [presetError, setPresetError] = useState('');
-
-  // 全契約書に共通する設定。
+  // vol3だけの共通設定。
   //  - Googleドキュメントを操作するアカウント: このアプリはGoogleでログインしないため、
-  //    雛形の複製・記入済み契約書の作成などはここで選んだ社内アカウントとして行う
+  //    記入済み契約書の作成・修正などはここで選んだ社内アカウントとして行う
   //  - 記入済み契約書の保存先Driveフォルダ: 案件をまたいで1つのフォルダに集める
   //  - テストグループ: 「テストグループに送る」を選んだときの投稿先Slackチャンネル
   const [settings, setSettings] = useState(null); // { folderId, folderUrl, googleAccountEmail, testChannelId }
@@ -62,11 +31,8 @@ export default function ContractsSettingsPage() {
   const [settingsSaved, setSettingsSaved] = useState(false);
 
   const load = useCallback(() => {
-    api.listContracts().then((list) => {
-      setContracts(list);
-      const names = [...new Set(list.map((c) => c.name))].sort((a, b) => a.localeCompare(b, 'ja'));
-      setName((current) => current || names[0] || '');
-    }).catch((err) => setError(err.message));
+    setError('');
+    api.listContracts().then(setContracts).catch((err) => setError(err.message));
   }, []);
 
   // 契約書名(groupKey)ごとにまとめ、グループ内はバージョンの新しい順。
@@ -80,12 +46,6 @@ export default function ContractsSettingsPage() {
   const groupRows = Object.values(groups)
     .map((list) => ({ groupKey: list[0].groupKey, name: list[0].name, list }))
     .sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-
-  const existingNames = groupRows.map((g) => g.name);
-
-  const loadPresets = useCallback(() => {
-    api.listContractFieldPresets().then(setPresets).catch((err) => setPresetError(err.message));
-  }, []);
 
   const applySettings = (data) => {
     setSettings(data);
@@ -101,7 +61,6 @@ export default function ContractsSettingsPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { loadPresets(); }, [loadPresets]);
   useEffect(() => { loadSettings(); }, [loadSettings]);
   useEffect(() => {
     fetchAllStaff()
@@ -129,167 +88,9 @@ export default function ContractsSettingsPage() {
     }
   };
 
-  const handleAddPreset = async (e) => {
-    e.preventDefault();
-    const label = presetLabel.trim();
-    if (!label) return;
-    setPresetError('');
-    try {
-      await api.createContractFieldPreset(label);
-      setPresetLabel('');
-      loadPresets();
-    } catch (err) {
-      setPresetError(err.message);
-    }
-  };
-
-  const handleDeletePreset = async (id) => {
-    setPresetError('');
-    try {
-      await api.deleteContractFieldPreset(id);
-      loadPresets();
-    } catch (err) {
-      setPresetError(err.message);
-    }
-  };
-
-  // 元の雛形を複製して項目入り版を作り、そのままマーク付け画面を開く。
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError('');
-    const targetName = (addingNew ? newName : name).trim();
-    if (!targetName) {
-      setError('契約書名を入力してください');
-      return;
-    }
-    if (source === 'link' && !url.trim()) {
-      setError('リンクを入力してください');
-      return;
-    }
-    if (source === 'upload' && !file) {
-      setError('ファイルを選択してください');
-      return;
-    }
-    if (source === 'upload' && file.size > UPLOAD_MAX_BYTES) {
-      setError('ファイルサイズが大きすぎます（8MBまで）');
-      return;
-    }
-    setSubmitting(true);
-    try {
-      if (source === 'upload') {
-        await api.uploadContract({
-          name: targetName,
-          fileName: file.name,
-          // 拡張子からブラウザが種類を判断できないこともあるので、その時はサーバー側の
-          // 既定(変換しない)に任せる。
-          mimeType: file.type || undefined,
-          fileDataBase64: await readFileAsBase64(file),
-          note: note.trim() || undefined,
-        });
-      } else {
-        await api.createContract({
-          name: targetName,
-          url: url.trim(),
-          note: note.trim() || undefined,
-        });
-      }
-      setName(targetName);
-      setNewName('');
-      setAddingNew(false);
-      setUrl('');
-      setNote('');
-      setFile(null);
-      load();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   return (
     <PageWrap>
       <PageTitle>契約書管理</PageTitle>
-      <MetaLine style={{ marginBottom: 12 }}>
-        契約書の雛形を管理します。リンク（Googleドキュメント等）の登録と、手元のファイルのアップロードのどちらでも登録できます。
-        契約書名の変更・種別・入力項目・雛形のマーク付けは、契約書ごとの詳細ページで設定します。
-      </MetaLine>
-
-      <Section as="form" onSubmit={handleSubmit}>
-        <SectionTitle>新しいバージョンを登録</SectionTitle>
-        <FormGrid>
-          <FormField>
-            <Label>契約書名（必須）</Label>
-            {addingNew ? (
-              <div style={{ display: 'flex', gap: 6 }}>
-                <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="新しい契約書名" style={{ flex: 1 }} />
-                {existingNames.length > 0 && (
-                  <Button type="button" onClick={() => { setAddingNew(false); setNewName(''); }}>キャンセル</Button>
-                )}
-              </div>
-            ) : (
-              <div style={{ display: 'flex', gap: 6 }}>
-                <Select value={name} onChange={(e) => setName(e.target.value)} style={{ flex: 1 }}>
-                  {existingNames.length === 0 && <option value="">（未登録）</option>}
-                  {existingNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                </Select>
-                <Button type="button" onClick={() => setAddingNew(true)}>＋新規契約書</Button>
-              </div>
-            )}
-            <MetaLine style={{ marginTop: 4 }}>
-              既存の契約書名を選んで登録すると、その契約書の新しいバージョンとして追加されます。
-            </MetaLine>
-          </FormField>
-          <FormField>
-            <Label>雛形</Label>
-            <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-              <Button
-                type="button"
-                $variant={source === 'link' ? 'primary' : undefined}
-                onClick={() => { setSource('link'); setError(''); }}
-              >
-                リンクを登録
-              </Button>
-              <Button
-                type="button"
-                $variant={source === 'upload' ? 'primary' : undefined}
-                onClick={() => { setSource('upload'); setError(''); }}
-              >
-                ファイルをアップロード
-              </Button>
-            </div>
-            {source === 'link' ? (
-              <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://docs.google.com/document/..." />
-            ) : (
-              <>
-                <input
-                  type="file"
-                  accept=".docx,.doc,.odt,.rtf,.txt,.pdf"
-                  onChange={(e) => { setFile(e.target.files?.[0] || null); setError(''); }}
-                  style={{ fontSize: 13 }}
-                />
-                <MetaLine style={{ marginTop: 4 }}>
-                  Word（.docx/.doc）などはGoogleドキュメントに変換して保存するので、そのまま
-                  {'{{項目名}}'}のマーク付けに進めます。PDFは変換すると中身が崩れるためそのまま保存します（マーク付けはできません）。
-                  保存先は下の「記入済み契約書の保存先」フォルダの中の「契約書雛形」フォルダです。8MBまで。
-                </MetaLine>
-              </>
-            )}
-          </FormField>
-          <FormField>
-            <Label>メモ（任意）</Label>
-            <TextArea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="何を変更したか（例: 料金条項を更新）" />
-          </FormField>
-        </FormGrid>
-        <ActionGroup style={{ marginTop: 8 }}>
-          <Button type="submit" $variant="primary" disabled={submitting}>
-            {submitting
-              ? (source === 'upload' ? 'アップロード中...' : '登録中...')
-              : '新しいバージョンとして登録'}
-          </Button>
-        </ActionGroup>
-        {error && <FieldError>{error}</FieldError>}
-      </Section>
 
       <Section as="form" onSubmit={handleSaveFolder}>
         <SectionTitle>共通設定</SectionTitle>
@@ -306,9 +107,9 @@ export default function ContractsSettingsPage() {
               ))}
             </Select>
             <MetaLine style={{ marginTop: 2 }}>
-              雛形の登録・項目入り版づくり・記入済み契約書の作成と修正は、このアカウントとして行います
-              （作ったファイルの持ち主もこのアカウントになります）。リンクで登録する雛形は、
-              このアカウントが開けるようにしておいてください。担当者マスターでメールアドレスを登録した人から選べます。
+              記入済み契約書の作成・修正と、締結済み契約書のアップロードは、このアカウントとして行います
+              （作ったファイルの持ち主もこのアカウントになります）。記入済み契約書はaccount-sales-boardの雛形を
+              複製して作るので、このアカウントがその雛形を開ける必要があります。担当者マスターでメールアドレスを登録した人から選べます。
             </MetaLine>
           </FormField>
           <FormField>
@@ -352,31 +153,22 @@ export default function ContractsSettingsPage() {
       </Section>
 
       <Section>
-        <SectionTitle>入力項目マスタ</SectionTitle>
+        <SectionTitle>契約書の雛形（account-sales-boardと共通）</SectionTitle>
         <MetaLine style={{ marginBottom: 8 }}>
-          雛形の中を{'{{項目名}}'}に置き換えるときに選べる項目名です。すべての契約書で共有します。
+          雛形はaccount-sales-boardの契約書管理で登録したものを、そのまま使います。
+          雛形の登録・新しい版の追加・種別・入力項目・{'{{項目名}}'}のマーク付けは、account-sales-boardで行ってください
+          （直すと、こちらの締結依頼にもそのまま反映されます）。
         </MetaLine>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-          {presets.length === 0 && <EmptyNote>まだ登録されていません</EmptyNote>}
-          {presets.map((p) => (
-            <span key={p.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid #e5e7eb', borderRadius: 12, padding: '2px 4px 2px 10px', fontSize: 12 }}>
-              {p.label}
-              <Button type="button" $variant="danger" onClick={() => handleDeletePreset(p.id)}>削除</Button>
-            </span>
-          ))}
-        </div>
-        <form onSubmit={handleAddPreset} style={{ display: 'flex', gap: 6 }}>
-          <Input value={presetLabel} onChange={(e) => setPresetLabel(e.target.value)} placeholder="項目名（例: 実施期間）" style={{ flex: 1, maxWidth: 260 }} />
-          <Button type="submit" disabled={!presetLabel.trim()}>＋追加</Button>
-        </form>
-        {presetError && <FieldError>{presetError}</FieldError>}
-      </Section>
-
-      <Section>
-        <SectionTitle>契約書一覧</SectionTitle>
-        {contracts === null && <EmptyNote>読み込み中...</EmptyNote>}
+        <ActionGroup style={{ marginBottom: 12 }}>
+          <Button as="a" href={ACCOUNT_SALES_BOARD_CONTRACTS_URL} target="_blank" rel="noopener noreferrer">
+            account-sales-boardの契約書管理を開く
+          </Button>
+          <Button type="button" onClick={load}>読み直す</Button>
+        </ActionGroup>
+        {error && <FieldError>{error}</FieldError>}
+        {contracts === null && !error && <EmptyNote>読み込み中...</EmptyNote>}
         {contracts !== null && groupRows.length === 0 && (
-          <EmptyNote>契約書はまだ登録されていません（上のフォームから追加できます）</EmptyNote>
+          <EmptyNote>account-sales-boardに契約書の雛形がまだ登録されていません</EmptyNote>
         )}
         {contracts !== null && groupRows.length > 0 && (
           <CardGrid>
@@ -385,27 +177,29 @@ export default function ContractsSettingsPage() {
               return (
                 <div key={groupKey} style={{ border: '1px solid #e5e7eb', borderRadius: 8, padding: 12 }}>
                   <div style={{ fontWeight: 600, fontSize: 13 }}>{label}</div>
-                  {current ? (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
-                        <Badge $bg={current.kind === 'basic' ? '#dbeafe' : '#f3f4f6'} $color={current.kind === 'basic' ? '#1e40af' : '#374151'}>
-                          {current.kind === 'basic' ? '基本契約書' : '個別契約書'}
-                        </Badge>
-                        {current.isMarkupCopy && <Badge $bg="#dcfce7" $color="#166534">項目入り版</Badge>}
-                        <MetaLine>v{current.version}・入力項目{(current.requestFields || []).length}件</MetaLine>
-                      </div>
-                      <div style={{ fontSize: 13, marginTop: 4, wordBreak: 'break-all' }}>
-                        <a href={current.url} target="_blank" rel="noopener noreferrer">{current.url}</a>
-                      </div>
-                    </>
-                  ) : <MetaLine style={{ color: '#b91c1c' }}>未登録</MetaLine>}
-                  <Button
-                    type="button"
-                    style={{ marginTop: 8 }}
-                    onClick={() => navigate(`/contract-master/${encodeURIComponent(groupKey)}`)}
-                  >
-                    詳細・依頼設定を開く
-                  </Button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                    <Badge $bg={current.kind === 'basic' ? '#dbeafe' : '#f3f4f6'} $color={current.kind === 'basic' ? '#1e40af' : '#374151'}>
+                      {current.kind === 'basic' ? '基本契約書' : '個別契約書'}
+                    </Badge>
+                    {current.isMarkupCopy && <Badge $bg="#dcfce7" $color="#166534">項目入り版</Badge>}
+                    <MetaLine>v{current.version}・入力項目{(current.requestFields || []).length}件</MetaLine>
+                  </div>
+                  {(current.requestFields || []).length > 0 && (
+                    <MetaLine style={{ marginTop: 4 }}>
+                      {current.requestFields.map((f) => f.label).join('・')}
+                    </MetaLine>
+                  )}
+                  <ActionGroup style={{ marginTop: 8 }}>
+                    <Button as="a" href={current.url} target="_blank" rel="noopener noreferrer">雛形を開く</Button>
+                    <Button
+                      as="a"
+                      href={`${ACCOUNT_SALES_BOARD_CONTRACTS_URL}/${encodeURIComponent(groupKey)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      account-sales-boardで編集
+                    </Button>
+                  </ActionGroup>
                 </div>
               );
             })}

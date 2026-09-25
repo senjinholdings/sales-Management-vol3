@@ -1,19 +1,19 @@
-const crypto = require('crypto');
 const { Readable } = require('stream');
 const express = require('express');
 const { google } = require('googleapis');
 const { WebClient } = require('@slack/web-api');
 const { proposeContractEdits, checkContractConsistency } = require('./contractRevisionAi');
 const {
-  extractDocIdFromUrl, getTemplateText, replaceRangeWithMarker, replaceRangeWithText, getDocsClient,
+  extractDocIdFromUrl, getTemplateText, replaceRangeWithText, getDocsClient,
   GOOGLE_DOC_MIME_TYPE, isOfficeFileError,
 } = require('./googleDocsClient');
 const { requireAppSecret, env } = require('./authHelpers');
 const { getSecret, chatworkSecretName } = require('./secrets');
 const { getOrCreateRoomInviteLink } = require('./chatworkInviteLink');
 
-// 契約書の雛形マスタ(contracts)と、案件ごとの締結依頼・締結状況
-// (progressDashboard/{id}/contractRequests)・記入済み契約書(progressDashboard/{id}/generatedContracts)を扱う。
+// 案件ごとの締結依頼・締結状況(progressDashboard/{id}/contractRequests)と
+// 記入済み契約書(progressDashboard/{id}/generatedContracts)を扱う。
+// 契約書の雛形はaccount-sales-boardの雛形マスタ(contracts)を読み取りだけで使う(こちらでは登録・編集しない)。
 //
 // account-sales-board(functions/contractsRouter.js)の契約書締結依頼をそのまま移したもの。
 // 手順・文言・データの形はあちらに揃えてあり、違うのは次の点だけ:
@@ -23,9 +23,8 @@ const { getOrCreateRoomInviteLink } = require('./chatworkInviteLink');
 //  - 案件は progressDashboard。Chatworkルーム・Slackチャンネルは会社単位の clientMeetingSettings にある。
 //  - 案件に担当者(連絡先)の一覧が無いため、メールで共有するときは宛先をフォームで直接入力する。
 //  - 依頼者は案件の営業担当(representative)として記録する(ログインユーザーを識別できないため)。
-//
-// 契約書マスタは実体を持たず、Googleドキュメント等へのURLを登録するだけ。更新は上書きせず
-// 常に新しいバージョンを追加する(groupKeyでグループ化し、グループ内でversionが最大のものが「現在の版」)。
+//  - 雛形の登録・版管理・入力項目・項目のマーク付けはaccount-sales-board側だけで行う。
+//    雛形マスタはGoogleドキュメント等へのURLを持ち、groupKey内でversionが最大のものが「現在の版」。
 
 // 依頼の投稿先。account-sales-board(functions/slackChannelConfig.js)と同じ契約書チームの
 // チャンネル・メンション先に送る。値を変えるときは両方のリポジトリを揃えること。
@@ -86,6 +85,20 @@ async function postToSlack(text, channelId) {
   return slack.chat.postMessage({ channel: channelId, text });
 }
 
+// 契約書の雛形はaccount-sales-boardのFirestore(雛形マスタ contracts)から読む。
+// 認証はこのCloud Functions自身の実行アカウント(下のサービスアカウント)で行うので、
+// account-sales-boardのGoogle Cloudプロジェクトでこのアカウントに「Cloud Datastore 閲覧者」を
+// 付けておく必要がある(読み取りだけ。秘密情報をここに持たない)。
+const TEMPLATE_PROJECT_ID = 'account-sales-board';
+const TEMPLATE_READER_SERVICE_ACCOUNT = 'sales-management-staging@appspot.gserviceaccount.com';
+const TEMPLATE_APP_NAME = 'accountSalesBoardTemplates';
+
+function getTemplateDb(admin) {
+  const existing = admin.apps.find((a) => a && a.name === TEMPLATE_APP_NAME);
+  const app = existing || admin.initializeApp({ projectId: TEMPLATE_PROJECT_ID }, TEMPLATE_APP_NAME);
+  return app.firestore();
+}
+
 // Googleドキュメント・ドライブを操作する範囲。ドメイン全体の委任の設定(Workspace管理者)で、
 // サービスアカウントのクライアントIDにこの2つを許可しておく必要がある。
 const GOOGLE_SCOPES = [
@@ -104,206 +117,52 @@ function createContractsRouter({ admin, db }) {
     next();
   });
 
-  // mediaMaterialsRouter.js の groupKeyFor と同じ考え方: 契約書名でグループ化し、
-  // 同名の契約書が更新されるたびに新しいバージョンとして積み上げる。
-  const groupKeyFor = (name) => `contract:${name}`;
+  // Task 1: 契約書の雛形 ------------------------------------------------
+  //
+  // 雛形はaccount-sales-boardの契約書管理で登録したものをそのまま使う(こちらでは登録・編集しない)。
+  // 両方のアプリで同じ雛形を使うので、雛形を直すのはaccount-sales-boardの1か所だけで済む。
+  // 読み取るのは雛形マスタ(contracts)だけで、書き込みは一切しない。
+  const templateDb = getTemplateDb(admin);
 
-  // requestFields(締結依頼時に入力させる項目)のバリデーションと正規化。
-  // PATCH /contracts/:idと、新バージョン登録時の引き継ぎ(下記POST /contracts)の
-  // 両方から使う。idを付け忘れている項目(新規追加分)にはここでサーバー側で採番する
-  // ―― フロントでの一時的なidと衝突しないよう、既にidが付いている項目はそのまま使う。
-  function normalizeRequestFields(requestFields) {
-    if (!Array.isArray(requestFields)) {
-      return { error: 'requestFieldsは配列で指定してください' };
+  // account-sales-boardのFirestoreを読めなかったときに、何をすればよいかを添える。
+  function templateReadError(error) {
+    if (error && (error.code === 7 || /PERMISSION_DENIED/i.test(error.message || ''))) {
+      return 'account-sales-boardの契約書の雛形を読めませんでした。account-sales-boardのGoogle Cloudプロジェクトで、'
+        + `${TEMPLATE_READER_SERVICE_ACCOUNT} に「Cloud Datastore 閲覧者」のロールを付けてください`;
     }
-    const normalized = [];
-    for (const raw of requestFields) {
-      if (!raw || typeof raw !== 'object') {
-        return { error: '入力項目の形式が不正です' };
-      }
-      const label = raw.label != null ? String(raw.label).trim() : '';
-      if (!label) {
-        return { error: '入力項目名を入力してください' };
-      }
-      if (label.length > 60) {
-        return { error: '入力項目名は60文字以内で指定してください' };
-      }
-      const id = raw.id ? String(raw.id) : crypto.randomUUID();
-      // requiredは明示的にfalseが指定された時だけ任意項目にする(未指定・それ以外の値は必須扱い)。
-      const required = raw.required !== false;
-      normalized.push({ id, label, required });
-    }
-    return { value: normalized };
+    return '契約書の雛形の取得に失敗しました';
   }
 
-  // Task 1: 契約書マスタ ------------------------------------------------
+  async function getTemplateDoc(contractId) {
+    try {
+      return await templateDb.collection('contracts').doc(String(contractId)).get();
+    } catch (error) {
+      console.error('雛形の取得エラー:', error);
+      const wrapped = new Error(templateReadError(error));
+      wrapped.status = 500;
+      throw wrapped;
+    }
+  }
 
   router.get('/contracts', async (req, res) => {
     try {
-      const snap = await db.collection('contracts').get();
+      const snap = await templateDb.collection('contracts').get();
       const contracts = snap.docs
         .map((d) => serializeDoc(d.id, d.data()))
         .sort((a, b) => b.version - a.version);
       res.json(contracts);
     } catch (error) {
       console.error('契約書一覧取得エラー:', error);
-      res.status(500).json({ error: '契約書の取得に失敗しました' });
+      res.status(500).json({ error: templateReadError(error) });
     }
   });
 
-  // 契約書マスタに1バージョン積む。リンクでの登録(POST /contracts)と
-  // ファイルのアップロードでの登録(POST /contracts/upload)で同じ手順を使う。
-  // 登録の入口が増えるたびに版の積み方とメタ情報の引き継ぎを書き写すと、片方にしか
-  // 直しが入らない事故が起きるため、1箇所にまとめてある。
-  async function registerContractVersion({ name, url, note, extra }) {
-    const groupKey = groupKeyFor(name);
-    const existingSnap = await db.collection('contracts').where('groupKey', '==', groupKey).get();
-    const maxVersion = existingSnap.docs.reduce((max, d) => Math.max(max, d.data().version || 0), 0);
-    // 同じgroupKeyの中でversionが最大のもの(=現在の版)を探す。新バージョンはkind/requestFields
-    // (種別・入力項目の設定)を引き継ぐ。引き継がないと、再アップロードするたびに入力項目の
-    // 設定が消え、operatorが気付かないまま空の依頼フォームに戻ってしまう。
-    const latestExisting = existingSnap.docs.reduce(
-      (latest, d) => (!latest || (d.data().version || 0) > (latest.data().version || 0) ? d : latest),
-      null,
-    );
-    const latestData = latestExisting ? latestExisting.data() : null;
-
-    const docRef = await db.collection('contracts').add({
-      name,
-      groupKey,
-      url,
-      note: note || '',
-      version: maxVersion + 1,
-      // kindが無い既存契約書は個別契約書として扱う(後方互換)ので、引き継ぎ時もその既定値に揃える。
-      kind: latestData && latestData.kind === 'basic' ? 'basic' : 'individual',
-      requestFields: latestData && Array.isArray(latestData.requestFields) ? latestData.requestFields : [],
-      // 名前を変えたことがあるグループでは、過去の名前も新しい版に引き継ぐ
-      // (契約書名で引き当てている古い記録があるため。下の POST /contracts/rename 参照)。
-      ...(latestData && Array.isArray(latestData.pastNames) && latestData.pastNames.length > 0
-        ? { pastNames: latestData.pastNames } : {}),
-      ...(extra || {}),
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    const created = await docRef.get();
-    return serializeDoc(created.id, created.data());
-  }
-
-  router.post('/contracts', async (req, res) => {
-    try {
-      const { name, url, note } = req.body || {};
-      if (!name || !String(name).trim()) {
-        return res.status(400).json({ error: '契約書名を入力してください' });
-      }
-      if (!url || !String(url).trim()) {
-        return res.status(400).json({ error: 'リンクを入力してください' });
-      }
-      const created = await registerContractVersion({
-        name: String(name).trim(),
-        url: url.trim(),
-        note: note ? String(note).trim() : '',
-      });
-      res.status(201).json(created);
-    } catch (error) {
-      console.error('契約書登録エラー:', error);
-      res.status(500).json({ error: '契約書の登録に失敗しました' });
-    }
-  });
-
-  // 契約書名の変更。
+  // 締結済み契約書のアップロード --------------------------------------------
   //
-  // 契約書名はバージョン群のまとめ役(groupKey)そのものなので、1つの版だけ名前を変えると
-  // バージョン群が2つに割れ、以後の再登録が第1版から始まってしまう。なのでその契約書の
-  // 全バージョンをまとめて付け替える。
-  router.post('/contracts/rename', async (req, res) => {
-    try {
-      const groupKey = String(req.body?.groupKey || '').trim();
-      const name = String(req.body?.name || '').trim();
-      if (!groupKey) return res.status(400).json({ error: '契約書を指定してください' });
-      if (!name) return res.status(400).json({ error: '新しい契約書名を入力してください' });
-
-      const snap = await db.collection('contracts').where('groupKey', '==', groupKey).get();
-      if (snap.empty) return res.status(404).json({ error: '契約書が見つかりません' });
-
-      const newGroupKey = groupKeyFor(name);
-      if (newGroupKey === groupKey) {
-        return res.status(400).json({ error: '契約書名が変わっていません' });
-      }
-      // 既にある契約書名に変えると、別の契約書のバージョン群と混ざって版番号が重複する。
-      const clashSnap = await db.collection('contracts').where('groupKey', '==', newGroupKey).limit(1).get();
-      if (!clashSnap.empty) {
-        return res.status(409).json({ error: `「${name}」という契約書はすでにあります。別の名前にしてください` });
-      }
-
-      // 古い名前も残しておく。締結依頼で作った「記入済み契約書」のうちcontractIdを
-      // 持たない古い記録は契約書名で引き当てているので、名前を捨てると引き当てが切れる。
-      const batch = db.batch();
-      snap.docs.forEach((d) => {
-        const data = d.data();
-        const pastNames = Array.from(new Set([...(data.pastNames || []), data.name].filter(Boolean)))
-          .filter((n) => n !== name);
-        batch.update(d.ref, {
-          name,
-          groupKey: newGroupKey,
-          pastNames,
-          renamedAt: FieldValue.serverTimestamp(),
-        });
-      });
-      await batch.commit();
-      res.json({ groupKey: newGroupKey, name, updated: snap.docs.length });
-    } catch (error) {
-      console.error('契約書名の変更エラー:', error);
-      res.status(500).json({ error: '契約書名の変更に失敗しました' });
-    }
-  });
-
-  // kind(基本/個別)とrequestFields(締結依頼時の入力項目)は契約書の内容そのものではなく、
-  // 「どう依頼するか」というメタ情報なので、更新してもバージョンは増やさずその場で上書きする
-  // (バージョン管理はurl/noteなど契約書の実体が変わった時のためのものであり、
-  // メタ情報の変更のたびに新バージョンを積むのは意味がない)。
-  router.patch('/contracts/:id', async (req, res) => {
-    try {
-      const { kind, requestFields } = req.body || {};
-      const update = {};
-      if (kind !== undefined) {
-        if (!['basic', 'individual'].includes(kind)) {
-          return res.status(400).json({ error: 'kindはbasicかindividualのいずれかを指定してください' });
-        }
-        update.kind = kind;
-      }
-      if (requestFields !== undefined) {
-        const result = normalizeRequestFields(requestFields);
-        if (result.error) {
-          return res.status(400).json({ error: result.error });
-        }
-        update.requestFields = result.value;
-      }
-      if (Object.keys(update).length === 0) {
-        return res.status(400).json({ error: '更新する項目がありません' });
-      }
-      const docRef = db.collection('contracts').doc(req.params.id);
-      const snap = await docRef.get();
-      if (!snap.exists) {
-        return res.status(404).json({ error: '契約書が見つかりません' });
-      }
-      await docRef.update(update);
-      const updated = await docRef.get();
-      res.status(200).json(serializeDoc(updated.id, updated.data()));
-    } catch (error) {
-      console.error('契約書のメタ情報更新エラー:', error);
-      res.status(500).json({ error: '契約書の更新に失敗しました' });
-    }
-  });
-
-  // 雛形をファイルのアップロードで登録する ----------------------------------
-  //
-  // Googleドキュメントを先に作ってからURLを登録する、という手順を踏まなくて済むようにする。
-  // Cloud Functionsでmultipartを受けるのは面倒なので、chatworkRouter.jsのファイル送信と
-  // 同じくbase64の中身をJSONで受け取る。
+  // Cloud Functionsでmultipartを受けるのは面倒なので、base64の中身をJSONで受け取る。
   const UPLOAD_MAX_BYTES = 8 * 1024 * 1024;
 
-  // Googleドキュメントに変換して置く種類。変換しておかないと{{項目名}}のマーク付けが
-  // できない(Docs APIはOfficeファイルを読み書きできず、実際に「must not be an Office file」で
-  // 行き止まりになった)。PDFは変換するとOCRにかかって中身が崩れるので、そのまま置く。
+  // Googleドキュメントに変換して置く種類。PDFは変換するとOCRにかかって中身が崩れるので、そのまま置く。
   const CONVERT_TO_DOC_MIME_TYPES = [
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
     'application/msword', // .doc
@@ -313,12 +172,7 @@ function createContractsRouter({ admin, db }) {
     'text/plain',
   ];
 
-  // 雛形の置き場所。記入済み契約書の保存先フォルダの中に「契約書雛形」フォルダを作り、
-  // その中に入れる(記入済みの契約書と雛形が同じ階層に混ざらないようにするため)。
-  // 設定を増やさず、既に設定してあるフォルダだけを使う。
-  const TEMPLATE_FOLDER_NAME = '契約書雛形';
-  // 既に締結済みの契約書（アップロードして取り込むもの）の置き場。雛形とは別にしておく
-  // ―― 雛形フォルダに実際の契約書が混ざると、どれが雛形か分からなくなる。
+  // 既に締結済みの契約書（アップロードして取り込むもの）の置き場。記入済み契約書の保存先フォルダの中に作る。
   const SIGNED_FOLDER_NAME = '締結済み契約書';
 
   async function resolveSubFolderId(drive, folderName) {
@@ -345,11 +199,9 @@ function createContractsRouter({ admin, db }) {
     return created.data.id;
   }
 
-  const resolveTemplateFolderId = (drive) => resolveSubFolderId(drive, TEMPLATE_FOLDER_NAME);
   const resolveSignedFolderId = (drive) => resolveSubFolderId(drive, SIGNED_FOLDER_NAME);
 
-  // ファイルをDriveに上げてリンクを返す。雛形のアップロードと、締結済み契約書の
-  // アップロードで同じ手順を使う（2箇所に書くと、片方だけ変換や共有の扱いが変わる）。
+  // ファイルをDriveに上げてリンクを返す（締結済み契約書のアップロードで使う）。
   async function uploadFileToDrive({ folderId, name, fileName, fileDataBase64, mimeType }) {
     const buffer = Buffer.from(String(fileDataBase64), 'base64');
     if (buffer.length === 0) return { error: 'ファイルの中身が空です' };
@@ -390,54 +242,12 @@ function createContractsRouter({ admin, db }) {
     };
   }
 
-  router.post('/contracts/upload', async (req, res) => {
-    try {
-      const name = String(req.body?.name || '').trim();
-      const fileName = String(req.body?.fileName || '').trim();
-      const fileDataBase64 = req.body?.fileDataBase64;
-      const note = req.body?.note ? String(req.body.note).trim() : '';
-      const mimeType = String(req.body?.mimeType || '').trim() || 'application/octet-stream';
-      if (!name) return res.status(400).json({ error: '契約書名を入力してください' });
-      if (!fileName || !fileDataBase64) return res.status(400).json({ error: 'ファイルを選択してください' });
-
-      const { drive } = await getGoogleClients();
-      const folderId = await resolveTemplateFolderId(drive);
-      const uploaded = await uploadFileToDrive({ folderId, name, fileName, fileDataBase64, mimeType });
-      if (uploaded.error) return res.status(400).json({ error: uploaded.error });
-      const { url, convert, sharing, sharingError } = uploaded.value;
-
-      const created = await registerContractVersion({
-        name,
-        url,
-        note: note || `${fileName} をアップロードして登録${convert ? '（Googleドキュメントに変換）' : ''}`,
-        extra: {
-          uploadedFileName: fileName,
-          sharing: sharing || null,
-          sharingError: sharingError || null,
-        },
-      });
-      res.status(201).json(created);
-    } catch (error) {
-      console.error('雛形アップロード登録エラー:', error);
-      res.status(error.status || 500).json({ error: error.message || '雛形のアップロードに失敗しました' });
-    }
-  });
-
-  // Task 1.5: 雛形への{{項目名}}マーク付け --------------------------------
-  //
-  // 契約書の雛形(Googleドキュメント)の一部を{{項目名}}に置き換えておくと、締結依頼の
-  // フォームで入力した値をそのまま差し込んだ契約書を作れるようになる。ここではその
-  // 「マークを付ける」側だけを扱う。
-  //
-  // 元の雛形は絶対に書き換えない。マーク付けは必ず複製(項目入り版)に対して行い、
-  // 複製は同じgroupKeyの新しいバージョンとして登録する(既存のバージョン管理に乗せる
-  // ことで、締結依頼は今まで通り「現在の版」を使うだけでよくなる)。
-
   // Googleドキュメント・ドライブの操作は、設定画面で選んだ社内アカウントになりすまして行う
   // (このアプリはGoogleアカウントでログインしないため、操作している人本人のアカウントは使えない)。
   // 仕組みはMTG登録(calendar.js)と同じドメイン全体の委任のサービスアカウント。
-  // 作ったファイルの持ち主はこのアカウントになる。雛形をリンクで登録する場合は、
-  // このアカウントがそのGoogleドキュメントを開ける必要がある。
+  // 作ったファイルの持ち主はこのアカウントになる。記入済み契約書はaccount-sales-boardの雛形を
+  // 複製して作るので、このアカウントがその雛形のGoogleドキュメントを開ける必要がある
+  // (account-sales-boardの項目入り版は作った時点で社内に共有されているので、社内アカウントなら開ける)。
   async function getGoogleClients() {
     const settings = await readContractSettings();
     const actorEmail = settings.googleAccountEmail;
@@ -514,293 +324,6 @@ function createContractsRouter({ admin, db }) {
       }
     }
   }
-
-  // 契約書を読み込み、GoogleドキュメントのIDまで解決する。契約書マスタにはPDFやWord等の
-  // URLも登録できるため、Googleドキュメント以外は分かりやすい400にする。
-  async function loadContractDoc(contractId) {
-    const ref = db.collection('contracts').doc(contractId);
-    const snap = await ref.get();
-    if (!snap.exists) {
-      const error = new Error('契約書が見つかりません');
-      error.status = 404;
-      throw error;
-    }
-    const contract = snap.data();
-    const docId = extractDocIdFromUrl(contract.url);
-    if (!docId) {
-      const error = new Error('この契約書はGoogleドキュメントではないため、項目のマーク付けはできません');
-      error.status = 400;
-      throw error;
-    }
-    return { ref, contract, docId };
-  }
-
-  // 雛形に入っている{{項目名}}が、そのまま締結依頼時の入力項目になる。マーク付けや
-  // 文章の手直しのたびにrequestFieldsを揃えておくことで「雛形には{{支払期日}}があるのに
-  // 依頼フォームに欄が無く、置換されないまま送られる」という食い違いが起きないようにする。
-  //
-  // **既にある項目は絶対に消さない**。以前はマークだけから作り直していたため、
-  // 雛形の文章を少し直しただけで、契約書詳細ページで手で登録した入力項目が
-  // まるごと消えた(実際に「入力項目が空になった」という事故が起きた)。
-  // 入力項目は雛形のマークと1対1ではない: 本文には出てこないが依頼文には要る項目を
-  // 手で足すことがあるし、そもそもマークを1つも付けていない契約書でも入力項目は使う。
-  // マークは「足りない項目を足す」ためだけに使い、要らなくなった項目は
-  // 契約書詳細ページの「削除」で人が消す。
-  //
-  // 並びはマークの出現順が先、そのあとに本文に出てこない既存の項目。
-  // 依頼文の行順がこの順になるので、雛形に沿った順で並ぶほうが読みやすい。
-  function mergeRequestFieldsWithMarkers(markers, existingFields) {
-    const existing = Array.isArray(existingFields) ? existingFields : [];
-    const byLabel = new Map(existing.map((f) => [f.label, f]));
-    const merged = [];
-    const seen = new Set();
-    const push = (label, source) => {
-      if (!label || seen.has(label)) return;
-      seen.add(label);
-      merged.push({
-        id: (source && source.id) || crypto.randomUUID(),
-        label,
-        required: !source || source.required !== false,
-      });
-    };
-    for (const label of markers) push(label, byLabel.get(label));
-    for (const field of existing) push(field.label, field);
-    return merged;
-  }
-
-  // 入力項目名のマスタ。契約書ごとではなく全契約書で共有する(「実施期間」のような項目を
-  // 契約書ごとに作り直す意味が無く、表記ゆれも生むため)。
-  router.get('/contract-field-presets', async (req, res) => {
-    try {
-      const snap = await db.collection('contractFieldPresets').get();
-      const presets = snap.docs
-        .map((d) => ({ id: d.id, label: d.data().label || '' }))
-        .filter((p) => p.label)
-        .sort((a, b) => a.label.localeCompare(b.label, 'ja'));
-      res.json(presets);
-    } catch (error) {
-      console.error('入力項目マスタ取得エラー:', error);
-      res.status(500).json({ error: '入力項目マスタの取得に失敗しました' });
-    }
-  });
-
-  router.post('/contract-field-presets', async (req, res) => {
-    try {
-      const label = req.body && req.body.label != null ? String(req.body.label).trim() : '';
-      if (!label) {
-        return res.status(400).json({ error: '項目名を入力してください' });
-      }
-      if (label.length > 60) {
-        return res.status(400).json({ error: '項目名は60文字以内で指定してください' });
-      }
-      // {{}}の中に入る文字なので、波括弧は受け付けない(入れると検出用の正規表現と衝突する)。
-      if (/[{}]/.test(label)) {
-        return res.status(400).json({ error: '項目名に { } は使えません' });
-      }
-      // 同じ項目名を二重に登録しない(押し間違いで選択肢が増殖するのを防ぐ)。
-      const existing = await db.collection('contractFieldPresets').where('label', '==', label).limit(1).get();
-      if (!existing.empty) {
-        return res.status(200).json({ id: existing.docs[0].id, label });
-      }
-      const docRef = await db.collection('contractFieldPresets').add({
-        label,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-      res.status(201).json({ id: docRef.id, label });
-    } catch (error) {
-      console.error('入力項目マスタ登録エラー:', error);
-      res.status(500).json({ error: '入力項目マスタの登録に失敗しました' });
-    }
-  });
-
-  router.delete('/contract-field-presets/:id', async (req, res) => {
-    try {
-      await db.collection('contractFieldPresets').doc(req.params.id).delete();
-      res.status(204).send();
-    } catch (error) {
-      console.error('入力項目マスタ削除エラー:', error);
-      res.status(500).json({ error: '入力項目マスタの削除に失敗しました' });
-    }
-  });
-
-  // 元の雛形を複製して「項目入り版」を作り、同じ契約書の新しいバージョンとして登録する。
-  // 複製先は元ファイルと同じフォルダにする(契約書の置き場所は運用で決まっているため、
-  // 勝手にマイドライブ直下へ置くと見つけられなくなる)。
-  router.post('/contracts/:id/markup-copy', async (req, res) => {
-    try {
-      const { contract, docId } = await loadContractDoc(req.params.id);
-      const { drive, actorEmail } = await getGoogleClients();
-
-      let parents;
-      let mimeType;
-      try {
-        const info = await drive.files.get({ fileId: docId, fields: 'parents, mimeType', supportsAllDrives: true });
-        parents = info.data.parents;
-        mimeType = info.data.mimeType;
-      } catch (driveError) {
-        console.error('雛形ファイル情報取得エラー:', driveError.message);
-        return res.status(400).json({
-          error: googleApiErrorMessage(driveError, 'このGoogleドキュメントをDriveから開けませんでした'),
-        });
-      }
-
-      // Drive上のWordファイル(.docx)は、Googleドキュメントの画面で開けてしまうが実体は
-      // Officeファイルのままで、Docs APIでは読み書きできない。複製するときに
-      // Googleドキュメントへ変換しておけば、そのままマーク付けに進める
-      // (元のWordファイルは触らない。ここで作るのは複製だけ)。
-      const needsConversion = !!mimeType && mimeType !== GOOGLE_DOC_MIME_TYPE;
-
-      // すでに項目入り版なら、もう一度複製する意味は無い ―― ただしWordファイルのままの
-      // 項目入り版は別。変換していない頃に作った複製はWordファイルのままで、
-      // 画面には「項目入り版」と出るのにマーク付けできず、変換する手段も無くなっていた。
-      // その場合だけは作り直しを許して、Googleドキュメントに変換した版を作る。
-      if (contract.isMarkupCopy && !needsConversion) {
-        return res.status(400).json({ error: 'この版はすでに項目入り版です。そのままマーク付けできます' });
-      }
-
-      const copyRes = await drive.files.copy({
-        fileId: docId,
-        supportsAllDrives: true,
-        fields: 'id, webViewLink',
-        requestBody: {
-          name: `${contract.name}（項目入り）`,
-          ...(needsConversion ? { mimeType: GOOGLE_DOC_MIME_TYPE } : {}),
-          ...(parents && parents.length > 0 ? { parents } : {}),
-        },
-      });
-      const url = copyRes.data.webViewLink || `https://docs.google.com/document/d/${copyRes.data.id}/edit`;
-
-      // 依頼文には雛形リンクとしてこの版が載るので、こちらも法務が開ける状態にしておく。
-      const { sharing, sharingError } = await shareFileForLegalReview({
-        drive, fileId: copyRes.data.id, userEmail: actorEmail,
-      });
-      if (sharingError) console.error('項目入り版の共有に失敗:', sharingError);
-
-      const groupKey = contract.groupKey || groupKeyFor(contract.name);
-      const existingSnap = await db.collection('contracts').where('groupKey', '==', groupKey).get();
-      const maxVersion = existingSnap.docs.reduce((max, d) => Math.max(max, d.data().version || 0), 0);
-
-      const docRef = await db.collection('contracts').add({
-        name: contract.name,
-        groupKey,
-        url,
-        note: needsConversion
-          ? `項目入り版（WordファイルをGoogleドキュメントに変換して${contract.isMarkupCopy ? '作り直し' : '複製'}）`
-          : '項目入り版（元の雛形を複製して作成）',
-        version: maxVersion + 1,
-        kind: contract.kind === 'basic' ? 'basic' : 'individual',
-        requestFields: Array.isArray(contract.requestFields) ? contract.requestFields : [],
-        isMarkupCopy: true,
-        copiedFromContractId: req.params.id,
-        sharing: sharing || null,
-        sharingError: sharingError || null,
-        createdAt: FieldValue.serverTimestamp(),
-      });
-      const created = await docRef.get();
-      res.status(201).json(serializeDoc(created.id, created.data()));
-    } catch (error) {
-      console.error('項目入り版の作成エラー:', error);
-      res.status(error.status || 500).json({ error: error.message || '項目入り版の作成に失敗しました' });
-    }
-  });
-
-  // 雛形の本文(プレーンテキスト)と、今入っている{{項目名}}の一覧を返す。
-  // 画面側はこのテキストをそのまま表示して選択させ、選択範囲の文字位置(flatStart/flatEnd)を
-  // 下のマーク付けAPIに渡す。
-  router.get('/contracts/:id/template', async (req, res) => {
-    try {
-      const { contract, docId } = await loadContractDoc(req.params.id);
-      const { auth } = await getGoogleClients();
-      let template;
-      try {
-        template = await getTemplateText(auth, docId);
-      } catch (docsError) {
-        console.error('雛形ドキュメント取得エラー:', docsError.message);
-        if (isOfficeFileError(docsError)) {
-          return res.status(400).json({
-            // codeは画面側の分岐用。文言で判定させると言い回しを直した瞬間に壊れる。
-            code: 'office_file',
-            error: 'この雛形はWordファイル（.docx）としてDriveに置かれているため、そのままでは中身を読めません。'
-              + '下の「Googleドキュメントに変換した版を作る」を押すと、変換した複製を作ってマーク付けできます（元のファイルは変わりません）',
-          });
-        }
-        return res.status(400).json({
-          error: googleApiErrorMessage(docsError, 'このGoogleドキュメントを開けませんでした'),
-        });
-      }
-      res.json({ ...template, isMarkupCopy: !!contract.isMarkupCopy });
-    } catch (error) {
-      console.error('雛形プレビュー取得エラー:', error);
-      res.status(error.status || 500).json({ error: error.message || '雛形の取得に失敗しました' });
-    }
-  });
-
-  // 選択範囲の文章そのものを直す(置き換え・削除・カーソル位置への追加)。
-  // マーク付けで選ぶ範囲を間違えて元の文言を消してしまうことがあり、そのたびに
-  // Googleドキュメントを開き直すのは手間なので、同じパネルの中で直せるようにする。
-  // マーク付けと同じく、書き換えるのは項目入り版だけ(元の雛形は触らない)。
-  router.post('/contracts/:id/template/text', async (req, res) => {
-    try {
-      const { ref, contract, docId } = await loadContractDoc(req.params.id);
-      if (!contract.isMarkupCopy) {
-        return res.status(400).json({
-          error: '元の雛形は書き換えません。先に「項目入り版を作る」を押してから、その版を編集してください',
-        });
-      }
-      const { flatStart, flatEnd, text, expectedOriginal } = req.body || {};
-      if (!Number.isInteger(flatStart) || !Number.isInteger(flatEnd)) {
-        return res.status(400).json({ error: '編集する範囲が不正です' });
-      }
-      const { auth } = await getGoogleClients();
-      // 画面を開いたまま誰かがGoogleドキュメント側を直していると、文字位置がズレて
-      // 関係ない場所を壊してしまう。書き換える前に「そこが今も同じ文字か」を確かめる。
-      if (typeof expectedOriginal === 'string') {
-        const before = await getTemplateText(auth, docId);
-        if (before.text.slice(flatStart, flatEnd) !== expectedOriginal) {
-          return res.status(409).json({ error: '雛形が更新されています。読み直してから保存し直してください' });
-        }
-      }
-      const result = await replaceRangeWithText(auth, docId, flatStart, flatEnd, text);
-      if (result.error) {
-        return res.status(400).json({ error: result.error });
-      }
-      // 文章を直した結果、{{項目名}}が増減していることがある(間違えて消した場合など)ので、
-      // マーク付けと同じく入力項目を取り直して揃える。
-      const template = await getTemplateText(auth, docId);
-      const requestFields = mergeRequestFieldsWithMarkers(template.markers, contract.requestFields);
-      await ref.update({ requestFields });
-      res.json({ ...template, isMarkupCopy: true, requestFields });
-    } catch (error) {
-      console.error('雛形の文章編集エラー:', error);
-      res.status(error.status || 500).json({ error: error.message || '雛形の編集に失敗しました' });
-    }
-  });
-
-  // 選択範囲を{{項目名}}に置き換える。元の雛形は書き換えず、項目入り版に対してのみ許可する。
-  router.post('/contracts/:id/template/markers', async (req, res) => {
-    try {
-      const { ref, contract, docId } = await loadContractDoc(req.params.id);
-      if (!contract.isMarkupCopy) {
-        return res.status(400).json({
-          error: '元の雛形は書き換えません。先に「項目入り版を作る」を押してから、その版にマークを付けてください',
-        });
-      }
-      const { flatStart, flatEnd, label } = req.body || {};
-      const { auth } = await getGoogleClients();
-      const result = await replaceRangeWithMarker(auth, docId, flatStart, flatEnd, label);
-      if (result.error) {
-        return res.status(400).json({ error: result.error });
-      }
-      const template = await getTemplateText(auth, docId);
-      const requestFields = mergeRequestFieldsWithMarkers(template.markers, contract.requestFields);
-      await ref.update({ requestFields });
-      res.json({ ...template, isMarkupCopy: true, requestFields });
-    } catch (error) {
-      console.error('項目マーク付けエラー:', error);
-      res.status(error.status || 500).json({ error: error.message || 'マーク付けに失敗しました' });
-    }
-  });
-
 
   // Task 1.6: 記入済み契約書の生成 ----------------------------------------
   //
@@ -971,7 +494,7 @@ function createContractsRouter({ admin, db }) {
       if (isOfficeFileError(error)) {
         return {
           error: `「${contract.name}」の雛形はWordファイル（.docx）のため読み取れません。`
-            + 'マスター管理の契約書管理で「項目入り版を作る」を押すと、Googleドキュメントに変換した複製を作れます',
+            + 'account-sales-boardの契約書管理で「項目入り版を作る」を押すと、Googleドキュメントに変換した複製を作れます',
         };
       }
       throw error;
@@ -1146,7 +669,7 @@ function createContractsRouter({ admin, db }) {
     if (!individualContractId) {
       return { value: null };
     }
-    const snap = await db.collection('contracts').doc(individualContractId).get();
+    const snap = await getTemplateDoc(individualContractId);
     if (!snap.exists) {
       return { error: '指定の個別契約書が見つかりません' };
     }
@@ -1207,7 +730,7 @@ function createContractsRouter({ admin, db }) {
           // 締結依頼側のエラーと同じ文言にすると、どちらで詰まっているのか分からなくなる。
           return res.status(400).json({ error: '記入済み契約書を作る雛形を選択してください' });
         }
-        const contractSnap = await db.collection('contracts').doc(contractId).get();
+        const contractSnap = await getTemplateDoc(contractId);
         if (!contractSnap.exists) {
           return res.status(400).json({ error: '指定の契約書が見つかりません' });
         }
@@ -1252,7 +775,7 @@ function createContractsRouter({ admin, db }) {
         }
         if (generated.length === 0) {
           return res.status(400).json({
-            error: '差し込む項目が雛形にありません。マスター管理の契約書管理で「項目入り版を作る」から{{項目名}}をマークしてください',
+            error: '差し込む項目が雛形にありません。account-sales-boardの契約書管理で「項目入り版を作る」から{{項目名}}をマークしてください',
           });
         }
 
@@ -1522,7 +1045,7 @@ function createContractsRouter({ admin, db }) {
             : '送る契約書を選んでください（雛形か、作成済みの契約書のどちらか）',
         };
       }
-      const contractSnap = await db.collection('contracts').doc(contractId).get();
+      const contractSnap = await getTemplateDoc(contractId);
       if (!contractSnap.exists) {
         return { error: '指定の契約書が見つかりません（契約書管理から削除された可能性があります）' };
       }

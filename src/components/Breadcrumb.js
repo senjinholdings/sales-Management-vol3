@@ -150,11 +150,6 @@ function Breadcrumb() {
       currentPageName = '案件詳細';
       currentPagePath = isPartnerView ? '/partner/product' : '/product';
     }
-    // 契約書詳細ページ（/contract-master/:groupKey）
-    else if (pathname.startsWith('/contract-master/')) {
-      currentPageName = '契約書の詳細';
-      currentPagePath = pathname;
-    }
     // 完全一致チェック
     else if (routeConfig[pathname]) {
       currentPageName = routeConfig[pathname].name;

@@ -11,8 +11,8 @@ import { changedRanges } from './textDiff.js';
 // 画面を開いたまま誰かがGoogleドキュメント側を直していると、位置がズレて関係のない
 // 場所を壊すことになるため、ズレていたら何もせずエラーにする。
 //
-// 雛形（ContractTemplateMarkup.js）と記入済み契約書（ContractDocumentRevision.js）で
-// まったく同じ手順なので、呼ぶAPIだけを引数で受け取って1箇所にまとめてある。
+// account-sales-boardから移したもの（あちらでは雛形の編集画面と記入済み契約書で同じ手順を使う）。
+// こちらで使うのは記入済み契約書（ContractDocumentRevision.js）だけ。呼ぶAPIは引数で受け取る。
 export async function applyDocumentEdits({ baseText, draftText, edit }) {
   const ranges = changedRanges(baseText, draftText);
   let latest = null;
