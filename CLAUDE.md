@@ -261,9 +261,16 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 ```
 
 ## 最新バージョン情報
-- **現在バージョン**: v2.59.0
-- **最終更新**: 2026年9月25日
+- **現在バージョン**: v2.60.0
+- **最終更新**: 2026年9月26日
 - **直近の更新内容**:
+  - account-sales-boardで荒幡さんの案件を「見るだけ」表示するための写しを作る仕組みを追加（統合の第一段階。案件はvol3に置いたまま）
+    - `functions/vol3Mirror.js`の`syncVol3Mirror`（30分おき・8時〜24時）が、案件・営業記録・NA・議事録の件数・受注の記録を読み、account-sales-boardのFirestoreの`vol3Deals`（1案件1ドキュメント）に書く。**vol3のデータは読むだけ**で書き換えない。中身が変わった案件だけ書き、vol3で消えた案件は写しも消す。更新の結果は`appConfig/vol3Mirror`（account-sales-board側）
+    - 対象はアカウント営業（`salesTrack: 'account'`）と「商材なし」のNA置き場（`isStandaloneNa`）以外の全案件。案件担当は運用側で決めたとおり全部荒幡さん（元の担当欄は`originalRepresentative`に残す）
+    - ステータスはaccount-sales-boardの呼び方（「次にやること」）に読み替える: フェーズ1・2→ヒアリング、3→提案書の提示、4→担当者の実施判断、5→社内の最終決済、6→契約手続き、7→契約完了、8→運用中（継続管理ステータスが「終了」なら案件終了）、Dead・失注はそのまま、空欄は「未案件化」。一度でも到達したフェーズは、今のステータス・失注の直前のフェーズ・営業記録のフェーズ・「フェーズ2→フェーズ3」の変更記録のいちばん先
+    - 受注は成約案件一覧と同じく、案件の区分（`isExistingProject`）に対応する側の営業記録のフェーズ8（`confirmedDate`あり）だけを数える。想定予算はパイプライン振り返りと同じく最新の1円以上の営業記録の予算を優先
+    - account-sales-board側では「荒幡さんの案件」ページとPLの「vol3の受注」の列に出す（常木さん以外の管理者だけ）。書き込みには既存の権限（`sales-management-staging@appspot.gserviceaccount.com`にaccount-sales-boardのDatastoreオーナー）を使う
+    - 本当に移す段階（第二段階）でも、同じ対応表を使う
   - 使われていない画面と、account-sales-boardへ移したアカウント営業の画面を削除（account-sales-boardへの統合の準備）
     - 削除した画面: 週報（`/weekly-report`）、コア顧客（`/core-customers`）、インフルエンサー（`/if/*`）、キャスティング管理（`/casting/manage`）、アカウント営業のダッシュボード・案件一覧・対象企業リスト（`/account-sales-dashboard`・`/account-deals-list`・`/key-accounts`）。どこからも開かれていなかった投稿本数管理・投稿カレンダーのファイルも削除
     - アクションログで提案メニュー「IFキャスティング」を選んだときにキャスティング管理へ自動登録する処理も削除
