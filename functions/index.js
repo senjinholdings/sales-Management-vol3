@@ -492,7 +492,7 @@ exports.syncVol3Mirror = functions.runWith({ timeoutSeconds: 300, memory: '512MB
   .onRun(createVol3MirrorSync({ admin, db }));
 
 // 一回限り: 開発中の接続テストが本番に溜めたテストデータを消す（結果はappConfig/cleanupTestData。
-// 2回目以降は何もしない）。確認がとれたらこの登録とcleanupTestData.jsを消す
+// 2回目以降は何もしない）。2026年9月26日に実行済み。消し方はcleanupTestData.jsの冒頭を参照
 exports.cleanupTestDataOnce = functions.runWith({ timeoutSeconds: 300 })
   .pubsub.schedule('every 30 minutes').timeZone('Asia/Tokyo')
   .onRun(createTestDataCleanup({ admin, db }));
