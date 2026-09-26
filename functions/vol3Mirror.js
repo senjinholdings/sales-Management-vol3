@@ -86,15 +86,18 @@ function buildMirror(dealId, deal, { records, entries, meetings }) {
     if (m) maxIdx = Math.max(maxIdx, phaseIndexOfVol3(m[1], deal));
   });
 
-  // 受注の記録は、成約案件一覧と同じく「案件の区分に対応する側の営業記録」だけを見る
-  // （両方を読むと、過去の二重登録の残骸で同じ受注が2回数えられる）
+  // 受注の記録は、成約案件一覧・パイプライン振り返りと同じく「案件の区分に対応する側の営業記録」の
+  // フェーズ8だけを見る（両方を読むと、過去の二重登録の残骸で同じ受注が2回数えられる）。
+  // 受注日は成約日（confirmedDate）、無ければ記録の日付（date）。vol3の画面と同じ数え方にしないと、
+  // 成約日が未記入の受注が抜けて四半期の確定額が合わなくなる（実際に1億円強のはずが大きく下回った）
   const orderSub = deal.isExistingProject ? 'salesRecords' : 'newCaseSalesRecords';
   const ownRecords = records.filter((r) => r.subCol === orderSub);
   const orders = ownRecords
-    .filter((r) => r.data.phase === 'フェーズ8' && r.data.confirmedDate)
+    .filter((r) => r.data.phase === 'フェーズ8' && (r.data.confirmedDate || r.data.date))
     .map((r) => ({
       id: r.recordId,
-      confirmedDate: toDate10(r.data.confirmedDate),
+      confirmedDate: toDate10(r.data.confirmedDate || r.data.date),
+      confirmedDateMissing: !r.data.confirmedDate,
       amount: toNumber(r.data.budget),
       recordType: r.data.recordType || '',
       startDate: toDate10(r.data.startDate),

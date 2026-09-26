@@ -268,7 +268,7 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
     - `functions/vol3Mirror.js`の`syncVol3Mirror`（30分おき・8時〜24時）が、案件・営業記録・NA・議事録の件数・受注の記録を読み、account-sales-boardのFirestoreの`vol3Deals`（1案件1ドキュメント）に書く。**vol3のデータは読むだけ**で書き換えない。中身が変わった案件だけ書き、vol3で消えた案件は写しも消す。更新の結果は`appConfig/vol3Mirror`（account-sales-board側）
     - 対象はアカウント営業（`salesTrack: 'account'`）と「商材なし」のNA置き場（`isStandaloneNa`）以外の全案件。案件担当は運用側で決めたとおり全部荒幡さん（元の担当欄は`originalRepresentative`に残す）
     - ステータスはaccount-sales-boardの呼び方（「次にやること」）に読み替える: フェーズ1・2→ヒアリング、3→提案書の提示、4→担当者の実施判断、5→社内の最終決済、6→契約手続き、7→契約完了、8→運用中（継続管理ステータスが「終了」なら案件終了）、Dead・失注はそのまま、空欄は「未案件化」。一度でも到達したフェーズは、今のステータス・失注の直前のフェーズ・営業記録のフェーズ・「フェーズ2→フェーズ3」の変更記録のいちばん先
-    - 受注は成約案件一覧と同じく、案件の区分（`isExistingProject`）に対応する側の営業記録のフェーズ8（`confirmedDate`あり）だけを数える。想定予算はパイプライン振り返りと同じく最新の1円以上の営業記録の予算を優先
+    - 受注は成約案件一覧と同じく、案件の区分（`isExistingProject`）に対応する側の営業記録のフェーズ8だけを数え、受注日は`confirmedDate`、無ければ記録の`date`（パイプライン振り返りの確定実績と同じ数え方。当初`confirmedDate`がある記録だけを数えていて、四半期の確定額が1億円強のはずが大きく下回った）。想定予算はパイプライン振り返りと同じく最新の1円以上の営業記録の予算を優先
     - account-sales-board側では「荒幡さんの案件」ページとPLの「vol3の受注」の列に出す（常木さん以外の管理者だけ）。書き込みには既存の権限（`sales-management-staging@appspot.gserviceaccount.com`にaccount-sales-boardのDatastoreオーナー）を使う
     - 本当に移す段階（第二段階）でも、同じ対応表を使う
   - 使われていない画面と、account-sales-boardへ移したアカウント営業の画面を削除（account-sales-boardへの統合の準備）
