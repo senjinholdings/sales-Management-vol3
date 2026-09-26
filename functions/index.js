@@ -42,6 +42,7 @@ const { createContractsRouter } = require('./contractsRouter');
 const { getTemplateDb } = require('./accountSalesBoard');
 // AIを呼ぶたびに使用量と概算費用を記録する。記録先はaccount-sales-boardのFirestore（費用の画面はあちら）
 const { configureAiUsage } = require('./aiUsage');
+const { createVol3MirrorSync } = require('./vol3Mirror');
 configureAiUsage({ db: getTemplateDb(admin), app: 'sales-Management-vol3' });
 
 // CORS を設定
@@ -482,3 +483,9 @@ exports.morningDigest = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], timeou
 exports.checkMallUpdates = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], timeoutSeconds: 300 })
   .pubsub.schedule('every 30 minutes').timeZone('Asia/Tokyo')
   .onRun(createMallUpdateChecker({ admin, db }));
+
+// account-sales-boardで「見るだけ」表示するための案件の写しを更新（30分おき・8時〜24時）。
+// vol3は読むだけで、写しはaccount-sales-boardのFirestoreのvol3Dealsに置く。詳しくはvol3Mirror.js
+exports.syncVol3Mirror = functions.runWith({ timeoutSeconds: 300, memory: '512MB' })
+  .pubsub.schedule('*/30 8-23 * * *').timeZone('Asia/Tokyo')
+  .onRun(createVol3MirrorSync({ admin, db }));
