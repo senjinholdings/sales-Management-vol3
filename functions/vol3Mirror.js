@@ -125,7 +125,13 @@ function buildMirror(dealId, deal, { records, entries, meetings }) {
   const meetingTimes = meetings.map((m) => toMillis(m.happenedAt)).filter(Boolean);
 
   const displayName = deal.companyName || deal.productName || '（名前なし）';
+  // vol3の画面に出ている案件か。新規案件一覧は updatedAt の並び順で読んでいて（Firestoreは並び順の
+  // フィールドが無い案件を返さない）、提案メニュー「他社案件」も除いている。まとめて取り込んだだけの
+  // 案件はupdatedAtが無く、vol3のどの一覧にも出ていない。既存案件一覧は全件出す。
+  const shownInVol3 = deal.isExistingProject === true
+    || (!!deal.updatedAt && deal.proposalMenu !== '他社案件');
   return {
+    shownInVol3,
     companyName: displayName,
     hasCompanyName: !!deal.companyName,
     productName: deal.productName || '',

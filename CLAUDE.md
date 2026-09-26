@@ -271,6 +271,7 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
     - 受注は成約案件一覧と同じく、案件の区分（`isExistingProject`）に対応する側の営業記録のフェーズ8だけを数え、受注日は`confirmedDate`、無ければ記録の`date`（パイプライン振り返りの確定実績と同じ数え方。当初`confirmedDate`がある記録だけを数えていて、四半期の確定額が1億円強のはずが大きく下回った）。想定予算はパイプライン振り返りと同じく最新の1円以上の営業記録の予算を優先
     - account-sales-board側では「荒幡さんの案件」ページとPLの「vol3の受注」の列に出す（常木さん以外の管理者だけ）。書き込みには既存の権限（`sales-management-staging@appspot.gserviceaccount.com`にaccount-sales-boardのDatastoreオーナー）を使う
     - 本当に移す段階（第二段階）でも、同じ対応表を使う
+    - 写しには`shownInVol3`（vol3の一覧に出ている案件か）を持たせる。新規案件一覧は`updatedAt`の並び順で読むため`updatedAt`が無い案件（まとめて取り込んだだけの案件）は出ず、提案メニュー「他社案件」も除いている。account-sales-board側は既定でvol3の一覧に出ている案件だけを並べる
   - 使われていない画面と、account-sales-boardへ移したアカウント営業の画面を削除（account-sales-boardへの統合の準備）
     - 削除した画面: 週報（`/weekly-report`）、コア顧客（`/core-customers`）、インフルエンサー（`/if/*`）、キャスティング管理（`/casting/manage`）、アカウント営業のダッシュボード・案件一覧・対象企業リスト（`/account-sales-dashboard`・`/account-deals-list`・`/key-accounts`）。どこからも開かれていなかった投稿本数管理・投稿カレンダーのファイルも削除
     - アクションログで提案メニュー「IFキャスティング」を選んだときにキャスティング管理へ自動登録する処理も削除
