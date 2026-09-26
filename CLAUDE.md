@@ -264,6 +264,10 @@ REACT_APP_ENTRY_POINT=partner npm run build  # パートナー用
 - **現在バージョン**: v2.60.0
 - **最終更新**: 2026年9月26日
 - **直近の更新内容**:
+  - 開発中の接続テスト（`src/test-firebase.js`）が本番にテストデータを書き込んでいたのを止め、溜まった分を消した
+    - 開発で立ち上げる（`NODE_ENV=development`）たびに、本番の`progressDashboard`と`actionLogs`に中身の無いテストデータ（項目は`createdAt`・`testField`・`timestamp`の3つだけ）を1件ずつ書いていた。案件は136件溜まっていた（vol3の一覧には`updatedAt`が無いので出ていなかったが、account-sales-boardの写しには出ていた）
+    - テスト自体を削除。溜まった分は一回限りのスケジュール関数`cleanupTestDataOnce`（`functions/cleanupTestData.js`）で削除する。消すのは上の3項目だけで`testField`が「これはテストデータです」のものに限り、配下のデータがある案件は残す。結果は`appConfig/cleanupTestData`、2回目以降は何もしない。確認後に関数ごと消す
+    - 写し（`vol3Mirror.js`）でも`testField`のある案件は写さない
   - account-sales-boardで荒幡さんの案件を「見るだけ」表示するための写しを作る仕組みを追加（統合の第一段階。案件はvol3に置いたまま）
     - `functions/vol3Mirror.js`の`syncVol3Mirror`（30分おき・8時〜24時）が、案件・営業記録・NA・議事録の件数・受注の記録を読み、account-sales-boardのFirestoreの`vol3Deals`（1案件1ドキュメント）に書く。**vol3のデータは読むだけ**で書き換えない。中身が変わった案件だけ書き、vol3で消えた案件は写しも消す。更新の結果は`appConfig/vol3Mirror`（account-sales-board側）
     - 対象はアカウント営業（`salesTrack: 'account'`）と「商材なし」のNA置き場（`isStandaloneNa`）以外の全案件。案件担当は運用側で決めたとおり全部荒幡さん（元の担当欄は`originalRepresentative`に残す）
