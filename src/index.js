@@ -5,13 +5,6 @@ import App from './App.js';
 import PartnerApp from './PartnerApp.js';
 import reportWebVitals from './reportWebVitals.js';
 
-// Firebaseテスト（開発環境のみ）
-if (process.env.NODE_ENV === 'development') {
-  import('./test-firebase.js').then(() => {
-    console.log('Firebase接続テスト実行中...');
-  });
-}
-
 // エントリーポイントをURLパラメータまたは環境変数で切り替え
 const isPartner = window.location.pathname.startsWith('/partner') || 
                   window.location.pathname.startsWith('/partner-entry') ||

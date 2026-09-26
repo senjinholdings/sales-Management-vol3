@@ -43,6 +43,7 @@ const { getTemplateDb } = require('./accountSalesBoard');
 // AIを呼ぶたびに使用量と概算費用を記録する。記録先はaccount-sales-boardのFirestore（費用の画面はあちら）
 const { configureAiUsage } = require('./aiUsage');
 const { createVol3MirrorSync } = require('./vol3Mirror');
+const { createTestDataCleanup } = require('./cleanupTestData');
 configureAiUsage({ db: getTemplateDb(admin), app: 'sales-Management-vol3' });
 
 // CORS を設定
@@ -489,3 +490,9 @@ exports.checkMallUpdates = functions.runWith({ secrets: ['SLACK_BOT_TOKEN'], tim
 exports.syncVol3Mirror = functions.runWith({ timeoutSeconds: 300, memory: '512MB' })
   .pubsub.schedule('*/30 8-23 * * *').timeZone('Asia/Tokyo')
   .onRun(createVol3MirrorSync({ admin, db }));
+
+// 一回限り: 開発中の接続テストが本番に溜めたテストデータを消す（結果はappConfig/cleanupTestData。
+// 2回目以降は何もしない）。確認がとれたらこの登録とcleanupTestData.jsを消す
+exports.cleanupTestDataOnce = functions.runWith({ timeoutSeconds: 300 })
+  .pubsub.schedule('every 30 minutes').timeZone('Asia/Tokyo')
+  .onRun(createTestDataCleanup({ admin, db }));

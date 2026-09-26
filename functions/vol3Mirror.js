@@ -209,7 +209,8 @@ function createVol3MirrorSync({ admin, db }) {
 
       for (const d of dealsSnap.docs) {
         const deal = d.data();
-        if (deal.salesTrack === 'account' || deal.isStandaloneNa) continue;
+        // testField: 開発中の接続テストが本番に書き込んでいた中身の無い案件（2026年9月に削除・書き込みも停止）
+        if (deal.salesTrack === 'account' || deal.isStandaloneNa || deal.testField) continue;
         keep.add(d.id);
         const mirror = buildMirror(d.id, deal, {
           records: recordsByDeal.get(d.id) || [],
